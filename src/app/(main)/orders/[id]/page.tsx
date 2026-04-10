@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useState } from 'react'
+import { use, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Header } from '@/components/layout/Header'
 import { Button } from '@/components/ui/button'
@@ -25,8 +25,9 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
-import { demoBudgetOrders, demoSettlementOrders, demoApprovalLogs, demoUser } from '@/lib/demo-data'
-import type { BudgetOrderStatus, ApprovalLog } from '@/lib/types'
+import { demoUser } from '@/lib/demo-data'
+import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
+import type { BudgetOrder, BudgetOrderStatus, ApprovalLog } from '@/lib/types'
 import {
   ArrowLeft,
   CheckCircle,
@@ -54,13 +55,37 @@ import {
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const router = useRouter()
-  const originalOrder = demoBudgetOrders.find((o) => o.id === id)
-  const settlement = demoSettlementOrders.find((s) => s.budget_order_id === id)
 
-  const [order, setOrder] = useState(originalOrder)
-  const [logs, setLogs] = useState<ApprovalLog[]>(demoApprovalLogs.filter((l) => l.entity_id === id))
+  const [order, setOrder] = useState<BudgetOrder | null>(null)
+  const [settlement, setSettlement] = useState<ReturnType<typeof useState<import('@/lib/types').SettlementOrder | null>>[0]>(null)
+  const [logs, setLogs] = useState<ApprovalLog[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true)
+      const [orderData, settlementData, logsData] = await Promise.all([
+        getBudgetOrderById(id),
+        getSettlementByBudgetId(id),
+        getApprovalLogs(id),
+      ])
+      setOrder(orderData)
+      setSettlement(settlementData)
+      setLogs(logsData)
+      setLoading(false)
+    }
+    load()
+  }, [id])
   const [showDialog, setShowDialog] = useState<'approve' | 'reject' | null>(null)
   const [comment, setComment] = useState('')
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+      </div>
+    )
+  }
 
   if (!order) {
     return (
@@ -70,7 +95,15 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     )
   }
 
-  const handleStatusChange = (action: 'submit' | 'approve' | 'reject', newStatus: BudgetOrderStatus) => {
+  const handleStatusChange = async (action: 'submit' | 'approve' | 'reject', newStatus: BudgetOrderStatus) => {
+    // 1. 持久化状态变更到数据库
+    const { error: statusError } = await updateBudgetOrderStatus(order.id, newStatus, demoUser.id)
+    if (statusError) {
+      toast.error(`操作失败: ${statusError}`)
+      return
+    }
+
+    // 2. 持久化审批记录
     const log: ApprovalLog = {
       id: `al-${Date.now()}`,
       entity_type: 'budget_order',
@@ -83,7 +116,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       comment: comment || null,
       created_at: new Date().toISOString(),
     }
+    await createApprovalLog(log)
 
+    // 3. 更新UI
     setOrder({ ...order, status: newStatus })
     setLogs([...logs, log])
     setComment('')

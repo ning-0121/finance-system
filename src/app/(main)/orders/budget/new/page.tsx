@@ -1,8 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
+import { createBudgetOrder, getCustomers, getProducts } from '@/lib/supabase/queries'
 import { Header } from '@/components/layout/Header'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -25,14 +26,22 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { demoCustomers, demoProducts } from '@/lib/demo-data'
+import { demoCustomers as fallbackCustomers, demoProducts as fallbackProducts } from '@/lib/demo-data'
 import { ArrowLeft, Plus, Trash2, Sparkles, Save, Send } from 'lucide-react'
 import Link from 'next/link'
 import type { OrderItem } from '@/lib/types'
 
 export default function NewBudgetOrderPage() {
   const router = useRouter()
+  const [saving, setSaving] = useState(false)
+  const [customers, setCustomers] = useState(fallbackCustomers)
+  const [products, setProducts] = useState(fallbackProducts)
   const [customerId, setCustomerId] = useState('')
+
+  useEffect(() => {
+    getCustomers().then(setCustomers)
+    getProducts().then(setProducts)
+  }, [])
   const [currency, setCurrency] = useState('USD')
   const [exchangeRate, setExchangeRate] = useState('7.24')
   const [orderDate, setOrderDate] = useState(new Date().toISOString().split('T')[0])
@@ -69,7 +78,7 @@ export default function NewBudgetOrderPage() {
     const item = { ...newItems[index] }
 
     if (field === 'product_id') {
-      const product = demoProducts.find(p => p.id === value)
+      const product = products.find(p => p.id === value)
       if (product) {
         item.product_id = product.id
         item.product_name = product.name
@@ -132,7 +141,7 @@ export default function NewBudgetOrderPage() {
                         <SelectValue placeholder="选择客户" />
                       </SelectTrigger>
                       <SelectContent>
-                        {demoCustomers.map((c) => (
+                        {customers.map((c) => (
                           <SelectItem key={c.id} value={c.id}>
                             {c.company} ({c.country})
                           </SelectItem>
@@ -214,7 +223,7 @@ export default function NewBudgetOrderPage() {
                               <SelectValue placeholder="选择产品" />
                             </SelectTrigger>
                             <SelectContent>
-                              {demoProducts.map((p) => (
+                              {products.map((p) => (
                                 <SelectItem key={p.id} value={p.id}>
                                   {p.sku} - {p.name}
                                 </SelectItem>
@@ -371,16 +380,39 @@ export default function NewBudgetOrderPage() {
 
             {/* Actions */}
             <div className="space-y-2">
-              <Button className="w-full" size="lg" onClick={() => {
+              <Button className="w-full" size="lg" disabled={saving} onClick={async () => {
                 if (!customerId) { toast.error('请选择客户'); return }
                 if (totalRevenue <= 0) { toast.error('请添加产品明细'); return }
-                toast.success('预算单已提交审批', { description: `总金额 ${currency} ${totalRevenue.toLocaleString()}，预计毛利率 ${estimatedMargin.toFixed(2)}%` })
+                setSaving(true)
+                const { error } = await createBudgetOrder({
+                  customer_id: customerId, order_date: orderDate, delivery_date: deliveryDate || undefined,
+                  items, target_purchase_price: targetPurchasePrice, estimated_freight: estimatedFreight,
+                  estimated_commission: estimatedCommission, estimated_customs_fee: estimatedCustomsFee,
+                  other_costs: otherCosts, total_revenue: totalRevenue, total_cost: totalCost,
+                  estimated_profit: estimatedProfit, estimated_margin: Number(estimatedMargin.toFixed(2)),
+                  currency, exchange_rate: Number(exchangeRate), status: 'pending_review', notes: notes || undefined,
+                })
+                setSaving(false)
+                if (error) { toast.error(`保存失败: ${error}`); return }
+                toast.success('预算单已提交审批', { description: `总金额 ${currency} ${totalRevenue.toLocaleString()}` })
                 router.push('/orders')
               }}>
                 <Send className="h-4 w-4 mr-2" />
-                保存并提交审批
+                {saving ? '保存中...' : '保存并提交审批'}
               </Button>
-              <Button variant="outline" className="w-full" onClick={() => {
+              <Button variant="outline" className="w-full" disabled={saving} onClick={async () => {
+                if (!customerId) { toast.error('请选择客户'); return }
+                setSaving(true)
+                const { error } = await createBudgetOrder({
+                  customer_id: customerId, order_date: orderDate, delivery_date: deliveryDate || undefined,
+                  items, target_purchase_price: targetPurchasePrice, estimated_freight: estimatedFreight,
+                  estimated_commission: estimatedCommission, estimated_customs_fee: estimatedCustomsFee,
+                  other_costs: otherCosts, total_revenue: totalRevenue, total_cost: totalCost,
+                  estimated_profit: estimatedProfit, estimated_margin: Number(estimatedMargin.toFixed(2)),
+                  currency, exchange_rate: Number(exchangeRate), status: 'draft', notes: notes || undefined,
+                })
+                setSaving(false)
+                if (error) { toast.error(`保存失败: ${error}`); return }
                 toast.success('草稿已保存')
                 router.push('/orders')
               }}>

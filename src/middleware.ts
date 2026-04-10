@@ -1,12 +1,20 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function middleware(request: NextRequest) {
-  // 演示模式：暂时放行所有请求，待正式启用认证后切换
-  // 如需启用认证，取消下方注释并删除 return NextResponse.next()
-  return NextResponse.next()
+  // API 集成端点：由 API Key + 签名保护，不需要用户认证
+  if (request.nextUrl.pathname.startsWith('/api/integration')) {
+    return NextResponse.next()
+  }
 
-  // const { updateSession } = await import('@/lib/supabase/middleware')
-  // return await updateSession(request)
+  // 已配置 Supabase 时启用用户认证
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  if (supabaseUrl && supabaseUrl !== 'your_supabase_url_here') {
+    const { updateSession } = await import('@/lib/supabase/middleware')
+    return await updateSession(request)
+  }
+
+  // 未配置 Supabase 时放行（演示模式）
+  return NextResponse.next()
 }
 
 export const config = {

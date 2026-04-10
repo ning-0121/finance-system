@@ -1,18 +1,6 @@
-// ============================================================
-// GET /api/integration/health
-// 集成健康检查端点 — 节拍器可调用验证连通性
-// ============================================================
-
 import { NextResponse } from 'next/server'
-import { verifyApiKey } from '@/lib/integration/security'
 
-export async function GET(request: Request) {
-  const apiKey = request.headers.get('x-api-key')
-
-  if (apiKey && !verifyApiKey(apiKey)) {
-    return NextResponse.json({ error: 'Invalid API key' }, { status: 401 })
-  }
-
+export async function GET() {
   return NextResponse.json({
     status: 'healthy',
     service: 'finance-system',
