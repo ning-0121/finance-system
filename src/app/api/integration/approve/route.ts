@@ -1,16 +1,49 @@
 // ============================================================
 // POST /api/integration/approve
-// 财务系统审批后，回调通知订单节拍器
-// 内部调用 — 由财务系统前端触发
+// 财务系统审批后回调节拍器
+// 安全：API Key + 签名验证（来自节拍器的集成请求）
+//       或 Supabase Auth（来自财务系统前端）
 // ============================================================
 
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { sendApprovalToMetronome } from '@/lib/integration/client'
+import { verifyApiKey } from '@/lib/integration/security'
 import type { ApprovalDecision } from '@/lib/integration/types'
 
 export async function POST(request: Request) {
   try {
+    // 鉴权：检查API Key（集成调用）或 Supabase Auth（前端调用）
+    const apiKey = request.headers.get('x-api-key')
+    const isIntegrationCall = apiKey && verifyApiKey(apiKey)
+
+    if (!isIntegrationCall) {
+      // 前端调用：验证用户登录状态和权限
+      const supabase = await createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+
+      if (!user) {
+        // 演示模式放行
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+        if (!supabaseUrl || supabaseUrl === 'your_supabase_url_here') {
+          // demo mode - continue
+        } else {
+          return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        }
+      } else {
+        // 验证角色权限
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .single()
+
+        if (profile && !['admin', 'finance_manager'].includes(profile.role)) {
+          return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 })
+        }
+      }
+    }
+
     const body = await request.json() as ApprovalDecision
     const { approval_id, approval_type, decision, decided_by, decider_name, decision_note } = body
 
@@ -19,19 +52,22 @@ export async function POST(request: Request) {
     }
 
     if (!['approved', 'rejected'].includes(decision)) {
-      return NextResponse.json({ error: 'Invalid decision' }, { status: 400 })
+      return NextResponse.json({ error: 'Invalid decision value' }, { status: 400 })
     }
+
+    // 限制comment长度
+    const sanitizedNote = decision_note ? String(decision_note).slice(0, 500) : null
 
     const supabase = await createClient()
 
-    // 1. 更新本地审批状态
+    // 更新本地审批状态
     const { error: updateError } = await supabase
       .from('pending_approvals')
       .update({
         status: decision,
         decided_by,
-        decider_name,
-        decision_note,
+        decider_name: String(decider_name || '').slice(0, 100),
+        decision_note: sanitizedNote,
         decided_at: new Date().toISOString(),
       })
       .eq('id', approval_id)
@@ -40,18 +76,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Update failed: ${updateError.message}` }, { status: 500 })
     }
 
-    // 2. 回调节拍器
+    // 回调节拍器
     const callbackResult = await sendApprovalToMetronome({
       approval_id,
       approval_type,
       decision,
       decided_by,
-      decider_name,
-      decision_note: decision_note || null,
+      decider_name: String(decider_name || '').slice(0, 100),
+      decision_note: sanitizedNote,
       decided_at: new Date().toISOString(),
     })
 
-    // 3. 记录回调结果
+    // 记录日志
     await supabase.from('integration_logs').insert({
       event_type: 'approval.callback',
       direction: 'outbound',
@@ -66,7 +102,6 @@ export async function POST(request: Request) {
       status: 'ok',
       local_updated: true,
       callback_sent: callbackResult.success,
-      callback_error: callbackResult.error,
     })
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error'

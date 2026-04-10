@@ -49,8 +49,11 @@ export async function getBudgetOrders(statusFilter?: string): Promise<BudgetOrde
     }
 
     const { data, error } = await query
-    if (error) throw error
-    if (!data || data.length === 0) return demoBudgetOrders
+    if (error) {
+      console.error('getBudgetOrders DB error:', error.message)
+      return demoBudgetOrders // DB错误时降级
+    }
+    if (!data || data.length === 0) return demoBudgetOrders // 空数据时用demo
 
     return data.map(mapDbBudgetOrder)
   } catch (e) {
@@ -125,29 +128,64 @@ export async function createBudgetOrder(order: Partial<BudgetOrder>): Promise<{ 
   }
 }
 
+// 合法状态转换表（乐观锁：只有从正确的前置状态才能转）
+const VALID_TRANSITIONS: Record<string, BudgetOrderStatus[]> = {
+  draft: ['pending_review'],
+  pending_review: ['approved', 'rejected', 'draft'], // draft=撤回
+  approved: ['closed'],
+  rejected: ['draft'], // 修改后重新提交
+  closed: [],
+}
+
 export async function updateBudgetOrderStatus(
   id: string,
-  status: BudgetOrderStatus,
+  newStatus: BudgetOrderStatus,
   approvedBy?: string
 ): Promise<{ error: string | null }> {
   if (!isSupabaseConfigured()) {
-    return { error: null } // Demo mode: pretend success
+    return { error: null }
   }
 
   try {
     const supabase = createClient()
-    const updateData: Record<string, unknown> = { status }
-    if (status === 'approved' && approvedBy) {
+
+    // 1. 读取当前状态（乐观锁检查）
+    const { data: current, error: readError } = await supabase
+      .from('budget_orders')
+      .select('status, updated_at')
+      .eq('id', id)
+      .single()
+
+    if (readError || !current) {
+      return { error: '订单不存在' }
+    }
+
+    // 2. 验证状态转换合法性
+    const allowedTransitions = VALID_TRANSITIONS[current.status] || []
+    if (!allowedTransitions.includes(newStatus)) {
+      return { error: `不能从"${current.status}"转为"${newStatus}"` }
+    }
+
+    // 3. 带条件更新（乐观锁：只有状态没被他人改过才能更新）
+    const updateData: Record<string, unknown> = { status: newStatus }
+    if (newStatus === 'approved' && approvedBy) {
       updateData.approved_by = approvedBy
       updateData.approved_at = new Date().toISOString()
     }
 
-    const { error } = await supabase
+    const { data: updated, error: updateError } = await supabase
       .from('budget_orders')
       .update(updateData)
       .eq('id', id)
+      .eq('status', current.status) // 乐观锁：确保没被并发修改
+      .select('id')
 
-    return { error: error?.message || null }
+    if (updateError) return { error: updateError.message }
+    if (!updated?.length) {
+      return { error: '操作冲突：该订单已被其他人修改，请刷新后重试' }
+    }
+
+    return { error: null }
   } catch (e) {
     return { error: e instanceof Error ? e.message : 'Unknown error' }
   }
@@ -156,18 +194,28 @@ export async function updateBudgetOrderStatus(
 export async function createApprovalLog(log: Partial<ApprovalLog>): Promise<{ error: string | null }> {
   if (!isSupabaseConfigured()) return { error: null }
 
+  // 验证必填字段
+  if (!log.entity_id || !log.action || !log.from_status || !log.to_status) {
+    return { error: '审批记录缺少必填字段' }
+  }
+
+  // 验证 from_status !== to_status
+  if (log.from_status === log.to_status) {
+    return { error: '审批记录状态未变化' }
+  }
+
   try {
     const supabase = createClient()
     const { error } = await supabase
       .from('approval_logs')
       .insert({
-        entity_type: log.entity_type,
+        entity_type: log.entity_type || 'budget_order',
         entity_id: log.entity_id,
         action: log.action,
         from_status: log.from_status,
         to_status: log.to_status,
         operator_id: log.operator_id || '00000000-0000-0000-0000-000000000000',
-        comment: log.comment || null,
+        comment: log.comment ? String(log.comment).slice(0, 500) : null, // 限制长度
       })
 
     return { error: error?.message || null }

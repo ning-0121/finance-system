@@ -91,17 +91,35 @@ export function exportOrderDetailToExcel(order: BudgetOrder) {
   XLSX.writeFile(wb, `${order.order_no}_详情.xlsx`)
 }
 
-// --- 解析导入的Excel文件 ---
+// --- 解析导入的Excel文件（处理合并单元格、空行、公式） ---
 export function parseImportedExcel(file: File): Promise<Record<string, unknown>[]> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer)
-        const wb = XLSX.read(data, { type: 'array' })
+        const wb = XLSX.read(data, {
+          type: 'array',
+          cellFormula: false,   // 读取公式计算结果而非公式本身
+          cellDates: true,      // 日期转为JS Date对象
+          cellNF: true,         // 保留数字格式
+        })
         const ws = wb.Sheets[wb.SheetNames[0]]
-        const rows = XLSX.utils.sheet_to_json(ws) as Record<string, unknown>[]
-        resolve(rows)
+
+        // defval: '' 确保空单元格不被跳过
+        // blankrows: false 跳过完全空白行
+        const rows = XLSX.utils.sheet_to_json(ws, {
+          defval: '',
+          blankrows: false,
+          raw: false,           // 格式化后的值（保持精度）
+        }) as Record<string, unknown>[]
+
+        // 过滤掉所有值都为空的行
+        const filtered = rows.filter(row =>
+          Object.values(row).some(v => v !== null && v !== undefined && v !== '')
+        )
+
+        resolve(filtered)
       } catch (err) {
         reject(err)
       }

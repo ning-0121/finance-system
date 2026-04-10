@@ -370,7 +370,7 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
             <>
               <Button variant="outline" onClick={() => { handleValidate() }}>验证数据</Button>
               <Button onClick={handleImport} disabled={!descriptionCol || !amountCol}>
-                确认导入 ({rows.length - errors.filter(e => errors.some(e2 => e2.row === e.row)).length} 行)
+                确认导入 ({rows.length - new Set(errors.map(e => e.row)).size} 行)
               </Button>
             </>
           )}
