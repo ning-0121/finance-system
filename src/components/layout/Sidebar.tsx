@@ -28,6 +28,7 @@ import { ClipboardCheck, ScrollText } from 'lucide-react'
 const baseNavigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
   { name: '订单成本核算', href: '/orders', icon: Package },
+  { name: '文档智能中心', href: '/documents', icon: FileText },
   { name: '费用归集', href: '/costs', icon: ShoppingCart },
   { name: '应收应付管理', href: '/receivables', icon: CreditCard },
   { name: '汇总报表', href: '/reports', icon: ScrollText },
