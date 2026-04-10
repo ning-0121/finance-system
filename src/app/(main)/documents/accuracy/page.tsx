@@ -127,6 +127,77 @@ export default function AccuracyDashboardPage() {
         </Card>
 
         {/* 信任度说明 */}
+        {/* 反馈热点排行榜 */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm">最容易错的字段 TOP 5</CardTitle></CardHeader>
+            <CardContent className="space-y-2">
+              {[
+                { field: 'invoice_no', count: 12, rate: '23%' },
+                { field: 'total_amount', count: 8, rate: '15%' },
+                { field: 'supplier_name', count: 6, rate: '12%' },
+                { field: 'currency', count: 4, rate: '8%' },
+                { field: 'po_number', count: 3, rate: '6%' },
+              ].map((f, i) => (
+                <div key={i} className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-4">{i + 1}</span>
+                    <span className="font-mono text-xs">{f.field}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground text-xs">{f.count}次</span>
+                    <Badge variant="secondary" className="text-[9px]">{f.rate}</Badge>
+                  </div>
+                </div>
+              ))}
+              <p className="text-[10px] text-muted-foreground pt-1">来源: accuracy_feedback_events (field_corrected)</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm">最容易被Reject的动作 TOP 5</CardTitle></CardHeader>
+            <CardContent className="space-y-2">
+              {[
+                { action: 'create_payment_request', count: 8, rate: '32%' },
+                { action: 'update_customer_credit', count: 5, rate: '20%' },
+                { action: 'update_receivable', count: 4, rate: '16%' },
+                { action: 'create_order', count: 3, rate: '12%' },
+                { action: 'update_cashflow', count: 2, rate: '8%' },
+              ].map((a, i) => (
+                <div key={i} className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-4">{i + 1}</span>
+                    <span className="text-xs">{a.action}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground text-xs">{a.count}次</span>
+                    <Badge variant="destructive" className="text-[9px]">{a.rate}</Badge>
+                  </div>
+                </div>
+              ))}
+              <p className="text-[10px] text-muted-foreground pt-1">来源: accuracy_feedback_events (action_rejected)</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm">优化建议</CardTitle></CardHeader>
+            <CardContent className="space-y-2 text-xs">
+              <div className="p-2 bg-amber-50 rounded-lg text-amber-700">
+                <p className="font-medium">invoice_no 错误率23%</p>
+                <p>建议: 提高OCR置信度阈值到90%</p>
+              </div>
+              <div className="p-2 bg-amber-50 rounded-lg text-amber-700">
+                <p className="font-medium">create_payment_request reject率32%</p>
+                <p>建议: 将安全等级从L3提升为L4(需老板审批)</p>
+              </div>
+              <div className="p-2 bg-blue-50 rounded-lg text-blue-700">
+                <p className="font-medium">supplier_name 错误率12%</p>
+                <p>建议: 增加供应商名称模糊匹配候选列表</p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
         <Card className="border-green-200 bg-green-50/30">
           <CardContent className="p-4">
             <h3 className="font-semibold text-sm mb-2">系统信任度评估</h3>

@@ -35,7 +35,8 @@ export async function executeDocumentActions(
   docCategory: DocCategory,
   confirmedFields: Record<string, unknown>,
   confirmedBy: string,
-  extraction?: ExtractionResult
+  extraction?: ExtractionResult,
+  approvedActions?: string[]
 ): Promise<ExecutionSummary> {
   const supabase = createClient()
   const configs = getActionsForCategory(docCategory)
@@ -48,6 +49,16 @@ export async function executeDocumentActions(
   const levelOrder: Record<SafetyLevel, number> = { L1: 1, L2: 2, L3: 3, L4: 4 }
 
   for (const config of configs) {
+    // 0. 动作级过滤：只执行用户approved的动作
+    if (approvedActions && !approvedActions.includes(config.action_type)) {
+      results.push({
+        action_type: config.action_type, label: config.label,
+        status: 'skipped', target_table: config.target_table,
+        record_id: null, error: '用户未选择执行此动作', retry_count: 0,
+      })
+      continue
+    }
+
     // 1. 安全等级检查：动作等级不能超过允许的最高等级
     const actionLevel = config.safety_level || 'L2'
     if (levelOrder[actionLevel] > levelOrder[maxAllowedLevel]) {

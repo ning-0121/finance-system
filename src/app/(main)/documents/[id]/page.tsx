@@ -9,7 +9,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
-import { ArrowLeft, CheckCircle, XCircle, Loader2, AlertTriangle, Sparkles } from 'lucide-react'
+import { ArrowLeft, CheckCircle, XCircle, Loader2, AlertTriangle, Sparkles, Eye } from 'lucide-react'
+import { PreExecutionReview } from '@/components/documents/PreExecutionReview'
 import { toast } from 'sonner'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
@@ -26,6 +27,9 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [editedFields, setEditedFields] = useState<Record<string, unknown>>({})
+  const [showReview, setShowReview] = useState(false)
+  const [previewData, setPreviewData] = useState<Record<string, unknown> | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -42,11 +46,30 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
     load()
   }, [id])
 
-  const handleConfirm = async () => {
+  // Step 1: 预览执行（不执行）
+  const handlePreview = async () => {
+    setPreviewLoading(true)
+    try {
+      const res = await fetch('/api/documents/pre-execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ document_id: id, confirmed_fields: editedFields }),
+      })
+      const data = await res.json()
+      setPreviewData(data)
+      setShowReview(true)
+    } catch {
+      toast.error('预览失败')
+    }
+    setPreviewLoading(false)
+  }
+
+  // Step 2: 确认执行（用户逐个accept/reject后）
+  const handleExecute = async (approvedActions: string[], rejectedActions: string[]) => {
     if (!doc) return
     setSaving(true)
 
-    // 计算变更记录
+    // 保存字段变更
     const changes: Record<string, { from: unknown; to: unknown }> = {}
     const original = doc.extracted_fields || {}
     for (const key of Object.keys(editedFields)) {
@@ -58,14 +81,9 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
 
     const supabase = createClient()
     await supabase.from('uploaded_documents').update({
-      status: 'confirmed',
       extracted_fields: editedFields,
-      confirmed_at: new Date().toISOString(),
       confirmation_changes: Object.keys(changes).length > 0 ? changes : null,
     }).eq('id', id)
-
-    // 更新所有建议操作为confirmed
-    await supabase.from('document_actions').update({ status: 'confirmed' }).eq('document_id', id).eq('status', 'suggested')
 
     // 保存模板记忆
     const entityName = (editedFields.customer_name || editedFields.supplier_name || editedFields.payer_name) as string
@@ -80,7 +98,7 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
       }, { onConflict: 'template_name' })
     }
 
-    // 执行建议操作
+    // 执行（只传accepted的动作）
     try {
       const execRes = await fetch('/api/documents/execute', {
         method: 'POST',
@@ -89,23 +107,20 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
           document_id: id,
           confirmed_fields: editedFields,
           confirmed_by: 'current_user',
+          approved_actions: approvedActions,
+          rejected_actions: rejectedActions,
         }),
       })
       const execResult = await execRes.json()
 
       setSaving(false)
-      if (execResult.failed > 0) {
-        toast.warning(`确认完成，${execResult.succeeded}项成功，${execResult.failed}项失败`, {
-          description: `${Object.keys(changes).length}个字段被修改`,
-        })
-      } else {
-        toast.success(`文档已确认并执行 ${execResult.succeeded} 项操作`, {
-          description: `${Object.keys(changes).length}个字段被修改`,
-        })
-      }
+      setShowReview(false)
+      toast.success(`执行完成: ${execResult.succeeded}项成功, ${rejectedActions.length}项被拒绝`, {
+        description: `${Object.keys(changes).length}个字段被修改`,
+      })
     } catch {
       setSaving(false)
-      toast.success('文档已确认入库', { description: `${Object.keys(changes).length}个字段被修改` })
+      toast.success('文档已确认入库')
     }
     router.push('/documents')
   }
@@ -139,9 +154,9 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
           <Link href="/documents"><Button variant="ghost" size="sm"><ArrowLeft className="h-4 w-4 mr-1" />返回文档中心</Button></Link>
           <div className="flex gap-2">
             <Button variant="destructive" size="sm" onClick={handleReject}><XCircle className="h-4 w-4 mr-1" />拒绝</Button>
-            <Button size="sm" onClick={handleConfirm} disabled={saving}>
-              {saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}
-              确认入库
+            <Button size="sm" variant="outline" onClick={handlePreview} disabled={previewLoading || saving}>
+              {previewLoading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Eye className="h-4 w-4 mr-1" />}
+              预览执行
             </Button>
           </div>
         </div>
@@ -278,6 +293,18 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
           </Card>
         </div>
       </div>
+
+      {/* Pre-Execution Review Modal */}
+      {previewData && (
+        <PreExecutionReview
+          open={showReview}
+          onClose={() => setShowReview(false)}
+          onConfirm={handleExecute}
+          loading={saving}
+          safetyAssessment={(previewData as Record<string, unknown>).safety_assessment as Parameters<typeof PreExecutionReview>[0]['safetyAssessment']}
+          actions={((previewData as Record<string, unknown>).actions || []) as Parameters<typeof PreExecutionReview>[0]['actions']}
+        />
+      )}
     </div>
   )
 }

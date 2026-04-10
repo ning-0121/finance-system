@@ -198,3 +198,33 @@ export const FORCED_CONFIRM_FIELDS = [
   'bank_account', 'invoice_no', 'po_number',
   'payment_terms', 'etd', 'eta',
 ]
+
+// 结构化Explanation — 每步动作可解释
+export interface ActionExplanation {
+  summary: string
+  triggered_by: string
+  supporting_fields: string[]
+  confidence_reason: string
+  risk_reason: string
+  approval_reason: string | null
+  downgrade_reason: string | null
+}
+
+// 动作决定
+export type ActionDecision = 'pending' | 'accepted' | 'rejected' | 'draft' | 'escalated'
+
+// 准确率反馈事件
+export type FeedbackEventType = 'field_corrected' | 'action_rejected' | 'action_rolled_back' | 'template_failed'
+
+export interface AccuracyFeedbackEvent {
+  id: string
+  document_id: string | null
+  event_type: FeedbackEventType
+  field_name: string | null
+  action_type: string | null
+  original_value: string | null
+  corrected_value: string | null
+  doc_category: string | null
+  entity_name: string | null
+  created_at: string
+}
