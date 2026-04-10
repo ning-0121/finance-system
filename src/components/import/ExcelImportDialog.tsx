@@ -152,6 +152,14 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
     const costType = FILE_TYPE_TO_COST_TYPE[fileType] as CostType
     const errorRows = new Set(errors.map(e => e.row))
 
+    // 去重检测：获取已有记录的描述+金额组合
+    const { data: existing } = await supabase
+      .from('cost_items')
+      .select('description, amount')
+      .eq('source_module', 'excel_import')
+    const existingSet = new Set((existing || []).map(e => `${e.description}|${e.amount}`))
+    let skipDuplicates = 0
+
     for (let i = 0; i < rows.length; i++) {
       if (errorRows.has(i + 2)) {
         failCount++
@@ -166,10 +174,18 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
         continue
       }
 
+      const desc = String(row[descriptionCol] || fileName)
+
+      // 去重：跳过已导入的相同描述+金额
+      if (existingSet.has(`${desc}|${amount}`)) {
+        skipDuplicates++
+        continue
+      }
+
       try {
         const { error } = await supabase.from('cost_items').insert({
           cost_type: costType,
-          description: String(row[descriptionCol] || fileName),
+          description: desc,
           amount,
           currency: currencyCol ? String(row[currencyCol] || 'USD').toUpperCase() : 'USD',
           exchange_rate: 1,
@@ -179,13 +195,13 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
         })
 
         if (error) failCount++
-        else successCount++
+        else { successCount++; existingSet.add(`${desc}|${amount}`) }
       } catch {
         failCount++
       }
     }
 
-    setResult({ success: successCount, failed: failCount })
+    setResult({ success: successCount, failed: failCount + skipDuplicates })
     setImporting(false)
     setStep('result')
 
