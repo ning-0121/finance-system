@@ -1,11 +1,13 @@
 // ============================================================
-// Action Execution Engine — 确认后自动执行业务动作
-// 幂等性 + 失败补偿 + 审计日志 + 重试
+// Action Execution Engine — 安全优先执行引擎
+// L1-L4安全等级 + 门槛检查 + 幂等性 + 重试 + 审计
+// 原则：宁可保守，不要出错
 // ============================================================
 
 import { createClient } from '@/lib/supabase/client'
 import { getActionsForCategory, canExecuteAction, type ActionConfig } from './action-registry'
-import type { DocCategory } from '@/lib/types/document'
+import { assessSafety, SAFETY_LEVEL_CONFIG, type SafetyLevel } from './safety'
+import type { DocCategory, ExtractionResult } from '@/lib/types/document'
 
 export interface ExecutionResult {
   action_type: string
@@ -27,21 +29,41 @@ export interface ExecutionSummary {
   audit_log_id: string | null
 }
 
-// --- 主执行函数 ---
+// --- 主执行函数（安全优先） ---
 export async function executeDocumentActions(
   documentId: string,
   docCategory: DocCategory,
   confirmedFields: Record<string, unknown>,
-  confirmedBy: string
+  confirmedBy: string,
+  extraction?: ExtractionResult
 ): Promise<ExecutionSummary> {
   const supabase = createClient()
   const configs = getActionsForCategory(docCategory)
   const results: ExecutionResult[] = []
 
-  // 按execution_order顺序执行
-  for (const config of configs) {
-    const { canExecute, missingFields } = canExecuteAction(config, confirmedFields)
+  // ===== 安全评估 =====
+  const safetyAssessment = extraction ? assessSafety(extraction) : null
+  const maxAllowedLevel = safetyAssessment?.max_allowed_level || 'L1'
 
+  const levelOrder: Record<SafetyLevel, number> = { L1: 1, L2: 2, L3: 3, L4: 4 }
+
+  for (const config of configs) {
+    // 1. 安全等级检查：动作等级不能超过允许的最高等级
+    const actionLevel = config.safety_level || 'L2'
+    if (levelOrder[actionLevel] > levelOrder[maxAllowedLevel]) {
+      const levelConfig = SAFETY_LEVEL_CONFIG[actionLevel]
+      results.push({
+        action_type: config.action_type, label: config.label,
+        status: 'skipped', target_table: config.target_table,
+        record_id: null,
+        error: `安全等级${actionLevel}(${levelConfig.description})超过当前允许的${maxAllowedLevel}，需人工确认后执行`,
+        retry_count: 0,
+      })
+      continue
+    }
+
+    // 2. 字段检查
+    const { canExecute, missingFields } = canExecuteAction(config, confirmedFields)
     if (!canExecute) {
       results.push({
         action_type: config.action_type, label: config.label,
@@ -51,11 +73,11 @@ export async function executeDocumentActions(
       continue
     }
 
-    // 执行（带重试）
+    // 3. 执行（带重试）
     const result = await executeWithRetry(config, confirmedFields, documentId, confirmedBy)
     results.push(result)
 
-    // 如果关键动作失败，后续动作跳过（防止半成功状态）
+    // 4. 关键动作失败 → 后续跳过
     if (result.status === 'failed' && config.execution_order <= 1) {
       for (const remaining of configs.filter(c => c.execution_order > config.execution_order)) {
         results.push({
