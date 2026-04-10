@@ -92,7 +92,15 @@ export default function LoginPage() {
             <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
             <div className="relative flex justify-center text-xs uppercase"><span className="bg-card px-2 text-muted-foreground">或</span></div>
           </div>
-          <Button variant="outline" className="w-full" onClick={handleDemoLogin} disabled={loading}>
+          <Button variant="outline" className="w-full" onClick={() => {
+            const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/wecom`)
+            const corpId = 'ww4b4c0f18eb6d77ad'
+            const agentId = '1000003'
+            window.location.href = `https://open.weixin.qq.com/connect/oauth2/authorize?appid=${corpId}&redirect_uri=${redirectUri}&response_type=code&scope=snsapi_privateinfo&state=finance&agentid=${agentId}#wechat_redirect`
+          }} disabled={loading}>
+            企业微信登录
+          </Button>
+          <Button variant="ghost" className="w-full" onClick={handleDemoLogin} disabled={loading}>
             {loading ? '进入中...' : '演示模式体验'}
           </Button>
           <p className="text-xs text-center text-muted-foreground">演示模式使用模拟数据，无需注册</p>
