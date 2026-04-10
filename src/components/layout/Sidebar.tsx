@@ -34,6 +34,7 @@ const baseNavigation = [
   { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
   { name: '报关资料管理', href: '/customs', icon: FileText },
   { name: '财务驾驶舱', href: '/analytics', icon: BarChart3 },
+  { name: '老板驾驶舱', href: '/dashboard/boss', icon: BarChart3 },
 ]
 
 export function Sidebar() {
