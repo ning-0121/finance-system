@@ -210,8 +210,35 @@ export interface ActionExplanation {
   downgrade_reason: string | null
 }
 
-// 动作决定
-export type ActionDecision = 'pending' | 'accepted' | 'rejected' | 'draft' | 'escalated'
+// 动作状态机（10个状态）
+export type ActionState =
+  | 'suggested'         // AI建议
+  | 'accepted'          // 用户接受
+  | 'rejected'          // 用户拒绝（终态）
+  | 'blocked'           // 被依赖阻塞
+  | 'waiting_approval'  // 等待审批(L3/L4)
+  | 'approved'          // 审批通过
+  | 'denied'            // 审批拒绝
+  | 'executing'         // 执行中
+  | 'executed'          // 已执行
+  | 'rolled_back'       // 已回滚
+
+// 合法状态转换表
+export const VALID_STATE_TRANSITIONS: Record<ActionState, ActionState[]> = {
+  suggested: ['accepted', 'rejected', 'blocked'],
+  accepted: ['waiting_approval', 'executing', 'blocked'],
+  rejected: [],
+  blocked: ['suggested', 'accepted'],
+  waiting_approval: ['approved', 'denied'],
+  approved: ['executing'],
+  denied: ['suggested'],
+  executing: ['executed', 'rolled_back'],
+  executed: ['rolled_back'],
+  rolled_back: ['suggested'],
+}
+
+// 兼容旧代码
+export type ActionDecision = ActionState
 
 // 准确率反馈事件
 export type FeedbackEventType = 'field_corrected' | 'action_rejected' | 'action_rolled_back' | 'template_failed'

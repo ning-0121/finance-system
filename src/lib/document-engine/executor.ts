@@ -7,6 +7,7 @@
 import { createClient } from '@/lib/supabase/client'
 import { getActionsForCategory, canExecuteAction, type ActionConfig } from './action-registry'
 import { assessSafety, SAFETY_LEVEL_CONFIG, type SafetyLevel } from './safety'
+import { topologicalSort, checkDependencies, updateTrustScore } from './dependency-resolver'
 import type { DocCategory, ExtractionResult } from '@/lib/types/document'
 
 export interface ExecutionResult {
@@ -48,7 +49,11 @@ export async function executeDocumentActions(
 
   const levelOrder: Record<SafetyLevel, number> = { L1: 1, L2: 2, L3: 3, L4: 4 }
 
-  for (const config of configs) {
+  // ===== 拓扑排序 =====
+  const { sorted: sortedConfigs } = topologicalSort(configs)
+  const executedActions = new Map<string, 'success' | 'failed' | 'skipped'>()
+
+  for (const config of sortedConfigs) {
     // 0. 动作级过滤：只执行用户approved的动作
     if (approvedActions && !approvedActions.includes(config.action_type)) {
       results.push({
@@ -56,7 +61,22 @@ export async function executeDocumentActions(
         status: 'skipped', target_table: config.target_table,
         record_id: null, error: '用户未选择执行此动作', retry_count: 0,
       })
+      executedActions.set(config.action_type, 'skipped')
       continue
+    }
+
+    // 0.5. 依赖检查：前置动作是否满足
+    if (config.depends_on.length > 0) {
+      const depCheck = checkDependencies(config, executedActions)
+      if (!depCheck.satisfied) {
+        results.push({
+          action_type: config.action_type, label: config.label,
+          status: 'skipped', target_table: config.target_table,
+          record_id: null, error: `被依赖阻塞: ${depCheck.reason}`, retry_count: 0,
+        })
+        executedActions.set(config.action_type, 'skipped')
+        continue
+      }
     }
 
     // 1. 安全等级检查：动作等级不能超过允许的最高等级
@@ -81,14 +101,23 @@ export async function executeDocumentActions(
         status: 'skipped', target_table: config.target_table,
         record_id: null, error: `缺少字段: ${missingFields.join(', ')}`, retry_count: 0,
       })
+      executedActions.set(config.action_type, 'skipped')
       continue
     }
 
     // 3. 执行（带重试）
     const result = await executeWithRetry(config, confirmedFields, documentId, confirmedBy)
     results.push(result)
+    executedActions.set(config.action_type, result.status === 'success' ? 'success' : 'failed')
 
-    // 4. 关键动作失败 → 后续跳过
+    // 3.5. 更新信任分值
+    const entityName = String(confirmedFields.customer_name || confirmedFields.supplier_name || '')
+    if (entityName) {
+      const subjectType = confirmedFields.customer_name ? 'customer' : 'supplier'
+      await updateTrustScore(subjectType, entityName, result.status === 'success' ? 'correct' : 'rejected')
+    }
+
+    // 4. 关键动作失败 → 后续跳过（依赖图已处理大部分，这里是额外保护）
     if (result.status === 'failed' && config.execution_order <= 1) {
       for (const remaining of configs.filter(c => c.execution_order > config.execution_order)) {
         results.push({
