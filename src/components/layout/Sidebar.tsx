@@ -23,15 +23,15 @@ import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canViewApprovalQueue, getRoleLabel } from '@/lib/auth/permissions'
 import { UserSwitcher } from '@/components/layout/UserSwitcher'
 import { useState, useEffect } from 'react'
-import { ClipboardCheck } from 'lucide-react'
+import { ClipboardCheck, ScrollText } from 'lucide-react'
 
 const baseNavigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
   { name: '订单成本核算', href: '/orders', icon: Package },
   { name: '费用归集', href: '/costs', icon: ShoppingCart },
   { name: '应收应付管理', href: '/receivables', icon: CreditCard },
+  { name: '汇总报表', href: '/reports', icon: ScrollText },
   { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
-  { name: '员工薪酬管理', href: '/payroll', icon: Users },
   { name: '报关资料管理', href: '/customs', icon: FileText },
   { name: '财务驾驶舱', href: '/analytics', icon: BarChart3 },
 ]

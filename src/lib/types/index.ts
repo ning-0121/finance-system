@@ -214,3 +214,142 @@ export interface Alert {
   is_read: boolean
   created_at: string
 }
+
+// ============================================================
+// 订单全生命周期 — 子单据体系
+// ============================================================
+
+export type SubDocumentType =
+  | 'raw_material' | 'auxiliary_material' | 'factory_processing'
+  | 'logistics' | 'commission' | 'tax' | 'other'
+
+export const SUB_DOC_LABELS: Record<SubDocumentType, string> = {
+  raw_material: '原料预采购单', auxiliary_material: '辅料预采购单',
+  factory_processing: '加工厂预账单', logistics: '物流预费用单',
+  commission: '提成预算单', tax: '预算税费', other: '预算其他费用',
+}
+
+export type SubDocumentStatus = 'draft' | 'approved' | 'executing' | 'settled'
+
+export interface SubDocument {
+  id: string
+  budget_order_id: string
+  doc_type: SubDocumentType
+  doc_no: string | null
+  supplier_name: string | null
+  items: SubDocItem[]
+  estimated_total: number
+  currency: string
+  exchange_rate: number
+  status: SubDocumentStatus
+  actual_total: number | null
+  variance: number | null
+  settlement_note: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface SubDocItem {
+  name: string
+  specification: string | null
+  qty: number
+  unit: string
+  unit_price: number
+  amount: number
+}
+
+export type InvoiceType = 'purchase_order' | 'supplier_invoice' | 'factory_contract' | 'factory_statement' | 'freight_bill' | 'commission_bill' | 'customer_statement' | 'tax_invoice' | 'other_invoice'
+export type InvoiceStatus = 'pending' | 'approved' | 'paid' | 'disputed'
+
+export interface ActualInvoice {
+  id: string
+  budget_order_id: string
+  sub_document_id: string | null
+  invoice_type: InvoiceType
+  invoice_no: string
+  supplier_name: string | null
+  items: SubDocItem[]
+  total_amount: number
+  currency: string
+  exchange_rate: number
+  invoice_date: string | null
+  due_date: string | null
+  over_budget: boolean
+  over_budget_reason: string | null
+  over_budget_approved_by: string | null
+  status: InvoiceStatus
+  attachment_url: string | null
+  created_by: string
+  created_at: string
+}
+
+export type ShippingDocType = 'pi' | 'ci' | 'packing_list' | 'customs_declaration' | 'tax_refund'
+export const SHIPPING_DOC_LABELS: Record<ShippingDocType, string> = {
+  pi: '形式发票(PI)', ci: '商业发票(CI)', packing_list: '装箱单',
+  customs_declaration: '报关单', tax_refund: '退税单',
+}
+
+export interface ShippingDocument {
+  id: string
+  budget_order_id: string
+  doc_type: ShippingDocType
+  document_no: string
+  items: SubDocItem[]
+  total_amount: number
+  currency: string
+  status: 'draft' | 'submitted' | 'completed'
+  attachment_url: string | null
+  created_at: string
+}
+
+export type ReturnType = 'raw_material' | 'auxiliary' | 'finished_good' | 'defective'
+export type AccountingTreatment = 'add_to_cost' | 'reduce_cost' | 'scrap'
+
+export interface InventoryReturn {
+  id: string
+  budget_order_id: string
+  sub_document_id: string | null
+  return_type: ReturnType
+  items: SubDocItem[]
+  total_value: number
+  warehouse_location: string | null
+  accounting_treatment: AccountingTreatment
+  processed_by: string | null
+  processed_at: string | null
+  created_at: string
+}
+
+export interface OrderSettlement {
+  id: string
+  budget_order_id: string
+  sub_settlements: SubSettlement[]
+  order_level_costs: OrderLevelCost[]
+  total_budget: number
+  total_actual: number
+  total_variance: number
+  inventory_credit: number
+  final_profit: number
+  final_margin: number
+  status: 'draft' | 'confirmed' | 'locked'
+  settled_by: string | null
+  settled_at: string | null
+  created_at: string
+}
+
+export interface SubSettlement {
+  sub_document_id: string
+  doc_type: SubDocumentType
+  supplier_name: string | null
+  budgeted: number
+  actual: number
+  variance: number
+  variance_pct: number
+}
+
+export interface OrderLevelCost {
+  category: string
+  budgeted: number
+  actual: number
+  variance: number
+}
