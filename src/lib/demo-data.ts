@@ -13,15 +13,30 @@ import type {
   ProfitSummary,
 } from '@/lib/types'
 
-export const demoUser: User = {
-  id: 'demo-user-1',
-  email: 'admin@company.com',
-  name: '张三',
-  role: 'admin',
-  department: '财务部',
-  avatar_url: null,
-  created_at: '2024-01-01T00:00:00Z',
-}
+// 双人用户体系
+export const demoUsers = {
+  fiona: {
+    id: 'user-fiona',
+    email: 'fiona@qimoclothing.com',
+    name: '方圆',
+    role: 'finance_staff' as const,
+    department: '财务部',
+    avatar_url: null,
+    created_at: '2024-01-01T00:00:00Z',
+  },
+  su: {
+    id: 'user-su',
+    email: 'su@qimoclothing.com',
+    name: 'Su',
+    role: 'finance_manager' as const,
+    department: '财务部',
+    avatar_url: null,
+    created_at: '2024-01-01T00:00:00Z',
+  },
+} satisfies Record<string, User>
+
+// 兼容旧代码
+export const demoUser: User = demoUsers.fiona
 
 export const demoCustomers: Customer[] = [
   {

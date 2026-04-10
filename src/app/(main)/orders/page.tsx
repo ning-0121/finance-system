@@ -15,6 +15,7 @@ import { getBudgetOrders } from '@/lib/supabase/queries'
 import { Plus, Search, Download, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { exportBudgetOrdersToExcel } from '@/lib/excel'
+import { exportProfitAnalysisReport } from '@/lib/excel/export-professional'
 import type { BudgetOrder, BudgetOrderStatus } from '@/lib/types'
 
 export default function OrdersPage() {
@@ -71,7 +72,13 @@ export default function OrdersPage() {
               exportBudgetOrdersToExcel(filteredOrders)
               toast.success(`已导出 ${filteredOrders.length} 条订单`)
             }}>
-              <Download className="h-4 w-4 mr-1" />导出Excel
+              <Download className="h-4 w-4 mr-1" />简易导出
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => {
+              exportProfitAnalysisReport(filteredOrders)
+              toast.success('利润分析表已导出')
+            }}>
+              <Download className="h-4 w-4 mr-1" />利润分析表
             </Button>
             <Link href="/orders/budget/new">
               <Button size="sm"><Plus className="h-4 w-4 mr-1" />创建预算单</Button>

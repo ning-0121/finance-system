@@ -18,7 +18,8 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
-import { Plus, Loader2, Receipt, TrendingUp, Package, Ship, FileText, DollarSign } from 'lucide-react'
+import { Plus, Loader2, Receipt, TrendingUp, Package, Ship, FileText, DollarSign, Upload } from 'lucide-react'
+import { ExcelImportDialog } from '@/components/import/ExcelImportDialog'
 import { toast } from 'sonner'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { createClient } from '@/lib/supabase/client'
@@ -60,6 +61,7 @@ export default function CostsPage() {
   const [orders, setOrders] = useState<BudgetOrder[]>([])
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState('all')
 
@@ -255,9 +257,14 @@ export default function CostsPage() {
               </TabsTrigger>
             </TabsList>
           </Tabs>
-          <Button size="sm" onClick={() => setShowAdd(true)}>
-            <Plus className="h-4 w-4 mr-1" />录入费用
-          </Button>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setShowImport(true)}>
+              <Upload className="h-4 w-4 mr-1" />批量导入
+            </Button>
+            <Button size="sm" onClick={() => setShowAdd(true)}>
+              <Plus className="h-4 w-4 mr-1" />录入费用
+            </Button>
+          </div>
         </div>
 
         <Card>
@@ -317,6 +324,13 @@ export default function CostsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* 批量导入弹窗 */}
+      <ExcelImportDialog
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        onSuccess={(count) => toast.success(`成功导入 ${count} 条费用记录`)}
+      />
 
       {/* 录入费用弹窗 */}
       <Dialog open={showAdd} onOpenChange={setShowAdd}>

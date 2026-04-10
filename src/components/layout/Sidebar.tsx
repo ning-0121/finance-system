@@ -19,12 +19,15 @@ import {
 } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
-import { demoUser } from '@/lib/demo-data'
+import { useCurrentUser } from '@/lib/hooks/use-current-user'
+import { canViewApprovalQueue, getRoleLabel } from '@/lib/auth/permissions'
+import { UserSwitcher } from '@/components/layout/UserSwitcher'
 import { useState, useEffect } from 'react'
+import { ClipboardCheck } from 'lucide-react'
 
-const navigation = [
+const baseNavigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
-  { name: '订单成本核算', href: '/orders', icon: Package, badge: 3 },
+  { name: '订单成本核算', href: '/orders', icon: Package },
   { name: '费用归集', href: '/costs', icon: ShoppingCart },
   { name: '应收应付管理', href: '/receivables', icon: CreditCard },
   { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
@@ -37,7 +40,16 @@ export function Sidebar() {
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
-  const user = demoUser
+  const { user } = useCurrentUser()
+
+  // 根据角色动态生成导航
+  const navigation = user && canViewApprovalQueue(user)
+    ? [
+        ...baseNavigation.slice(0, 2),
+        { name: '审批队列', href: '/approvals', icon: ClipboardCheck },
+        ...baseNavigation.slice(2),
+      ]
+    : baseNavigation
 
   // Close mobile sidebar on route change
   useEffect(() => {
@@ -97,9 +109,9 @@ export function Sidebar() {
               {!collapsed && (
                 <>
                   <span className="flex-1 truncate">{item.name}</span>
-                  {item.badge && (
+                  {'badge' in item && item.badge && (
                     <span className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
-                      {item.badge}
+                      {item.badge as number}
                     </span>
                   )}
                 </>
@@ -123,6 +135,9 @@ export function Sidebar() {
         </div>
       )}
 
+      {/* User Switcher (demo only) */}
+      {!collapsed && <UserSwitcher />}
+
       {/* User */}
       <div className="border-t p-2">
         <button className={cn(
@@ -131,14 +146,14 @@ export function Sidebar() {
         )}>
           <Avatar className="h-7 w-7">
             <AvatarFallback className="text-xs bg-primary/10 text-primary">
-              {user.name.charAt(0)}
+              {user?.name?.charAt(0) || 'U'}
             </AvatarFallback>
           </Avatar>
-          {!collapsed && (
+          {!collapsed && user && (
             <div className="flex-1 text-left min-w-0">
               <p className="text-sm font-medium truncate">{user.name}</p>
               <p className="text-[10px] text-muted-foreground truncate">
-                {user.role === 'admin' ? '系统管理员' : user.role}
+                {getRoleLabel(user.role)}
               </p>
             </div>
           )}
