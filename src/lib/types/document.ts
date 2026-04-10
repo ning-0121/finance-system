@@ -167,9 +167,34 @@ export interface DocumentAction {
 
 // 匹配结果
 export interface MatchResult {
-  type: 'customer' | 'order' | 'supplier' | 'invoice' | 'duplicate'
-  confidence: number
+  type: 'customer' | 'order' | 'supplier' | 'invoice' | 'duplicate' | 'shipping' | 'customs'
+  confidence: number                     // 0-100
+  confidence_level: 'high' | 'medium' | 'low'  // >80/50-80/<50
   matched_id: string | null
   matched_name: string
   detail: string
 }
+
+// 统一提取结果（增强版）
+export interface ExtractionResult {
+  success: boolean
+  error?: string
+  doc_category: DocCategory
+  classification_confidence: number      // 0-100
+  extracted_fields: Record<string, unknown>
+  field_confidence: Record<string, number>  // 每个字段的置信度 0-100
+  missing_fields: string[]               // 应有但未提取的字段
+  high_risk_fields: string[]             // 必须人工确认的字段
+  duplicate_probability: number          // 重复上传概率 0-100
+  raw_text_summary: string
+  template_match_result: string | null   // 匹配到的模板名
+  extraction_method: 'vision' | 'excel' | 'template'
+}
+
+// 必须强制确认的字段
+export const FORCED_CONFIRM_FIELDS = [
+  'total_amount', 'amount', 'currency', 'qty',
+  'customer_name', 'supplier_name', 'payer_name',
+  'bank_account', 'invoice_no', 'po_number',
+  'payment_terms', 'etd', 'eta',
+]
