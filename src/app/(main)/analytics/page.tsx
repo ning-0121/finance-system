@@ -40,8 +40,6 @@ import {
   Legend,
 } from 'recharts'
 
-const COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6']
-
 const customerProfitData = [
   { name: 'Global Trading', revenue: 72000, profit: 11680, margin: 16.22 },
   { name: 'Euro Imports', revenue: 60000, profit: 6700, margin: 11.17 },

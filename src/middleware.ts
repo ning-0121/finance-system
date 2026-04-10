@@ -1,14 +1,12 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function middleware(request: NextRequest) {
-  // 演示模式：如果没有配置Supabase，直接放行
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL === 'your_supabase_url_here') {
-    return NextResponse.next()
-  }
+  // 演示模式：暂时放行所有请求，待正式启用认证后切换
+  // 如需启用认证，取消下方注释并删除 return NextResponse.next()
+  return NextResponse.next()
 
-  // 生产模式：使用Supabase认证
-  const { updateSession } = await import('@/lib/supabase/middleware')
-  return await updateSession(request)
+  // const { updateSession } = await import('@/lib/supabase/middleware')
+  // return await updateSession(request)
 }
 
 export const config = {

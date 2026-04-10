@@ -14,11 +14,13 @@ import {
   Home,
   ChevronDown,
   Bot,
+  Menu,
+  X,
 } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { demoUser } from '@/lib/demo-data'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 const navigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
@@ -34,13 +36,16 @@ const navigation = [
 export function Sidebar() {
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
   const user = demoUser
 
-  return (
-    <div className={cn(
-      'flex flex-col h-full bg-white border-r transition-all duration-300',
-      collapsed ? 'w-16' : 'w-64'
-    )}>
+  // Close mobile sidebar on route change
+  useEffect(() => {
+    setMobileOpen(false)
+  }, [pathname])
+
+  const sidebarContent = (
+    <>
       {/* Logo */}
       <div className="flex items-center gap-2 px-4 h-16 border-b shrink-0">
         <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-primary-foreground font-bold text-sm">
@@ -55,10 +60,20 @@ export function Sidebar() {
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 shrink-0"
+          className="h-6 w-6 shrink-0 hidden md:flex"
           onClick={() => setCollapsed(!collapsed)}
+          aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
         >
           <ChevronDown className={cn('h-3 w-3 transition-transform', collapsed ? '-rotate-90' : 'rotate-90')} />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 shrink-0 md:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-label="关闭菜单"
+        >
+          <X className="h-4 w-4" />
         </Button>
       </div>
 
@@ -78,7 +93,7 @@ export function Sidebar() {
               )}
               title={collapsed ? item.name : undefined}
             >
-              <item.icon className="h-4.5 w-4.5 shrink-0" />
+              <item.icon className="h-4.5 w-4.5 shrink-0" aria-hidden="true" />
               {!collapsed && (
                 <>
                   <span className="flex-1 truncate">{item.name}</span>
@@ -101,7 +116,7 @@ export function Sidebar() {
             href="/ai"
             className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
-            <Bot className="h-4.5 w-4.5 shrink-0" />
+            <Bot className="h-4.5 w-4.5 shrink-0" aria-hidden="true" />
             <span>AI 助手</span>
             <span className="ml-auto text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full">在线</span>
           </Link>
@@ -129,6 +144,42 @@ export function Sidebar() {
           )}
         </button>
       </div>
-    </div>
+    </>
+  )
+
+  return (
+    <>
+      {/* Mobile hamburger */}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="fixed top-4 left-4 z-50 md:hidden"
+        onClick={() => setMobileOpen(true)}
+        aria-label="打开菜单"
+      >
+        <Menu className="h-5 w-5" />
+      </Button>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div className="fixed inset-0 bg-black/50 z-40 md:hidden" onClick={() => setMobileOpen(false)} />
+      )}
+
+      {/* Mobile sidebar */}
+      <div className={cn(
+        'fixed inset-y-0 left-0 z-50 w-64 bg-white border-r transform transition-transform duration-300 md:hidden flex flex-col h-full',
+        mobileOpen ? 'translate-x-0' : '-translate-x-full'
+      )}>
+        {sidebarContent}
+      </div>
+
+      {/* Desktop sidebar */}
+      <div className={cn(
+        'hidden md:flex flex-col h-full bg-white border-r transition-all duration-300',
+        collapsed ? 'w-16' : 'w-64'
+      )}>
+        {sidebarContent}
+      </div>
+    </>
   )
 }

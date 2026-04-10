@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 import { Header } from '@/components/layout/Header'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -370,11 +371,19 @@ export default function NewBudgetOrderPage() {
 
             {/* Actions */}
             <div className="space-y-2">
-              <Button className="w-full" size="lg">
+              <Button className="w-full" size="lg" onClick={() => {
+                if (!customerId) { toast.error('请选择客户'); return }
+                if (totalRevenue <= 0) { toast.error('请添加产品明细'); return }
+                toast.success('预算单已提交审批', { description: `总金额 ${currency} ${totalRevenue.toLocaleString()}，预计毛利率 ${estimatedMargin.toFixed(2)}%` })
+                router.push('/orders')
+              }}>
                 <Send className="h-4 w-4 mr-2" />
                 保存并提交审批
               </Button>
-              <Button variant="outline" className="w-full">
+              <Button variant="outline" className="w-full" onClick={() => {
+                toast.success('草稿已保存')
+                router.push('/orders')
+              }}>
                 <Save className="h-4 w-4 mr-2" />
                 保存草稿
               </Button>
