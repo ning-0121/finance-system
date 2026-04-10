@@ -25,7 +25,7 @@ import { useState, useEffect } from 'react'
 const navigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
   { name: '订单成本核算', href: '/orders', icon: Package, badge: 3 },
-  { name: '采购与工厂管理', href: '/procurement', icon: ShoppingCart },
+  { name: '费用归集', href: '/costs', icon: ShoppingCart },
   { name: '应收应付管理', href: '/receivables', icon: CreditCard },
   { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
   { name: '员工薪酬管理', href: '/payroll', icon: Users },

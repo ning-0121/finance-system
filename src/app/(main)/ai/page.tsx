@@ -16,59 +16,6 @@ const quickActions = [
   { icon: Sparkles, label: '运费趋势预测', prompt: '根据历史数据，预测下个月的运费走势。' },
 ]
 
-const demoResponses: Record<string, string> = {
-  '分析本月的利润情况': `## 本月利润分析报告
-
-**总体表现：**
-- 本月总营收：$222,000
-- 总利润：$38,255
-- 平均毛利率：17.23%（较上月下降0.6个百分点）
-
-**表现优秀的订单：**
-1. **BO-202604-0003** (USB-C数据线) - 预计毛利率 24.22%，为本月最优
-2. **BO-202604-0001** (LED产品) - 已确认毛利率 20.09%
-
-**需要关注的订单：**
-1. **BO-202604-0002** (太阳能路灯) - 毛利率仅 11.17%，低于15%警戒线
-   - 建议：重新议价运费或提高报价
-2. **BO-202603-0005** (LED灯带) - 实际亏损 $705
-   - 原因：运费上涨16.67% + 采购成本上浮2.86%
-
-**AI建议：**
-- 关注运费波动，建议签订长期运输合同
-- 太阳能路灯品类佣金占比较高，考虑优化渠道结构`,
-
-  '上个月毛利率最高的5个订单': `## 上月高毛利率订单 TOP 5
-
-| 排名 | 订单号 | 客户 | 产品 | 毛利率 | 利润 |
-|------|--------|------|------|--------|------|
-| 1 | BO-202603-0001 | ABC Corp | 电子配件 | 28.5% | $14,250 |
-| 2 | BO-202603-0003 | DEF Ltd | LED灯带 | 25.2% | $11,340 |
-| 3 | BO-202603-0007 | GHI Inc | USB产品 | 23.8% | $9,520 |
-| 4 | BO-202603-0004 | JKL GmbH | 太阳能板 | 21.1% | $16,880 |
-| 5 | BO-202603-0009 | MNO Corp | 传感器 | 19.6% | $7,840 |
-
-**共性分析：** 高毛利订单主要集中在电子配件和LED品类，目标客户以北美市场为主。建议加大这些品类的市场推广。`,
-
-  '最近有哪些订单的实际成本超出预算': `## 成本超支分析
-
-**近期成本超标订单：**
-
-### 1. BO-202603-0005 - 超支 4.64%
-- 主要原因：运费暴涨 (+16.67%)
-- 柜位紧张导致实际运费 $2,100 vs 预算 $1,800
-- 最终亏损 $705
-
-### 2. BO-202604-0001 - 超支 2.91%
-- 采购成本上涨 3.16%（原材料涨价）
-- 运费上浮 7.81%（旺季因素）
-- 但报关费和包装费节省部分对冲
-
-**趋势预警：**
-- 近3个月运费超预算率从5%上升到10%
-- 建议更新运费预估模板，将基准上调8-10%
-- LED原材料价格处于上升通道，采购成本预估需增加3-5%余量`,
-}
 
 export default function AIPage() {
   const [messages, setMessages] = useState<AIChatMessage[]>([
@@ -103,15 +50,15 @@ export default function AIPage() {
     setInput('')
     setIsTyping(true)
 
-    // Simulate AI response
-    setTimeout(() => {
-      const matchKey = Object.keys(demoResponses).find(key =>
-        input.includes(key) || key.includes(input.slice(0, 10))
-      )
-
-      const responseContent = matchKey
-        ? demoResponses[matchKey]
-        : `我已收到你的问题："${input}"\n\n这是一个很好的问题。在实际系统中，我会连接数据库查询相关数据并给出详细分析。目前在演示模式下，你可以试试以下问题：\n\n- 分析本月的利润情况\n- 上个月毛利率最高的5个订单\n- 最近有哪些订单的成本超出预算`
+    // 调用 AI API
+    try {
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: input }),
+      })
+      const data = await res.json()
+      const responseContent = data.response || data.error || '抱歉，无法回答。'
 
       const aiMessage: AIChatMessage = {
         id: (Date.now() + 1).toString(),
@@ -120,8 +67,16 @@ export default function AIPage() {
         timestamp: new Date().toISOString(),
       }
       setMessages((prev) => [...prev, aiMessage])
+    } catch {
+      setMessages((prev) => [...prev, {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: '网络错误，请稍后重试。',
+        timestamp: new Date().toISOString(),
+      }])
+    } finally {
       setIsTyping(false)
-    }, 1500)
+    }
   }
 
   return (

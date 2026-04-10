@@ -14,6 +14,7 @@ import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { Plus, Search, Download, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { exportBudgetOrdersToExcel } from '@/lib/excel'
 import type { BudgetOrder, BudgetOrderStatus } from '@/lib/types'
 
 export default function OrdersPage() {
@@ -66,8 +67,11 @@ export default function OrdersPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => toast.info('导出功能开发中')}>
-              <Download className="h-4 w-4 mr-1" />导出
+            <Button variant="outline" size="sm" onClick={() => {
+              exportBudgetOrdersToExcel(filteredOrders)
+              toast.success(`已导出 ${filteredOrders.length} 条订单`)
+            }}>
+              <Download className="h-4 w-4 mr-1" />导出Excel
             </Button>
             <Link href="/orders/budget/new">
               <Button size="sm"><Plus className="h-4 w-4 mr-1" />创建预算单</Button>

@@ -1,23 +1,187 @@
 'use client'
 
+import { useState } from 'react'
 import { Header } from '@/components/layout/Header'
-import { Card, CardContent } from '@/components/ui/card'
-import { CreditCard } from 'lucide-react'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  DollarSign, AlertTriangle, Clock, CheckCircle, Search, TrendingDown,
+} from 'lucide-react'
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+} from 'recharts'
+
+// 演示应收数据
+const demoReceivables = [
+  { id: 'r-1', customer: 'Global Trading Inc.', country: '美国', invoiceNo: 'INV-202604-001', orderNo: 'BO-202604-0001', currency: 'USD', amount: 58500, paid: 30000, balance: 28500, invoiceDate: '2026-04-05', dueDate: '2026-05-05', status: 'partial' as const, agingDays: 4 },
+  { id: 'r-2', customer: 'Euro Imports GmbH', country: '德国', invoiceNo: 'INV-202604-002', orderNo: 'BO-202604-0002', currency: 'EUR', amount: 60000, paid: 0, balance: 60000, invoiceDate: '2026-04-08', dueDate: '2026-06-07', status: 'unpaid' as const, agingDays: 1 },
+  { id: 'r-3', customer: 'Tokyo Solutions Ltd.', country: '日本', invoiceNo: 'INV-202603-015', orderNo: 'BO-202603-0005', currency: 'USD', amount: 13500, paid: 13500, balance: 0, invoiceDate: '2026-03-20', dueDate: '2026-04-20', status: 'paid' as const, agingDays: 0 },
+  { id: 'r-4', customer: 'Global Trading Inc.', country: '美国', invoiceNo: 'INV-202602-008', orderNo: 'BO-202602-0003', currency: 'USD', amount: 42000, paid: 0, balance: 42000, invoiceDate: '2026-02-15', dueDate: '2026-03-15', status: 'overdue' as const, agingDays: 25 },
+  { id: 'r-5', customer: 'ABC Trading Co.', country: '英国', invoiceNo: 'INV-202601-022', orderNo: 'BO-202601-0012', currency: 'GBP', amount: 28000, paid: 0, balance: 28000, invoiceDate: '2026-01-10', dueDate: '2026-02-10', status: 'overdue' as const, agingDays: 58 },
+  { id: 'r-6', customer: 'MegaCorp International', country: '澳大利亚', invoiceNo: 'INV-202512-005', orderNo: 'BO-202512-0002', currency: 'USD', amount: 95000, paid: 50000, balance: 45000, invoiceDate: '2025-12-01', dueDate: '2026-01-30', status: 'overdue' as const, agingDays: 69 },
+]
+
+const agingBuckets = [
+  { name: '0-30天', range: [0, 30], color: '#22c55e' },
+  { name: '31-60天', range: [31, 60], color: '#f59e0b' },
+  { name: '61-90天', range: [61, 90], color: '#ef4444' },
+  { name: '90天+', range: [91, Infinity], color: '#991b1b' },
+]
 
 export default function ReceivablesPage() {
+  const [search, setSearch] = useState('')
+  const [tab, setTab] = useState('all')
+
+  const unpaid = demoReceivables.filter(r => r.status !== 'paid')
+  const overdue = demoReceivables.filter(r => r.status === 'overdue')
+  const totalBalance = unpaid.reduce((s, r) => s + r.balance, 0)
+  const overdueBalance = overdue.reduce((s, r) => s + r.balance, 0)
+
+  const agingData = agingBuckets.map(bucket => {
+    const items = unpaid.filter(r => r.agingDays >= bucket.range[0] && r.agingDays <= bucket.range[1])
+    return { name: bucket.name, amount: items.reduce((s, r) => s + r.balance, 0), color: bucket.color, count: items.length }
+  })
+
+  const filtered = demoReceivables.filter(r => {
+    const matchTab = tab === 'all' || r.status === tab
+    const matchSearch = !search || r.customer.toLowerCase().includes(search.toLowerCase()) || r.invoiceNo.toLowerCase().includes(search.toLowerCase())
+    return matchTab && matchSearch
+  })
+
+  const statusConfig = {
+    paid: { label: '已收', variant: 'default' as const, icon: CheckCircle },
+    partial: { label: '部分收', variant: 'secondary' as const, icon: Clock },
+    unpaid: { label: '未收', variant: 'outline' as const, icon: DollarSign },
+    overdue: { label: '逾期', variant: 'destructive' as const, icon: AlertTriangle },
+  }
+
   return (
     <div className="flex flex-col h-full">
-      <Header title="应收应付管理" subtitle="客户对账 · 账龄追踪" />
-      <div className="flex-1 flex items-center justify-center p-6">
-        <Card className="max-w-md w-full">
-          <CardContent className="pt-6 text-center space-y-4">
-            <div className="mx-auto w-16 h-16 rounded-2xl bg-muted flex items-center justify-center">
-              <CreditCard className="h-8 w-8 text-muted-foreground" />
-            </div>
-            <h3 className="text-lg font-semibold">即将上线</h3>
-            <p className="text-sm text-muted-foreground">
-              应收应付管理模块正在开发中，将支持客户对账、账龄分析、回款提醒等功能。
-            </p>
+      <Header title="应收应付管理" subtitle="客户对账 · 账龄追踪 · 回款提醒" />
+
+      <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
+        {/* KPI */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div>
+                <div><p className="text-xs text-muted-foreground">应收总额</p><p className="text-xl font-bold">${totalBalance.toLocaleString()}</p></div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className={overdueBalance > 0 ? 'border-red-200' : ''}>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-red-50"><AlertTriangle className="h-4 w-4 text-red-600" /></div>
+                <div><p className="text-xs text-muted-foreground">逾期金额</p><p className="text-xl font-bold text-red-600">${overdueBalance.toLocaleString()}</p></div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-amber-50"><Clock className="h-4 w-4 text-amber-600" /></div>
+                <div><p className="text-xs text-muted-foreground">逾期笔数</p><p className="text-xl font-bold">{overdue.length}</p></div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-green-50"><TrendingDown className="h-4 w-4 text-green-600" /></div>
+                <div><p className="text-xs text-muted-foreground">回收率</p><p className="text-xl font-bold">{Math.round((1 - overdueBalance / (totalBalance || 1)) * 100)}%</p></div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Aging Chart */}
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-base">账龄分布</CardTitle></CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={agingData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+                <YAxis tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
+                <Tooltip formatter={(value) => [`$${Number(value).toLocaleString()}`, '金额']} />
+                <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
+                  {agingData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        {/* Table */}
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <Tabs value={tab} onValueChange={setTab}>
+            <TabsList>
+              <TabsTrigger value="all">全部 ({demoReceivables.length})</TabsTrigger>
+              <TabsTrigger value="overdue" className="text-red-600">逾期 ({overdue.length})</TabsTrigger>
+              <TabsTrigger value="unpaid">未收</TabsTrigger>
+              <TabsTrigger value="partial">部分收</TabsTrigger>
+              <TabsTrigger value="paid">已收</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <div className="relative max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input placeholder="搜索客户/发票号..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+          </div>
+        </div>
+
+        <Card>
+          <CardContent className="p-0 overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>客户</TableHead>
+                  <TableHead>发票号</TableHead>
+                  <TableHead>关联订单</TableHead>
+                  <TableHead className="text-right">发票金额</TableHead>
+                  <TableHead className="text-right">已收</TableHead>
+                  <TableHead className="text-right">余额</TableHead>
+                  <TableHead>到期日</TableHead>
+                  <TableHead>账龄</TableHead>
+                  <TableHead>状态</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map(r => {
+                  const sc = statusConfig[r.status]
+                  return (
+                    <TableRow key={r.id} className={r.status === 'overdue' ? 'bg-red-50/50' : ''}>
+                      <TableCell>
+                        <div><p className="text-sm font-medium">{r.customer}</p><p className="text-xs text-muted-foreground">{r.country}</p></div>
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">{r.invoiceNo}</TableCell>
+                      <TableCell className="text-primary text-sm">{r.orderNo}</TableCell>
+                      <TableCell className="text-right">{r.currency} {r.amount.toLocaleString()}</TableCell>
+                      <TableCell className="text-right text-green-600">{r.currency} {r.paid.toLocaleString()}</TableCell>
+                      <TableCell className={`text-right font-semibold ${r.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {r.currency} {r.balance.toLocaleString()}
+                      </TableCell>
+                      <TableCell className="text-sm">{r.dueDate}</TableCell>
+                      <TableCell>
+                        {r.agingDays > 0 ? (
+                          <span className={`text-sm font-medium ${r.agingDays > 60 ? 'text-red-700' : r.agingDays > 30 ? 'text-amber-700' : 'text-green-700'}`}>
+                            {r.agingDays}天
+                          </span>
+                        ) : '-'}
+                      </TableCell>
+                      <TableCell><Badge variant={sc.variant}>{sc.label}</Badge></TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
           </CardContent>
         </Card>
       </div>
