@@ -44,6 +44,8 @@ export default function LoginPage() {
 
   const handleDemoLogin = () => {
     setLoading(true)
+    // 设置演示模式cookie，让中间件放行
+    document.cookie = 'finance_demo_mode=true; path=/; max-age=604800' // 7天
     router.push('/dashboard')
   }
 
