@@ -112,7 +112,61 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ results, query: q })
+    // 6. 搜索冻结记录
+    const { data: freezes } = await supabase
+      .from('entity_freezes')
+      .select('id, entity_name, entity_type, freeze_reason, status')
+      .or(`entity_name.ilike.${pattern},freeze_reason.ilike.${pattern}`)
+      .limit(3)
+
+    if (freezes) {
+      for (const f of freezes) {
+        results.push({
+          type: '冻结',
+          title: `${f.entity_name} (${f.entity_type})`,
+          subtitle: `${f.status === 'frozen' ? '已冻结' : '已解冻'} · ${f.freeze_reason}`,
+          href: '/control-center/freeze',
+        })
+      }
+    }
+
+    // 7. 搜索稽核异常
+    const { data: findings } = await supabase
+      .from('audit_findings')
+      .select('id, title, severity, entity_type, status')
+      .or(`title.ilike.${pattern},description.ilike.${pattern}`)
+      .limit(3)
+
+    if (findings) {
+      for (const f of findings) {
+        results.push({
+          type: '稽核',
+          title: f.title,
+          subtitle: `${f.severity} · ${f.entity_type} · ${f.status === 'open' ? '待处理' : '已处理'}`,
+          href: '/control-center/audit',
+        })
+      }
+    }
+
+    // 8. 搜索凭证
+    const { data: journals } = await supabase
+      .from('journal_entries')
+      .select('id, voucher_no, description, total_debit, status')
+      .or(`voucher_no.ilike.${pattern},description.ilike.${pattern}`)
+      .limit(3)
+
+    if (journals) {
+      for (const j of journals) {
+        results.push({
+          type: '凭证',
+          title: j.voucher_no,
+          subtitle: `${j.description} · ¥${(j.total_debit as number)?.toLocaleString() || 0} · ${j.status === 'posted' ? '已过账' : j.status}`,
+          href: '/gl/journal',
+        })
+      }
+    }
+
+    return NextResponse.json({ results, query: q, total: results.length })
   } catch (error) {
     return NextResponse.json({ results: [], error: error instanceof Error ? error.message : 'Search failed' })
   }
