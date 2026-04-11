@@ -12,6 +12,7 @@ export type WebhookEventType =
   | 'milestone.updated'       // 里程碑状态更新
   | 'price_approval.requested' // 价格审批请求
   | 'delay.requested'         // 延期审批请求
+  | 'file.uploaded'           // 文件上传同步
   | 'approval.callback'       // 审批结果回调（从财务系统到节拍器）
 
 // --- Webhook 事件载荷 ---

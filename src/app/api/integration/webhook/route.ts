@@ -90,6 +90,9 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'delay.requested':
       return handleDelayApprovalRequest(payload.data as unknown as DelayApprovalRequest)
 
+    case 'file.uploaded':
+      return handleFileUpload(payload.data as Record<string, unknown>)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
@@ -128,6 +131,12 @@ async function handleOrderSync(order: SyncedOrder, event: string) {
     }, { onConflict: 'id' })
 
   if (error) throw new Error(`Sync failed: ${error.message}`)
+
+  // 新订单自动创建预算单草稿
+  if (event === 'order.created' || event === 'order.activated') {
+    try { await autoCreateBudgetDraft(order) } catch {}
+  }
+
   return { action: 'synced', order_no: order.order_no, event }
 }
 
@@ -202,6 +211,79 @@ async function handleDelayApprovalRequest(req: DelayApprovalRequest) {
 
   if (error) throw new Error(`Delay approval sync failed: ${error.message}`)
   return { action: 'approval_queued', type: 'delay', order_no: req.order_no }
+}
+
+// --- 文件上传同步 ---
+async function handleFileUpload(data: Record<string, unknown>) {
+  const supabase = await createClient()
+
+  const { error } = await supabase
+    .from('uploaded_documents')
+    .upsert({
+      id: data.id as string,
+      file_name: (data.file_name as string) || 'unnamed',
+      file_type: (data.file_type as string) || 'image',
+      file_size: data.file_size as number || null,
+      file_url: data.file_url as string || null,
+      status: 'confirmed',
+      extracted_fields: data.extracted_fields || {},
+      matched_customer: (data.matched_customer as string) || null,
+      created_at: (data.created_at as string) || new Date().toISOString(),
+    }, { onConflict: 'id' })
+
+  if (error) throw new Error(`File sync failed: ${error.message}`)
+  return { action: 'file_synced', file_name: data.file_name }
+}
+
+// --- 订单同步时自动创建预算单草稿 ---
+async function autoCreateBudgetDraft(order: SyncedOrder) {
+  if (!order.total_amount && !order.unit_price) return // 无金额不创建
+
+  const supabase = await createClient()
+
+  // 检查是否已有预算单
+  const { data: existing } = await supabase
+    .from('budget_orders')
+    .select('id')
+    .ilike('notes', `%${order.order_no}%`)
+    .limit(1)
+
+  if (existing?.length) return // 已存在
+
+  // 查找或创建客户
+  let customerId = '00000000-0000-0000-0000-000000000000'
+  if (order.customer_name) {
+    const { data: customer } = await supabase
+      .from('customers')
+      .select('id')
+      .ilike('company', `%${order.customer_name}%`)
+      .limit(1)
+
+    if (customer?.length) {
+      customerId = customer[0].id
+    } else {
+      // 自动创建客户
+      const { data: newCustomer } = await supabase
+        .from('customers')
+        .insert({ name: order.customer_name, company: order.customer_name, currency: order.currency || 'USD' })
+        .select('id')
+        .single()
+      if (newCustomer) customerId = newCustomer.id
+    }
+  }
+
+  const totalAmount = Number(order.total_amount) || (Number(order.unit_price || 0) * Number(order.quantity || 0))
+
+  await supabase.from('budget_orders').insert({
+    order_no: '',
+    customer_id: customerId,
+    total_revenue: totalAmount,
+    currency: order.currency || 'USD',
+    status: 'draft',
+    created_by: '00000000-0000-0000-0000-000000000000',
+    notes: `来源: 订单节拍器自动同步\n节拍器订单号: ${order.order_no}\n客户: ${order.customer_name || ''}\nPO: ${order.po_number || ''}`,
+    has_sub_documents: false,
+  })
 }
 
 // --- 记录集成日志 ---
