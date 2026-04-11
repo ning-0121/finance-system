@@ -148,6 +148,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [editForwarder, setEditForwarder] = useState('') // 货代费
   const [editContainer, setEditContainer] = useState('') // 装柜费
   const [editLogistics, setEditLogistics] = useState('') // 物流费
+  const [editExtras, setEditExtras] = useState<{ name: string; amount: string }[]>([]) // 其他费用
 
   // 进入编辑模式时预填当前值（从items或现有字段解析）
   useEffect(() => {
@@ -166,14 +167,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         setEditForwarder((cb.forwarder || 0).toString())
         setEditContainer((cb.container || 0).toString())
         setEditLogistics((cb.logistics || 0).toString())
+        // 恢复其他费用
+        const extras = cb.extras as unknown as { name: string; amount: number }[] | undefined
+        setEditExtras(extras?.map(e => ({ name: e.name, amount: (e.amount || 0).toString() })) || [])
       } else {
-        // 从现有字段映射
         setEditFabric(order.target_purchase_price.toString())
         setEditAccessory('0')
         setEditProcessing(order.estimated_commission.toString())
         setEditForwarder(order.estimated_freight.toString())
         setEditContainer(order.estimated_customs_fee.toString())
         setEditLogistics(order.other_costs.toString())
+        setEditExtras([])
       }
     }
   }, [editMode, order])
@@ -191,7 +195,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     const forwarder = Number(editForwarder) || 0
     const container = Number(editContainer) || 0
     const logistics = Number(editLogistics) || 0
-    const totalCostCny = fabric + accessory + processing + forwarder + container + logistics
+    const extrasTotal = editExtras.reduce((s, e) => s + (Number(e.amount) || 0), 0)
+    const totalCostCny = fabric + accessory + processing + forwarder + container + logistics + extrasTotal
     const profitCny = revenueCny - totalCostCny
     const margin = revenueCny > 0 ? Math.round((profitCny / revenueCny) * 10000) / 100 : 0
     // 映射到数据库字段
@@ -199,12 +204,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     const freight = forwarder            // 货代费→运费字段
     const commission = processing        // 加工费→佣金字段
     const customs = container            // 装柜费→报关费字段
-    const other = logistics              // 物流费→其他费用字段
+    const other = logistics + extrasTotal // 物流费+其他→其他费用字段
 
     try {
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
-      const breakdownData = { fabric, accessory, processing, forwarder, container, logistics, _currency: editCurrencyMode === 'CNY' ? 'CNY_DIRECT' : 'CNY', _revenue_input: revenueInput, _revenue_currency: editCurrencyMode, _rate: rate }
+      const extrasData = editExtras.filter(e => e.name && Number(e.amount)).map(e => ({ name: e.name, amount: Number(e.amount) || 0 }))
+      const breakdownData = { fabric, accessory, processing, forwarder, container, logistics, extras: extrasData, _currency: editCurrencyMode === 'CNY' ? 'CNY_DIRECT' : 'CNY', _revenue_input: revenueInput, _revenue_currency: editCurrencyMode, _rate: rate }
       // 保留原有产品明细，将cost breakdown存入第一个item或单独追加
       const existingItems = (order.items || []) as unknown as Record<string, unknown>[]
       const updatedItems = existingItems.length > 0
@@ -392,7 +398,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 7)
                       const revenueInput = Number(editRevenue) || 0
                       const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate
-                      const costTotal = [editFabric, editAccessory, editProcessing, editForwarder, editContainer, editLogistics].reduce((s, v) => s + (Number(v) || 0), 0)
+                      const costTotal = [editFabric, editAccessory, editProcessing, editForwarder, editContainer, editLogistics].reduce((s, v) => s + (Number(v) || 0), 0) + editExtras.reduce((s, e) => s + (Number(e.amount) || 0), 0)
                       const profitCny = revenueCny - costTotal
                       const marginPct = revenueCny > 0 ? (profitCny / revenueCny * 100).toFixed(1) : '0'
                       return <div className="space-y-3">
@@ -427,6 +433,21 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                         <div className="space-y-1"><Label className="text-xs">货代费 (¥)</Label><Input type="number" step="0.01" value={editForwarder} onChange={e => setEditForwarder(e.target.value)} /></div>
                         <div className="space-y-1"><Label className="text-xs">装柜费 (¥)</Label><Input type="number" step="0.01" value={editContainer} onChange={e => setEditContainer(e.target.value)} /></div>
                         <div className="space-y-1"><Label className="text-xs">物流费 (¥)</Label><Input type="number" step="0.01" value={editLogistics} onChange={e => setEditLogistics(e.target.value)} /></div>
+                        {/* 其他费用（可自定义名称） */}
+                        {editExtras.map((extra, idx) => (
+                          <div key={idx} className="flex gap-2 items-end">
+                            <div className="flex-1 space-y-1">
+                              <Input placeholder="费用名称（如佣金）" value={extra.name} onChange={e => { const n = [...editExtras]; n[idx] = { ...n[idx], name: e.target.value }; setEditExtras(n) }} className="text-xs h-8" />
+                            </div>
+                            <div className="w-28 space-y-1">
+                              <Input type="number" step="0.01" placeholder="¥" value={extra.amount} onChange={e => { const n = [...editExtras]; n[idx] = { ...n[idx], amount: e.target.value }; setEditExtras(n) }} className="text-xs h-8" />
+                            </div>
+                            <Button type="button" size="sm" variant="ghost" className="h-8 w-8 p-0 text-red-400 hover:text-red-600" onClick={() => setEditExtras(editExtras.filter((_, i) => i !== idx))}>×</Button>
+                          </div>
+                        ))}
+                        <Button type="button" size="sm" variant="outline" className="w-full text-xs h-7" onClick={() => setEditExtras([...editExtras, { name: '', amount: '' }])}>
+                          + 添加其他费用
+                        </Button>
                         <Separator />
                         <div className="p-2 rounded-lg bg-muted text-xs space-y-1">
                           <div className="flex justify-between"><span>成本合计</span><span className="font-medium">¥{costTotal.toLocaleString()}</span></div>
@@ -467,6 +488,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                         <div className="flex justify-between"><span className="text-muted-foreground">货代费</span><span>¥ {(cb?.forwarder ?? order.estimated_freight).toLocaleString()}</span></div>
                         <div className="flex justify-between"><span className="text-muted-foreground">装柜费</span><span>¥ {(cb?.container ?? order.estimated_customs_fee).toLocaleString()}</span></div>
                         <div className="flex justify-between"><span className="text-muted-foreground">物流费</span><span>¥ {(cb?.logistics ?? order.other_costs).toLocaleString()}</span></div>
+                        {(cb?.extras as unknown as { name: string; amount: number }[] | undefined)?.map((e, i) => (
+                          <div key={i} className="flex justify-between"><span className="text-muted-foreground">{e.name}</span><span>¥ {e.amount.toLocaleString()}</span></div>
+                        ))}
                         <Separator />
                         <div className="flex justify-between font-semibold"><span>成本合计</span><span>¥ {order.total_cost.toLocaleString()}</span></div>
                       </>
