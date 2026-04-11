@@ -195,7 +195,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
       if (error) { toast.error('保存失败: ' + error.message) }
       else {
-        setOrder({ ...order, total_revenue: revenueUsd, exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin })
+        setOrder({ ...order, total_revenue: revenueUsd, exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin, items: [costBreakdown] as unknown as typeof order.items })
         setEditMode(false)
         toast.success('预算已保存')
       }
