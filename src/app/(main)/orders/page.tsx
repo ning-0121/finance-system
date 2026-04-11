@@ -24,12 +24,26 @@ export default function OrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [search, setSearch] = useState('')
 
+  const [syncedMap, setSyncedMap] = useState<Record<string, { qmNo: string; internalNo: string }>>({})
+
   useEffect(() => {
     async function load() {
       setLoading(true)
       try {
         const data = await getBudgetOrders()
         setOrders(data)
+
+        // 加载synced_orders获取QM号和内部单号
+        const { createClient } = await import('@/lib/supabase/client')
+        const supabase = createClient()
+        const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null)
+        if (synced) {
+          const map: Record<string, { qmNo: string; internalNo: string }> = {}
+          synced.forEach((s: Record<string, unknown>) => {
+            if (s.budget_order_id) map[s.budget_order_id as string] = { qmNo: s.order_no as string || '', internalNo: s.style_no as string || '' }
+          })
+          setSyncedMap(map)
+        }
       } catch {
         toast.error('加载订单失败')
       } finally {
@@ -43,7 +57,9 @@ export default function OrdersPage() {
     const matchesStatus = statusFilter === 'all' || order.status === statusFilter
     const matchesSearch = search === '' ||
       order.order_no.toLowerCase().includes(search.toLowerCase()) ||
-      order.customer?.company?.toLowerCase().includes(search.toLowerCase())
+      order.customer?.company?.toLowerCase().includes(search.toLowerCase()) ||
+      (syncedMap[order.id]?.internalNo || '').toLowerCase().includes(search.toLowerCase()) ||
+      (syncedMap[order.id]?.qmNo || '').toLowerCase().includes(search.toLowerCase())
     return matchesStatus && matchesSearch
   })
 
@@ -108,6 +124,7 @@ export default function OrdersPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>订单号</TableHead>
+                    <TableHead>内部单号</TableHead>
                     <TableHead>客户</TableHead>
                     <TableHead className="text-right">总收入</TableHead>
                     <TableHead className="text-right">总成本</TableHead>
@@ -123,6 +140,10 @@ export default function OrdersPage() {
                     <TableRow key={order.id} className="cursor-pointer hover:bg-muted/50">
                       <TableCell>
                         <Link href={`/orders/${order.id}`} className="text-primary hover:underline font-medium">{order.order_no}</Link>
+                        {syncedMap[order.id]?.qmNo && <p className="text-[10px] text-muted-foreground">{syncedMap[order.id].qmNo}</p>}
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">
+                        {syncedMap[order.id]?.internalNo || '-'}
                       </TableCell>
                       <TableCell>
                         <div>
@@ -147,7 +168,7 @@ export default function OrdersPage() {
                   ))}
                   {filteredOrders.length === 0 && !loading && (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">没有找到匹配的订单</TableCell>
+                      <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">没有找到匹配的订单</TableCell>
                     </TableRow>
                   )}
                 </TableBody>
