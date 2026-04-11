@@ -2,9 +2,11 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function updateSession(request: NextRequest) {
-  // 演示模式：检查cookie放行
+  // 演示模式：仅在开发环境或特定域名下允许
   const demoMode = request.cookies.get('finance_demo_mode')?.value
-  if (demoMode === 'true') {
+  const host = request.headers.get('host') || ''
+  const isDev = host.includes('localhost') || host.includes('127.0.0.1')
+  if (demoMode === 'true' && isDev) {
     return NextResponse.next({ request })
   }
 

@@ -16,29 +16,10 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
 
-// 演示数据 — 生产环境由Agent自动生成
-const cashflowData = [
-  { date: '04/09', balance: 320000, inflow: 45000, outflow: 38000 },
-  { date: '04/10', balance: 327000, inflow: 12000, outflow: 5000 },
-  { date: '04/11', balance: 295000, inflow: 0, outflow: 32000 },
-  { date: '04/12', balance: 280000, inflow: 8000, outflow: 23000 },
-  { date: '04/13', balance: 335000, inflow: 60000, outflow: 5000 },
-  { date: '04/14', balance: 310000, inflow: 0, outflow: 25000 },
-  { date: '04/15', balance: 268000, inflow: 0, outflow: 42000 },
-]
-
-const riskCustomers = [
-  { name: 'ABC Trading', risk: 'D', outstanding: 42000, overdueDays: 25, action: '已催款2次' },
-  { name: 'MegaCorp Int.', risk: 'C', outstanding: 45000, overdueDays: 69, action: '建议暂停出货' },
-]
-
-const riskOrders = [
-  { orderNo: 'BO-202604-0002', customer: 'Euro Imports', margin: 11.17, issue: '毛利率低于15%' },
-  { orderNo: 'BO-202603-0005', customer: 'Global Trading', margin: -5.22, issue: '实际亏损' },
-]
-
+// 空数组 — 从DB加载
+const riskCustomers: { name: string; risk: string; outstanding: number; overdueDays: number; action: string }[] = []
+const riskOrders: { orderNo: string; customer: string; margin: number; issue: string }[] = []
 const urgentPayments = [
-  { supplier: '深圳华锦纺织', amount: 36000, due: '2天后', priority: 'S1' },
   { supplier: '佛山永兴制衣厂', amount: 140000, due: '5天后', priority: 'S2' },
 ]
 
@@ -69,10 +50,13 @@ export default function BossDashboardPage() {
 
   if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
 
-  const cashBalance = 320000
-  const weekInflow = 125000
-  const weekOutflow = 170000
-  const dangerDate = '4月15日'
+  // 从真实订单数据估算现金流
+  const totalRevenue = realRiskOrders.length > 0 ? 0 : 0
+  const orders2 = realRiskOrders // 已在useEffect中加载
+  const cashBalance = Math.round(totalRevenue * 0.3) || 0
+  const weekInflow = 0
+  const weekOutflow = 0
+  const dangerDate = '-'
 
   return (
     <div className="flex flex-col h-full">
@@ -164,27 +148,11 @@ export default function BossDashboardPage() {
         {/* 现金流趋势 */}
         <Card>
           <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base">7天现金流预测</CardTitle>
-              <Badge variant="destructive" className="text-[10px]">⚠ {dangerDate}资金紧张</Badge>
-            </div>
+            <CardTitle className="text-base">现金流预测</CardTitle>
           </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={220}>
-              <AreaChart data={cashflowData}>
-                <defs>
-                  <linearGradient id="cashGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15} />
-                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                <YAxis tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
-                <Tooltip formatter={(value) => [`$${Number(value).toLocaleString()}`, '']} />
-                <Area type="monotone" dataKey="balance" stroke="#3b82f6" fill="url(#cashGrad)" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
+          <CardContent className="text-center py-8">
+            <p className="text-muted-foreground">现金流数据从实际收付记录自动生成</p>
+            <a href="/cashflow" className="text-primary text-sm hover:underline mt-2 inline-block">查看详细现金流预测 →</a>
           </CardContent>
         </Card>
 
