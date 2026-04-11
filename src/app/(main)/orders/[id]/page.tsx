@@ -74,6 +74,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     invoiceCount: 0, paidCount: 0,
   })
   const [activeTab, setActiveTab] = useState('budget')
+  const [syncedInfo, setSyncedInfo] = useState<{ orderNo: string; internalNo: string; quantity: number; quantityUnit: string } | null>(null)
+  const [attachments, setAttachments] = useState<{ id: string; file_name: string; file_type: string; file_url: string | null; created_at: string }[]>([])
 
   useEffect(() => {
     async function load() {
@@ -81,6 +83,27 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       try {
         const orderData = await getBudgetOrderById(id)
         setOrder(orderData)
+
+        // 加载synced_order关联信息
+        const { createClient } = await import('@/lib/supabase/client')
+        const supabase = createClient()
+        const { data: synced } = await supabase.from('synced_orders').select('order_no, style_no, quantity, quantity_unit').eq('budget_order_id', id).limit(1)
+        if (synced?.length) {
+          setSyncedInfo({ orderNo: synced[0].order_no as string, internalNo: synced[0].style_no as string || '', quantity: synced[0].quantity as number || 0, quantityUnit: synced[0].quantity_unit as string || '件' })
+        }
+
+        // 加载关联附件
+        const { data: docs } = await supabase.from('uploaded_documents').select('id, file_name, file_type, file_url, created_at').ilike('matched_order', `%${id}%`).order('created_at', { ascending: false }).limit(20)
+        // 也从notes里的QM号查
+        const qmNo = synced?.[0]?.order_no
+        if (qmNo) {
+          const { data: docs2 } = await supabase.from('uploaded_documents').select('id, file_name, file_type, file_url, created_at').or(`file_name.ilike.%${synced[0].style_no}%,file_name.ilike.%${qmNo}%`).order('created_at', { ascending: false }).limit(20)
+          const allDocs = [...(docs || []), ...(docs2 || [])]
+          const unique = Array.from(new Map(allDocs.map(d => [d.id, d])).values())
+          setAttachments(unique as typeof attachments)
+        } else if (docs) {
+          setAttachments(docs as typeof attachments)
+        }
 
         // 这些查询可能失败（表为空等），不阻塞页面加载
         const [settlementData, logsData, subDocs, invoices, shippingDocs, orderSettlement] = await Promise.all([
@@ -116,6 +139,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   // 编辑模式 — 外贸服装成本细分
   const [editMode, setEditMode] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
+  const [editCurrencyMode, setEditCurrencyMode] = useState<'USD' | 'CNY'>('USD') // 收款币种
   const [editRate, setEditRate] = useState('')       // 结汇汇率
   const [editRevenue, setEditRevenue] = useState('')
   const [editFabric, setEditFabric] = useState('')      // 面料
@@ -133,7 +157,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       // 尝试从items中读取细分（之前保存的）
       const breakdown = (order.items as unknown as Record<string, unknown>[])?.[0]
       if (breakdown && breakdown._cost_breakdown) {
-        const cb = breakdown._cost_breakdown as Record<string, number>
+        const cb = breakdown._cost_breakdown as Record<string, number | string>
+        // 恢复币种模式
+        setEditCurrencyMode((cb._currency === 'CNY' && !cb._rate) ? 'CNY' : 'USD')
         setEditFabric((cb.fabric || 0).toString())
         setEditAccessory((cb.accessory || 0).toString())
         setEditProcessing((cb.processing || 0).toString())
@@ -155,9 +181,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const handleSaveEdit = async () => {
     if (!order) return
     setSavingEdit(true)
-    const revenueUsd = Number(editRevenue) || 0
-    const rate = Number(editRate) || order.exchange_rate || 7
-    const revenueCny = revenueUsd * rate
+    const revenueInput = Number(editRevenue) || 0
+    const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 7)
+    const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate
+    const revenueUsd = editCurrencyMode === 'CNY' ? revenueInput : revenueInput // DB stores the input value
     const fabric = Number(editFabric) || 0
     const accessory = Number(editAccessory) || 0
     const processing = Number(editProcessing) || 0
@@ -165,7 +192,6 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     const container = Number(editContainer) || 0
     const logistics = Number(editLogistics) || 0
     const totalCostCny = fabric + accessory + processing + forwarder + container + logistics
-    // 利润 = 收入USD × 汇率 - 成本CNY（全部人民币口径）
     const profitCny = revenueCny - totalCostCny
     const margin = revenueCny > 0 ? Math.round((profitCny / revenueCny) * 10000) / 100 : 0
     // 映射到数据库字段
@@ -178,14 +204,15 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     try {
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
-      const breakdownData = { fabric, accessory, processing, forwarder, container, logistics, _currency: 'CNY', _revenue_usd: revenueUsd, _rate: rate }
+      const breakdownData = { fabric, accessory, processing, forwarder, container, logistics, _currency: editCurrencyMode === 'CNY' ? 'CNY_DIRECT' : 'CNY', _revenue_input: revenueInput, _revenue_currency: editCurrencyMode, _rate: rate }
       // 保留原有产品明细，将cost breakdown存入第一个item或单独追加
       const existingItems = (order.items || []) as unknown as Record<string, unknown>[]
       const updatedItems = existingItems.length > 0
         ? [{ ...existingItems[0], _cost_breakdown: breakdownData }, ...existingItems.slice(1)]
         : [{ _cost_breakdown: breakdownData }]
       const { error } = await supabase.from('budget_orders').update({
-        total_revenue: revenueUsd,
+        total_revenue: revenueInput,
+        currency: editCurrencyMode === 'CNY' ? 'CNY' : 'USD',
         exchange_rate: rate,
         target_purchase_price: purchase,
         estimated_freight: freight,
@@ -200,7 +227,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
       if (error) { toast.error('保存失败: ' + error.message) }
       else {
-        setOrder({ ...order, total_revenue: revenueUsd, exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin, items: updatedItems as unknown as typeof order.items })
+        setOrder({ ...order, total_revenue: revenueInput, currency: editCurrencyMode === 'CNY' ? 'CNY' : 'USD', exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin, items: updatedItems as unknown as typeof order.items })
         setEditMode(false)
         toast.success('预算已保存')
       }
@@ -335,18 +362,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   <CardTitle className="text-sm">基本信息</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm">
+                  {syncedInfo && (
+                    <>
+                      <div className="flex justify-between"><span className="text-muted-foreground">内部单号</span><span className="font-bold text-primary">{syncedInfo.internalNo}</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground">节拍器号</span><span className="font-mono text-xs">{syncedInfo.orderNo}</span></div>
+                      {syncedInfo.quantity > 0 && <div className="flex justify-between"><span className="text-muted-foreground">数量</span><span className="font-medium">{syncedInfo.quantity.toLocaleString()} {syncedInfo.quantityUnit}</span></div>}
+                      <Separator />
+                    </>
+                  )}
                   <div className="flex justify-between"><span className="text-muted-foreground">客户</span><span className="font-medium">{order.customer?.company}</span></div>
                   <div className="flex justify-between"><span className="text-muted-foreground">国家</span><span>{order.customer?.country}</span></div>
                   <div className="flex justify-between"><span className="text-muted-foreground">下单日期</span><span>{order.order_date}</span></div>
                   <div className="flex justify-between"><span className="text-muted-foreground">交货日期</span><span>{order.delivery_date || '-'}</span></div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">币种</span><span>{order.currency}</span></div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">汇率</span><span>{order.exchange_rate}</span></div>
-                  {order.notes && (
-                    <>
-                      <Separator />
-                      <div><span className="text-muted-foreground">备注</span><p className="mt-1">{order.notes}</p></div>
-                    </>
-                  )}
                 </CardContent>
               </Card>
 
@@ -362,21 +389,36 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 <CardContent className="space-y-3 text-sm">
                   {editMode ? (
                     (() => {
-                      const rate = Number(editRate) || order.exchange_rate || 7
-                      const revenueCny = (Number(editRevenue) || 0) * rate
+                      const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 7)
+                      const revenueInput = Number(editRevenue) || 0
+                      const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate
                       const costTotal = [editFabric, editAccessory, editProcessing, editForwarder, editContainer, editLogistics].reduce((s, v) => s + (Number(v) || 0), 0)
                       const profitCny = revenueCny - costTotal
                       const marginPct = revenueCny > 0 ? (profitCny / revenueCny * 100).toFixed(1) : '0'
                       return <div className="space-y-3">
+                        {/* 收款币种选择 */}
                         <div className="space-y-1">
-                          <Label className="text-xs font-semibold text-primary">合同金额 (USD)</Label>
+                          <Label className="text-xs font-semibold">客户付款币种</Label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button type="button" size="sm" variant={editCurrencyMode === 'USD' ? 'default' : 'outline'} className="text-xs" onClick={() => setEditCurrencyMode('USD')}>
+                              $ 美金（需结汇）
+                            </Button>
+                            <Button type="button" size="sm" variant={editCurrencyMode === 'CNY' ? 'default' : 'outline'} className="text-xs" onClick={() => setEditCurrencyMode('CNY')}>
+                              ¥ 人民币（直收）
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs font-semibold text-primary">合同金额 ({editCurrencyMode === 'CNY' ? 'CNY' : 'USD'})</Label>
                           <Input type="number" step="0.01" value={editRevenue} onChange={e => setEditRevenue(e.target.value)} className="border-primary/30" />
                         </div>
-                        <div className="space-y-1">
-                          <Label className="text-xs font-semibold text-amber-600">结汇汇率</Label>
-                          <Input type="number" step="0.01" value={editRate} onChange={e => setEditRate(e.target.value)} className="border-amber-300" />
-                          <p className="text-[10px] text-muted-foreground">折合人民币 ¥{revenueCny.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
-                        </div>
+                        {editCurrencyMode === 'USD' && (
+                          <div className="space-y-1">
+                            <Label className="text-xs font-semibold text-amber-600">结汇汇率</Label>
+                            <Input type="number" step="0.01" value={editRate} onChange={e => setEditRate(e.target.value)} className="border-amber-300" />
+                            <p className="text-[10px] text-muted-foreground">折合人民币 ¥{revenueCny.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                          </div>
+                        )}
                         <Separator />
                         <p className="text-[10px] text-muted-foreground font-medium">成本明细 (CNY 人民币)</p>
                         <div className="space-y-1"><Label className="text-xs">面料 (¥)</Label><Input type="number" step="0.01" value={editFabric} onChange={e => setEditFabric(e.target.value)} /></div>
@@ -402,12 +444,21 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   ) : (
                     (() => {
                       const bd = (order.items as unknown as Record<string, unknown>[])?.[0]
-                      const cb = bd?._cost_breakdown as Record<string, number> | undefined
-                      const rate = order.exchange_rate || 1
-                      const revenueCny = order.total_revenue * rate
+                      const cb = bd?._cost_breakdown as Record<string, number | string> | undefined
+                      const isCnyDirect = order.currency === 'CNY' || cb?._revenue_currency === 'CNY'
+                      const rate = isCnyDirect ? 1 : (order.exchange_rate || 1)
+                      const revenueCny = isCnyDirect ? order.total_revenue : order.total_revenue * rate
                       return <>
-                        <div className="flex justify-between"><span className="text-muted-foreground">合同金额</span><span className="font-medium">$ {order.total_revenue.toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">汇率 {rate} 结汇</span><span className="font-medium text-primary">¥ {revenueCny.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">合同金额</span>
+                          <span className="font-medium">{isCnyDirect ? '¥' : '$'} {order.total_revenue.toLocaleString()}</span>
+                        </div>
+                        {!isCnyDirect && (
+                          <div className="flex justify-between"><span className="text-muted-foreground">汇率 {rate} 结汇</span><span className="font-medium text-primary">¥ {revenueCny.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></div>
+                        )}
+                        {isCnyDirect && (
+                          <div className="flex justify-between"><span className="text-muted-foreground">收款方式</span><span className="font-medium text-green-600">人民币直收</span></div>
+                        )}
                         <Separator />
                         <p className="text-[10px] text-muted-foreground font-medium">成本明细 (CNY)</p>
                         <div className="flex justify-between"><span className="text-muted-foreground">面料</span><span className="font-medium">¥ {(cb?.fabric ?? order.target_purchase_price).toLocaleString()}</span></div>
@@ -436,7 +487,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   <div className="grid grid-cols-2 gap-3">
                     <div className="text-center p-3 rounded-lg bg-blue-50">
                       <p className="text-xs text-muted-foreground">合同金额</p>
-                      <p className="text-sm font-semibold text-blue-700">$ {order.total_revenue.toLocaleString()}</p>
+                      <p className="text-sm font-semibold text-blue-700">{order.currency === 'CNY' ? '¥' : '$'} {order.total_revenue.toLocaleString()}</p>
                     </div>
                     <div className="text-center p-3 rounded-lg bg-amber-50">
                       <p className="text-xs text-muted-foreground">毛利率</p>
@@ -518,10 +569,44 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     ))}
                     <TableRow className="font-semibold bg-muted/50">
                       <TableCell colSpan={5} className="text-right">合计</TableCell>
-                      <TableCell className="text-right">{order.currency} {order.total_revenue.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">{order.currency === 'CNY' ? '¥' : '$'} {order.total_revenue.toLocaleString()}</TableCell>
                     </TableRow>
                   </TableBody>
                 </Table>
+              </CardContent>
+            </Card>
+
+            {/* 附件区域 */}
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm">订单附件</CardTitle>
+                  <Link href="/documents">
+                    <Button size="sm" variant="outline" className="h-7 text-xs">上传附件</Button>
+                  </Link>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {attachments.length > 0 ? (
+                  <div className="space-y-2">
+                    {attachments.map(doc => (
+                      <div key={doc.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate">{doc.file_name}</p>
+                            <p className="text-[10px] text-muted-foreground">{new Date(doc.created_at).toLocaleDateString('zh-CN')}</p>
+                          </div>
+                        </div>
+                        <Link href={`/documents/${doc.id}`}>
+                          <Button size="sm" variant="ghost" className="h-7 text-xs">查看</Button>
+                        </Link>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-center text-sm text-muted-foreground py-4">暂无附件，可在文档中心上传PO、成本核算单等</p>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
