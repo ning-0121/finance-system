@@ -23,7 +23,7 @@ import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canViewApprovalQueue, getRoleLabel } from '@/lib/auth/permissions'
 import { UserSwitcher } from '@/components/layout/UserSwitcher'
 import { useState, useEffect } from 'react'
-import { ClipboardCheck, ScrollText } from 'lucide-react'
+import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale } from 'lucide-react'
 
 const baseNavigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
@@ -39,6 +39,12 @@ const baseNavigation = [
   { name: '风险地图', href: '/risks', icon: BarChart3 },
   { name: '现金流预测', href: '/cashflow', icon: BarChart3 },
   { name: '老板驾驶舱', href: '/dashboard/boss', icon: BarChart3 },
+  // 总账模块
+  { name: '科目表', href: '/gl/accounts', icon: BookOpen },
+  { name: '记账凭证', href: '/gl/journal', icon: FileText },
+  { name: '试算平衡表', href: '/gl/trial-balance', icon: Scale },
+  { name: '利润表', href: '/gl/profit-loss', icon: BarChart3 },
+  { name: '会计期间', href: '/gl/periods', icon: Calendar },
 ]
 
 export function Sidebar() {
