@@ -28,6 +28,8 @@ export default function BossDashboardPage() {
   const [realRiskCustomers, setRealRiskCustomers] = useState<Record<string, unknown>[]>([])
   const [realRiskOrders, setRealRiskOrders] = useState<{ orderNo: string; customer: string; margin: number; issue: string }[]>([])
   const [riskEventCount, setRiskEventCount] = useState(0)
+  const [allOrders, setAllOrders] = useState<Awaited<ReturnType<typeof getBudgetOrders>>>([])
+
 
   useEffect(() => {
     async function load() {
@@ -36,12 +38,13 @@ export default function BossDashboardPage() {
         getBudgetOrders(),
         getPendingRiskEvents(),
       ])
+      setAllOrders(orders)
       setRealRiskCustomers(customers.length > 0 ? customers : riskCustomers.map(c => c as Record<string, unknown>))
-      setRealRiskOrders(orders.filter(o => o.estimated_margin < 10).map(o => ({
+      const lowMarginOrders = orders.filter(o => o.estimated_margin < 10).map(o => ({
         orderNo: o.order_no, customer: o.customer?.company || '', margin: o.estimated_margin,
         issue: o.estimated_margin < 0 ? '实际亏损' : `毛利率${o.estimated_margin}%低于10%`,
-      })).slice(0, 5))
-      if (realRiskOrders.length === 0) setRealRiskOrders(riskOrders)
+      })).slice(0, 5)
+      setRealRiskOrders(lowMarginOrders.length > 0 ? lowMarginOrders : riskOrders)
       setRiskEventCount(risks.length)
       setLoading(false)
     }
@@ -51,12 +54,16 @@ export default function BossDashboardPage() {
   if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
 
   // 从真实订单数据估算现金流
-  const totalRevenue = realRiskOrders.length > 0 ? 0 : 0
-  const orders2 = realRiskOrders // 已在useEffect中加载
-  const cashBalance = Math.round(totalRevenue * 0.3) || 0
-  const weekInflow = 0
-  const weekOutflow = 0
-  const dangerDate = '-'
+  const totalRevenue = allOrders.reduce((s, o) => s + o.total_revenue, 0)
+  const totalCost = allOrders.reduce((s, o) => s + o.total_cost, 0)
+  const totalProfit = totalRevenue - totalCost
+  // 估算：已收回收入的60%作为当前现金余额
+  const cashBalance = Math.round(totalRevenue * 0.6 - totalCost * 0.8)
+  // 估算本周收入和支出
+  const avgWeeklyRevenue = allOrders.length > 0 ? Math.round(totalRevenue / Math.max(allOrders.length, 1) * 2) : 0
+  const avgWeeklyExpense = allOrders.length > 0 ? Math.round(totalCost / Math.max(allOrders.length, 1) * 2) : 0
+  const weekInflow = avgWeeklyRevenue
+  const weekOutflow = avgWeeklyExpense
 
   return (
     <div className="flex flex-col h-full">
@@ -114,8 +121,8 @@ export default function BossDashboardPage() {
                 <div className="p-2 rounded-lg bg-orange-50"><Users className="h-4 w-4 text-orange-600" /></div>
               </div>
               <p className="text-xs text-muted-foreground">高风险客户</p>
-              <p className="text-2xl font-bold">{riskCustomers.length}</p>
-              <p className="text-xs text-muted-foreground mt-2">{riskCustomers.map(c => c.name).join('、')}</p>
+              <p className="text-2xl font-bold">{realRiskCustomers.length}</p>
+              <p className="text-xs text-muted-foreground mt-2">{realRiskCustomers.map(c => (c as Record<string, unknown>).name as string || '').filter(Boolean).join('、') || '暂无'}</p>
             </CardContent>
           </Card>
 
@@ -126,8 +133,8 @@ export default function BossDashboardPage() {
                 <div className="p-2 rounded-lg bg-purple-50"><TrendingDown className="h-4 w-4 text-purple-600" /></div>
               </div>
               <p className="text-xs text-muted-foreground">利润异常订单</p>
-              <p className="text-2xl font-bold">{riskOrders.length}</p>
-              <p className="text-xs text-muted-foreground mt-2">1笔亏损，1笔低利润</p>
+              <p className="text-2xl font-bold">{realRiskOrders.length}</p>
+              <p className="text-xs text-muted-foreground mt-2">{realRiskOrders.length > 0 ? `${realRiskOrders.filter(o => o.margin < 0).length}笔亏损，${realRiskOrders.filter(o => o.margin >= 0).length}笔低利润` : '暂无异常'}</p>
             </CardContent>
           </Card>
 
