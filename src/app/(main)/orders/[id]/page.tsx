@@ -9,6 +9,8 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Table,
   TableBody,
@@ -40,6 +42,7 @@ import {
   TrendingUp,
   TrendingDown,
   AlertTriangle,
+  Loader2,
 } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
@@ -106,6 +109,66 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   }, [id])
   const [showDialog, setShowDialog] = useState<'approve' | 'reject' | null>(null)
   const [comment, setComment] = useState('')
+
+  // 编辑模式
+  const [editMode, setEditMode] = useState(false)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [editRevenue, setEditRevenue] = useState('')
+  const [editPurchase, setEditPurchase] = useState('')
+  const [editFreight, setEditFreight] = useState('')
+  const [editCommission, setEditCommission] = useState('')
+  const [editCustoms, setEditCustoms] = useState('')
+  const [editOther, setEditOther] = useState('')
+
+  // 进入编辑模式时预填当前值
+  useEffect(() => {
+    if (editMode && order) {
+      setEditRevenue(order.total_revenue.toString())
+      setEditPurchase(order.target_purchase_price.toString())
+      setEditFreight(order.estimated_freight.toString())
+      setEditCommission(order.estimated_commission.toString())
+      setEditCustoms(order.estimated_customs_fee.toString())
+      setEditOther(order.other_costs.toString())
+    }
+  }, [editMode, order])
+
+  const handleSaveEdit = async () => {
+    if (!order) return
+    setSavingEdit(true)
+    const revenue = Number(editRevenue) || 0
+    const purchase = Number(editPurchase) || 0
+    const freight = Number(editFreight) || 0
+    const commission = Number(editCommission) || 0
+    const customs = Number(editCustoms) || 0
+    const other = Number(editOther) || 0
+    const totalCost = purchase + freight + commission + customs + other
+    const profit = revenue - totalCost
+    const margin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0
+
+    try {
+      const { createClient } = await import('@/lib/supabase/client')
+      const supabase = createClient()
+      const { error } = await supabase.from('budget_orders').update({
+        total_revenue: revenue,
+        target_purchase_price: purchase,
+        estimated_freight: freight,
+        estimated_commission: commission,
+        estimated_customs_fee: customs,
+        other_costs: other,
+        total_cost: totalCost,
+        estimated_profit: profit,
+        estimated_margin: margin,
+      }).eq('id', order.id)
+
+      if (error) { toast.error('保存失败: ' + error.message) }
+      else {
+        setOrder({ ...order, total_revenue: revenue, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCost, estimated_profit: profit, estimated_margin: margin })
+        setEditMode(false)
+        toast.success('预算已保存')
+      }
+    } catch { toast.error('保存失败') }
+    setSavingEdit(false)
+  }
 
   if (loading) {
     return (
@@ -250,15 +313,42 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               </Card>
 
               <Card>
-                <CardHeader className="pb-3"><CardTitle className="text-sm">成本构成</CardTitle></CardHeader>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm">成本构成</CardTitle>
+                    {(order.status === 'draft' || order.status === 'rejected') && !editMode && (
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setEditMode(true)}>编辑</Button>
+                    )}
+                  </div>
+                </CardHeader>
                 <CardContent className="space-y-3 text-sm">
-                  <div className="flex justify-between"><span className="text-muted-foreground">目标采购价</span><span className="font-medium">{order.currency} {order.target_purchase_price.toLocaleString()}</span></div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">预估运费</span><span>{order.currency} {order.estimated_freight.toLocaleString()}</span></div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">预估佣金</span><span>{order.currency} {order.estimated_commission.toLocaleString()}</span></div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">预估报关费</span><span>{order.currency} {order.estimated_customs_fee.toLocaleString()}</span></div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">其他费用</span><span>{order.currency} {order.other_costs.toLocaleString()}</span></div>
-                  <Separator />
-                  <div className="flex justify-between font-semibold"><span>总成本</span><span>{order.currency} {order.total_cost.toLocaleString()}</span></div>
+                  {editMode ? (
+                    <div className="space-y-3">
+                      <div className="space-y-1"><Label className="text-xs">总收入 ({order.currency})</Label><Input type="number" step="0.01" value={editRevenue} onChange={e => setEditRevenue(e.target.value)} /></div>
+                      <div className="space-y-1"><Label className="text-xs">目标采购价 ({order.currency})</Label><Input type="number" step="0.01" value={editPurchase} onChange={e => setEditPurchase(e.target.value)} /></div>
+                      <div className="space-y-1"><Label className="text-xs">预估运费 ({order.currency})</Label><Input type="number" step="0.01" value={editFreight} onChange={e => setEditFreight(e.target.value)} /></div>
+                      <div className="space-y-1"><Label className="text-xs">预估佣金 ({order.currency})</Label><Input type="number" step="0.01" value={editCommission} onChange={e => setEditCommission(e.target.value)} /></div>
+                      <div className="space-y-1"><Label className="text-xs">预估报关费 ({order.currency})</Label><Input type="number" step="0.01" value={editCustoms} onChange={e => setEditCustoms(e.target.value)} /></div>
+                      <div className="space-y-1"><Label className="text-xs">其他费用 ({order.currency})</Label><Input type="number" step="0.01" value={editOther} onChange={e => setEditOther(e.target.value)} /></div>
+                      <Separator />
+                      <div className="flex gap-2">
+                        <Button size="sm" className="flex-1" disabled={savingEdit} onClick={handleSaveEdit}>
+                          {savingEdit ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}保存
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => setEditMode(false)}>取消</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex justify-between"><span className="text-muted-foreground">目标采购价</span><span className="font-medium">{order.currency} {order.target_purchase_price.toLocaleString()}</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground">预估运费</span><span>{order.currency} {order.estimated_freight.toLocaleString()}</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground">预估佣金</span><span>{order.currency} {order.estimated_commission.toLocaleString()}</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground">预估报关费</span><span>{order.currency} {order.estimated_customs_fee.toLocaleString()}</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground">其他费用</span><span>{order.currency} {order.other_costs.toLocaleString()}</span></div>
+                      <Separator />
+                      <div className="flex justify-between font-semibold"><span>总成本</span><span>{order.currency} {order.total_cost.toLocaleString()}</span></div>
+                    </>
+                  )}
                 </CardContent>
               </Card>
 
