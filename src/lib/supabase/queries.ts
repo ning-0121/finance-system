@@ -367,9 +367,44 @@ export async function getProfitSummary(): Promise<ProfitSummary> {
   }
 }
 
-export function getMonthlyProfitData() {
-  // TODO: 从Supabase聚合月度数据
-  return demoMonthlyProfit
+export async function getMonthlyProfitData() {
+  if (!isSupabaseConfigured()) return demoMonthlyProfit
+  try {
+    const supabase = createClient()
+    const { data: orders } = await supabase
+      .from('budget_orders')
+      .select('order_date, total_revenue, total_cost, estimated_profit, estimated_margin')
+      .not('order_date', 'is', null)
+      .order('order_date')
+    if (!orders || orders.length === 0) return demoMonthlyProfit
+
+    // 按月聚合
+    const monthMap = new Map<string, { revenue: number; cost: number; profit: number; count: number }>()
+    for (const o of orders) {
+      const month = (o.order_date as string).substring(0, 7) // YYYY-MM
+      const existing = monthMap.get(month) || { revenue: 0, cost: 0, profit: 0, count: 0 }
+      existing.revenue += o.total_revenue as number
+      existing.cost += o.total_cost as number
+      existing.profit += o.estimated_profit as number
+      existing.count += 1
+      monthMap.set(month, existing)
+    }
+
+    const result = Array.from(monthMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-6) // 最近6个月
+      .map(([month, d]) => ({
+        month,
+        revenue: Math.round(d.revenue),
+        cost: Math.round(d.cost),
+        profit: Math.round(d.profit),
+        margin: d.revenue > 0 ? Math.round(d.profit / d.revenue * 10000) / 100 : 0,
+      }))
+
+    return result.length > 0 ? result : demoMonthlyProfit
+  } catch {
+    return demoMonthlyProfit
+  }
 }
 
 // ============================================================

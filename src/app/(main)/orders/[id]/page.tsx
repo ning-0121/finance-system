@@ -43,6 +43,9 @@ import {
   TrendingDown,
   AlertTriangle,
   Loader2,
+  Ship,
+  Calculator,
+  Receipt,
 } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
@@ -420,6 +423,36 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 </CardContent>
               </Card>
             </div>
+
+            {/* 快捷操作入口 */}
+            {order.status === 'approved' && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Link href={`/orders/${order.id}/shipping`}>
+                  <Card className="hover:shadow-md transition-shadow cursor-pointer border-blue-200 hover:border-blue-400">
+                    <CardContent className="p-4 flex items-center gap-3">
+                      <div className="p-2 rounded-lg bg-blue-50"><Ship className="h-5 w-5 text-blue-600" /></div>
+                      <div><p className="text-sm font-medium">出货管理</p><p className="text-xs text-muted-foreground">PI/CI/装箱单/报关</p></div>
+                    </CardContent>
+                  </Card>
+                </Link>
+                <Link href={`/orders/${order.id}/settlement`}>
+                  <Card className="hover:shadow-md transition-shadow cursor-pointer border-green-200 hover:border-green-400">
+                    <CardContent className="p-4 flex items-center gap-3">
+                      <div className="p-2 rounded-lg bg-green-50"><Calculator className="h-5 w-5 text-green-600" /></div>
+                      <div><p className="text-sm font-medium">订单决算</p><p className="text-xs text-muted-foreground">实际成本 vs 预算</p></div>
+                    </CardContent>
+                  </Card>
+                </Link>
+                <Link href="/payments">
+                  <Card className="hover:shadow-md transition-shadow cursor-pointer border-amber-200 hover:border-amber-400">
+                    <CardContent className="p-4 flex items-center gap-3">
+                      <div className="p-2 rounded-lg bg-amber-50"><Receipt className="h-5 w-5 text-amber-600" /></div>
+                      <div><p className="text-sm font-medium">应付管理</p><p className="text-xs text-muted-foreground">付款审批与执行</p></div>
+                    </CardContent>
+                  </Card>
+                </Link>
+              </div>
+            )}
 
             <Card>
               <CardHeader className="pb-3"><CardTitle className="text-sm">产品明细</CardTitle></CardHeader>

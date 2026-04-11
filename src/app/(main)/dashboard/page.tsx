@@ -30,16 +30,18 @@ export default function DashboardPage() {
   const [trustSummary, setTrustSummary] = useState<{ distribution: Record<string, number>; recentDegrades: Record<string, unknown>[] }>({ distribution: {}, recentDegrades: [] })
   const [loading, setLoading] = useState(true)
   const [drillDown, setDrillDown] = useState<string | null>(null)
-  const monthlyProfit = getMonthlyProfitData()
+  const [monthlyProfit, setMonthlyProfit] = useState<{ month: string; revenue: number; cost: number; profit: number; margin: number }[]>([])
 
   useEffect(() => {
     async function load() {
-      const [ordersData, alertsData, summaryData, risks, actions, trust] = await Promise.all([
+      const [ordersData, alertsData, summaryData, risks, actions, trust, monthly] = await Promise.all([
         getBudgetOrders(), getAlerts(), getProfitSummary(),
         getPendingRiskEvents(), getPendingDocumentActions(), getTrustScoreSummary(),
+        getMonthlyProfitData(),
       ])
       setOrders(ordersData); setAlerts(alertsData); setSummary(summaryData)
       setRiskEvents(risks); setPendingActions(actions); setTrustSummary(trust)
+      setMonthlyProfit(monthly)
       setLoading(false)
     }
     load()

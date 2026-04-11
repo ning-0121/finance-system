@@ -28,22 +28,33 @@ export default function DocumentsPage() {
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [filter, setFilter] = useState('all')
+  const [totalCount, setTotalCount] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const PAGE_SIZE = 50
+
+  const loadDocs = useCallback(async (offset = 0, append = false) => {
+    try {
+      const supabase = createClient()
+      const { data, count } = await supabase
+        .from('uploaded_documents')
+        .select('*', { count: 'exact' })
+        .order('created_at', { ascending: false })
+        .range(offset, offset + PAGE_SIZE - 1)
+      if (data) {
+        if (append) setDocs(prev => [...prev, ...(data as UploadedDocument[])])
+        else setDocs(data as UploadedDocument[])
+      }
+      if (count != null) setTotalCount(count)
+    } catch { /* empty */ }
+  }, [])
 
   useEffect(() => {
     async function load() {
-      try {
-        const supabase = createClient()
-        const { data } = await supabase
-          .from('uploaded_documents')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(50)
-        if (data) setDocs(data as UploadedDocument[])
-      } catch { /* demo */ }
+      await loadDocs(0, false)
       setLoading(false)
     }
     load()
-  }, [])
+  }, [loadDocs])
 
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true)
@@ -64,9 +75,7 @@ export default function DocumentsPage() {
           description: `${DOC_CATEGORY_LABELS[result.doc_category as DocCategory] || '未知类型'} (${Math.round((result.confidence || 0) * 100)}%置信度)`,
         })
         // 刷新列表
-        const supabase = createClient()
-        const { data } = await supabase.from('uploaded_documents').select('*').order('created_at', { ascending: false }).limit(50)
-        if (data) setDocs(data as UploadedDocument[])
+        await loadDocs(0, false)
       }
     } catch {
       toast.error('上传失败')
@@ -124,7 +133,7 @@ export default function DocumentsPage() {
         <div className="flex items-center justify-between">
           <Tabs value={filter} onValueChange={setFilter}>
             <TabsList>
-              <TabsTrigger value="all">全部 ({docs.length})</TabsTrigger>
+              <TabsTrigger value="all">全部 ({totalCount || docs.length})</TabsTrigger>
               <TabsTrigger value="extracted" className={pendingCount > 0 ? 'text-amber-600' : ''}>
                 待确认 ({pendingCount})
               </TabsTrigger>
@@ -217,6 +226,23 @@ export default function DocumentsPage() {
             )}
           </CardContent>
         </Card>
+
+        {docs.length < totalCount && (
+          <div className="text-center">
+            <Button
+              variant="outline"
+              disabled={loadingMore}
+              onClick={async () => {
+                setLoadingMore(true)
+                await loadDocs(docs.length, true)
+                setLoadingMore(false)
+              }}
+            >
+              {loadingMore ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}
+              加载更多（已显示 {docs.length}/{totalCount}）
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )
