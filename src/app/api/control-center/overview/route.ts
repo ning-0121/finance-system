@@ -9,6 +9,7 @@ import { getClosingStatus } from '@/lib/engines/closing-engine'
 import { getRecentEvents } from '@/lib/engines/timeline-engine'
 import { generateExplanations, type OverviewData } from '@/lib/engines/explanation-engine'
 import { getPendingRiskEvents, getBudgetOrders, getProfitSummary, getMonthlyProfitData } from '@/lib/supabase/queries'
+import { getPendingTasks } from '@/lib/engines/orchestration-engine'
 
 export async function GET() {
   try {
@@ -30,6 +31,7 @@ export async function GET() {
       allOrders,
       profitSummary,
       monthlyProfit,
+      pendingTasks,
     ] = await Promise.all([
       getAuditFindings({ status: 'open' }),
       getActiveFreezes(),
@@ -40,6 +42,7 @@ export async function GET() {
       getBudgetOrders(),
       getProfitSummary(),
       getMonthlyProfitData(),
+      getPendingTasks().catch(() => []),
     ])
 
     // ---- 计算聚合指标 ----
@@ -180,6 +183,12 @@ export async function GET() {
         total: closingTotal,
       },
       freezes: activeFreezes.slice(0, 10),
+      tasks: {
+        pending: pendingTasks.filter((t: Record<string, unknown>) => t.status === 'pending').length,
+        escalated: pendingTasks.filter((t: Record<string, unknown>) => t.status === 'escalated').length,
+        blocked: pendingTasks.filter((t: Record<string, unknown>) => t.status === 'blocked').length,
+        items: pendingTasks.slice(0, 10),
+      },
     })
   } catch (error) {
     console.error('[overview GET]', error)

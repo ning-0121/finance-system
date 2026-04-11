@@ -244,6 +244,64 @@ ${suppliers.map((s: Record<string, unknown>) => `- ${s.supplier_name} [${s.risk_
 ${cashflow.map((c: Record<string, unknown>) => `- ${c.forecast_date}: 入${c.expected_inflow} 出${c.expected_outflow} 余额${c.expected_cash_balance} [${c.warning_level}]`).join('\n')}`)
       }
     }
+    // 7. 智能任务（编排系统产生的待办）
+    if (question.includes('任务') || question.includes('待办') || question.includes('处理') || question.includes('超时') || question.includes('升级')) {
+      const { data: tasks } = await supabase
+        .from('orchestration_tasks')
+        .select('title, severity, status, source_module, explanation, assignee_role, due_date')
+        .in('status', ['pending', 'in_progress', 'blocked', 'escalated'])
+        .order('created_at', { ascending: false })
+        .limit(15)
+
+      if (tasks?.length) {
+        sections.push(`### 待处理任务 (${tasks.length}条)
+${tasks.map((t: Record<string, unknown>) => `- [${t.severity}/${t.status}] ${t.title}\n  来源: ${t.source_module} | 负责: ${t.assignee_role} | ${t.explanation || ''}`).join('\n')}`)
+      }
+    }
+
+    // 8. 冻结状态
+    if (question.includes('冻结') || question.includes('freeze') || question.includes('暂停') || question.includes('为什么')) {
+      const { data: freezes } = await supabase
+        .from('entity_freezes')
+        .select('entity_type, entity_name, freeze_reason, freeze_type, frozen_at, status')
+        .eq('status', 'frozen')
+        .order('frozen_at', { ascending: false })
+        .limit(10)
+
+      if (freezes?.length) {
+        sections.push(`### 当前冻结实体 (${freezes.length}个)
+${freezes.map((f: Record<string, unknown>) => `- ${f.entity_type}「${f.entity_name}」: ${f.freeze_reason} (${f.freeze_type}, ${new Date(f.frozen_at as string).toLocaleDateString('zh-CN')})`).join('\n')}`)
+      }
+    }
+
+    // 9. 信任评分
+    if (question.includes('信任') || question.includes('trust') || question.includes('评分') || question.includes('降级')) {
+      const { data: trust } = await supabase
+        .from('automation_trust_scores')
+        .select('subject_type, subject_id, trust_level, trust_score, trend, last_downgrade_reason')
+        .order('trust_score')
+        .limit(10)
+
+      if (trust?.length) {
+        sections.push(`### 低信任实体 (${trust.length}个)
+${trust.map((t: Record<string, unknown>) => `- ${t.subject_type}/${t.subject_id}: ${t.trust_level} (${t.trust_score}分) ${t.trend || ''} ${t.last_downgrade_reason ? '降级原因: ' + t.last_downgrade_reason : ''}`).join('\n')}`)
+      }
+    }
+
+    // 10. 稽核异常
+    if (question.includes('异常') || question.includes('稽核') || question.includes('审计') || question.includes('重复')) {
+      const { data: findings } = await supabase
+        .from('audit_findings')
+        .select('finding_type, severity, title, description, entity_type, status')
+        .eq('status', 'open')
+        .order('created_at', { ascending: false })
+        .limit(10)
+
+      if (findings?.length) {
+        sections.push(`### 稽核异常 (${findings.length}条)
+${findings.map((f: Record<string, unknown>) => `- [${f.severity}] ${f.title}: ${f.description}`).join('\n')}`)
+      }
+    }
   } catch {
     sections.push('（数据库查询失败，使用有限数据回答）')
   }
