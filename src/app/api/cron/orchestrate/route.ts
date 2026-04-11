@@ -5,7 +5,7 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
-import { runOrchestration, escalateOverdueTasks } from '@/lib/engines/orchestration-engine'
+import { runOrchestration, escalateOverdueTasks, getAutomationHealth } from '@/lib/engines/orchestration-engine'
 import { generateDailyReport, formatReportAsMarkdown } from '@/lib/engines/report-engine'
 import { recordTimelineEvent } from '@/lib/engines/timeline-engine'
 
@@ -25,8 +25,13 @@ export async function GET(request: Request) {
       }
     }
 
+    // 支持dry-run模式
+    const url = new URL(request.url)
+    const isDryRun = url.searchParams.get('dryRun') === 'true'
+    const executionId = `cron-${Date.now()}`
+
     // 1. Run orchestration — evaluate all automation rules
-    const orchestrationResult = await runOrchestration()
+    const orchestrationResult = await runOrchestration({ dryRun: isDryRun, executionId, actor: 'cron' })
 
     // 2. Escalate overdue tasks
     const escalatedCount = await escalateOverdueTasks()
@@ -56,9 +61,14 @@ export async function GET(request: Request) {
       actorName: 'cron/orchestrate',
     })
 
-    // 5. Return JSON summary
+    // 5. Get automation health score
+    const health = await getAutomationHealth()
+
+    // 6. Return JSON summary
     return NextResponse.json({
       success: true,
+      dryRun: isDryRun,
+      executionId,
       timestamp: new Date().toISOString(),
       durationMs,
       orchestration: {
@@ -78,6 +88,7 @@ export async function GET(request: Request) {
         topExplanation: dailyReport.explanations[0]?.text || null,
       },
       reportMarkdown,
+      automationHealth: health,
     })
   } catch (error) {
     const durationMs = Date.now() - startTime

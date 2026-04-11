@@ -6,12 +6,13 @@
 
 import { createClient } from '@/lib/supabase/client'
 import { recordTimelineEvent } from './timeline-engine'
-import { freezeEntity } from './freeze-engine'
+import { freezeEntity, isEntityFrozen } from './freeze-engine'
 import { downgradeTrust, getTrustDashboard } from './trust-engine'
 import { getAuditFindings } from './audit-engine'
 import { getActiveFreezes } from './freeze-engine'
 import { getClosingStatus } from './closing-engine'
 import { getBudgetOrders, getPendingRiskEvents } from '@/lib/supabase/queries'
+import { checkOverride } from './override-engine'
 
 // --------------- Types ---------------
 
@@ -36,91 +37,237 @@ interface OrchestrationResult {
 
 // --------------- Run All Rules ---------------
 
-export async function runOrchestration(): Promise<OrchestrationResult> {
+export async function runOrchestration(options?: {
+  dryRun?: boolean
+  executionId?: string
+  actor?: 'system' | 'user' | 'cron'
+}): Promise<OrchestrationResult> {
   const supabase = createClient()
+  const executionId = options?.executionId || `exec-${Date.now()}`
+  const isDryRun = options?.dryRun || false
+  const actor = options?.actor || 'system'
 
-  // Load all enabled rules ordered by priority
+  // Load all enabled, non-draft rules
   const { data: rules, error } = await supabase
     .from('automation_rules')
     .select('*')
     .eq('is_enabled', true)
     .order('priority', { ascending: true })
 
-  if (error || !rules || rules.length === 0) {
+  // 过滤草稿规则（灰度上线前）
+  const activeRules = (rules || []).filter(r => !(r.is_draft as boolean))
+
+  if (error || activeRules.length === 0) {
     return { rulesEvaluated: 0, rulesTriggered: 0, tasksCreated: 0, actionsExecuted: [] }
   }
 
-  const result: OrchestrationResult = {
-    rulesEvaluated: 0,
-    rulesTriggered: 0,
-    tasksCreated: 0,
-    actionsExecuted: [],
-  }
-
+  const result: OrchestrationResult = { rulesEvaluated: 0, rulesTriggered: 0, tasksCreated: 0, actionsExecuted: [] }
   const now = Date.now()
+  const executedThisRun: { entityId: string; actionType: string; ruleId: string }[] = []
 
-  for (const rule of rules) {
-    // Check cooldown
+  for (const rule of activeRules) {
+    const ruleStart = Date.now()
+    const ruleName = rule.name as string
+    const ruleId = rule.id as string
+
+    // === Cooldown检查 ===
     if (rule.cooldown_minutes && rule.last_triggered_at) {
-      const lastTriggered = new Date(rule.last_triggered_at).getTime()
       const cooldownMs = (rule.cooldown_minutes as number) * 60 * 1000
-      if (now - lastTriggered < cooldownMs) {
-        continue // Still in cooldown
+      if (now - new Date(rule.last_triggered_at as string).getTime() < cooldownMs) {
+        await writeExecutionLog(supabase, { ruleId, ruleName, executionId, actor, environment: isDryRun ? 'dry_run' : 'live', conditionResult: { triggered: false, reason: 'cooldown' }, entitiesMatched: [], actionsTaken: [], result: 'skipped', explanation: `冷却期内(${rule.cooldown_minutes}分钟)`, durationMs: Date.now() - ruleStart })
+        continue
       }
     }
 
     result.rulesEvaluated++
 
     try {
+      // === 条件评估 ===
       const conditionResult = await evaluateCondition(
         rule.condition_type as string,
         (rule.condition_config as Record<string, unknown>) || {}
       )
 
       if (!conditionResult.triggered || conditionResult.entities.length === 0) {
+        await writeExecutionLog(supabase, { ruleId, ruleName, executionId, actor, environment: isDryRun ? 'dry_run' : 'live', conditionResult: { triggered: false, entityCount: 0 }, entitiesMatched: [], actionsTaken: [], result: 'skipped', explanation: '条件未满足', durationMs: Date.now() - ruleStart })
         continue
       }
 
       result.rulesTriggered++
+      const actionsTaken: { action_type: string; entity_id: string; result: string; error?: string }[] = []
 
-      // Execute action for each triggered entity
       for (const entity of conditionResult.entities) {
         try {
-          await executeRuleAction(
-            rule.action_type as string,
-            (rule.action_config as Record<string, unknown>) || {},
-            entity,
-            rule.id as string
-          )
-          result.actionsExecuted.push(
-            `${rule.name}: ${rule.action_type} on ${entity.type}:${entity.id}`
-          )
+          // === 覆盖检查 ===
+          const isOverridden = await checkOverride(ruleId, entity.id)
+          if (isOverridden) {
+            actionsTaken.push({ action_type: rule.action_type as string, entity_id: entity.id, result: 'overridden' })
+            continue
+          }
 
-          if (rule.action_type === 'create_task') {
-            result.tasksCreated++
+          // === 冲突检测 ===
+          const conflict = detectConflict(rule.action_type as string, entity, executedThisRun)
+          if (conflict.hasConflict) {
+            actionsTaken.push({ action_type: rule.action_type as string, entity_id: entity.id, result: 'conflict', error: conflict.explanation })
+            continue
+          }
+
+          // === 灰度检查 ===
+          if (rule.grayscale_config) {
+            const gc = rule.grayscale_config as Record<string, unknown>
+            const scopeIds = gc.ids as string[] | undefined
+            if (scopeIds && scopeIds.length > 0 && !scopeIds.includes(entity.id)) {
+              actionsTaken.push({ action_type: rule.action_type as string, entity_id: entity.id, result: 'skipped', error: '不在灰度范围内' })
+              continue
+            }
+          }
+
+          // === Dry-run模式 ===
+          if (isDryRun) {
+            actionsTaken.push({ action_type: rule.action_type as string, entity_id: entity.id, result: 'dry_run' })
+            result.actionsExecuted.push(`[DRY] ${ruleName}: ${rule.action_type} on ${entity.type}:${entity.id}`)
+          } else {
+            // === 实际执行 ===
+            await executeRuleAction(rule.action_type as string, (rule.action_config as Record<string, unknown>) || {}, entity, ruleId)
+            actionsTaken.push({ action_type: rule.action_type as string, entity_id: entity.id, result: 'success' })
+            executedThisRun.push({ entityId: entity.id, actionType: rule.action_type as string, ruleId })
+            result.actionsExecuted.push(`${ruleName}: ${rule.action_type} on ${entity.type}:${entity.id}`)
+            if (rule.action_type === 'create_task') result.tasksCreated++
           }
         } catch (actionErr) {
-          console.error(
-            `[orchestration] Action failed for rule "${rule.name}" entity ${entity.id}:`,
-            actionErr
-          )
+          const errMsg = actionErr instanceof Error ? actionErr.message : String(actionErr)
+          actionsTaken.push({ action_type: rule.action_type as string, entity_id: entity.id, result: 'failed', error: errMsg })
+          console.error(`[orchestration] Action failed: "${ruleName}" ${entity.id}:`, errMsg)
         }
       }
 
-      // Update last_triggered_at and trigger_count
-      await supabase
-        .from('automation_rules')
-        .update({
+      // === 写执行日志 ===
+      const successCount = actionsTaken.filter(a => a.result === 'success' || a.result === 'dry_run').length
+      const failCount = actionsTaken.filter(a => a.result === 'failed').length
+      const logResult = isDryRun ? 'dry_run' : failCount === actionsTaken.length ? 'failed' : failCount > 0 ? 'partial' : 'success'
+
+      await writeExecutionLog(supabase, {
+        ruleId, ruleName, executionId, actor,
+        environment: isDryRun ? 'dry_run' : 'live',
+        conditionResult: { triggered: true, entityCount: conditionResult.entities.length },
+        entitiesMatched: conditionResult.entities.map(e => ({ type: e.type, id: e.id, name: e.name })),
+        actionsTaken,
+        result: logResult,
+        explanation: `${successCount}成功 ${failCount}失败 ${actionsTaken.filter(a => a.result === 'overridden').length}被覆盖 ${actionsTaken.filter(a => a.result === 'conflict').length}冲突`,
+        durationMs: Date.now() - ruleStart,
+      })
+
+      // 更新规则触发记录
+      if (!isDryRun && successCount > 0) {
+        await supabase.from('automation_rules').update({
           last_triggered_at: new Date().toISOString(),
           trigger_count: ((rule.trigger_count as number) || 0) + 1,
-        })
-        .eq('id', rule.id)
+        }).eq('id', ruleId)
+      }
     } catch (evalErr) {
-      console.error(`[orchestration] Condition eval failed for rule "${rule.name}":`, evalErr)
+      const errMsg = evalErr instanceof Error ? evalErr.message : String(evalErr)
+      await writeExecutionLog(supabase, { ruleId, ruleName, executionId, actor, environment: isDryRun ? 'dry_run' : 'live', conditionResult: { triggered: false, error: errMsg }, entitiesMatched: [], actionsTaken: [], result: 'failed', explanation: `条件评估失败: ${errMsg}`, durationMs: Date.now() - ruleStart })
+      console.error(`[orchestration] Eval failed: "${ruleName}":`, errMsg)
     }
   }
 
   return result
+}
+
+// === 执行日志写入 ===
+async function writeExecutionLog(supabase: ReturnType<typeof createClient>, log: {
+  ruleId: string; ruleName: string; executionId: string; actor: string; environment: string;
+  conditionResult: Record<string, unknown>; entitiesMatched: Record<string, unknown>[];
+  actionsTaken: Record<string, unknown>[]; result: string; explanation: string; durationMs: number;
+}) {
+  await supabase.from('rule_execution_logs').insert({
+    rule_id: log.ruleId, rule_name: log.ruleName, execution_id: log.executionId,
+    actor: log.actor, environment: log.environment,
+    condition_result: log.conditionResult, entities_matched: log.entitiesMatched,
+    actions_taken: log.actionsTaken, result: log.result,
+    explanation: log.explanation, duration_ms: log.durationMs,
+  }).then(({ error }) => { if (error) console.error('[exec-log] write failed:', error.message) })
+}
+
+// === 冲突检测 ===
+function detectConflict(
+  actionType: string,
+  entity: TriggeredEntity,
+  executedThisRun: { entityId: string; actionType: string; ruleId: string }[]
+): { hasConflict: boolean; conflictType?: string; explanation?: string } {
+  const sameEntity = executedThisRun.filter(e => e.entityId === entity.id)
+  if (sameEntity.length === 0) return { hasConflict: false }
+
+  // freeze + 任何其他动作 = 冲突
+  if (actionType === 'freeze_entity' && sameEntity.some(e => e.actionType !== 'freeze_entity')) {
+    return { hasConflict: true, conflictType: 'freeze_vs_action', explanation: `同一实体${entity.name}本批次已有其他动作执行` }
+  }
+  // 重复freeze = 跳过
+  if (actionType === 'freeze_entity' && sameEntity.some(e => e.actionType === 'freeze_entity')) {
+    return { hasConflict: true, conflictType: 'duplicate_freeze', explanation: `${entity.name}已在本批次被冻结` }
+  }
+  // downgrade + upgrade同批次 = 冲突
+  if (actionType === 'downgrade_trust' && sameEntity.some(e => e.actionType === 'upgrade_trust')) {
+    return { hasConflict: true, conflictType: 'trust_conflict', explanation: `${entity.name}本批次已有信任升级，不能同时降级` }
+  }
+
+  return { hasConflict: false }
+}
+
+// === 自动化健康度 ===
+export async function getAutomationHealth(): Promise<{
+  score: number; successRate: number; conflictRate: number; overrideRate: number;
+  dryRunPending: number; totalExecutions: number;
+  riskiestRules: { ruleId: string; name: string; failRate: number }[];
+  trend: 'improving' | 'stable' | 'declining'
+}> {
+  const supabase = createClient()
+
+  // 最近7天的执行日志
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const { data: logs } = await supabase
+    .from('rule_execution_logs')
+    .select('rule_id, rule_name, result')
+    .gte('trigger_time', weekAgo)
+
+  if (!logs?.length) return { score: 100, successRate: 100, conflictRate: 0, overrideRate: 0, dryRunPending: 0, totalExecutions: 0, riskiestRules: [], trend: 'stable' }
+
+  const total = logs.length
+  const success = logs.filter(l => l.result === 'success' || l.result === 'dry_run').length
+  const conflicts = logs.filter(l => l.result === 'conflict').length
+  const overrides = logs.filter(l => l.result === 'overridden').length
+  const failures = logs.filter(l => l.result === 'failed').length
+
+  const successRate = Math.round(success / total * 100)
+  const conflictRate = Math.round(conflicts / total * 100)
+  const overrideRate = Math.round(overrides / total * 100)
+
+  // 高风险规则（失败率最高）
+  const ruleStats = new Map<string, { name: string; total: number; failed: number }>()
+  logs.forEach(l => {
+    const key = l.rule_id as string
+    if (!ruleStats.has(key)) ruleStats.set(key, { name: l.rule_name as string, total: 0, failed: 0 })
+    const s = ruleStats.get(key)!
+    s.total++
+    if (l.result === 'failed') s.failed++
+  })
+  const riskiestRules = Array.from(ruleStats.entries())
+    .map(([ruleId, s]) => ({ ruleId, name: s.name, failRate: s.total > 0 ? Math.round(s.failed / s.total * 100) : 0 }))
+    .filter(r => r.failRate > 0)
+    .sort((a, b) => b.failRate - a.failRate)
+    .slice(0, 5)
+
+  // 草稿规则数
+  const { count: draftCount } = await supabase.from('automation_rules').select('id', { count: 'exact', head: true }).eq('is_draft', true)
+
+  const score = Math.max(0, Math.min(100, 100 - failures * 3 - conflicts * 2 - overrides))
+
+  return {
+    score, successRate, conflictRate, overrideRate,
+    dryRunPending: draftCount || 0, totalExecutions: total,
+    riskiestRules,
+    trend: score >= 80 ? 'improving' : score >= 50 ? 'stable' : 'declining',
+  }
 }
 
 // --------------- Condition Evaluators ---------------

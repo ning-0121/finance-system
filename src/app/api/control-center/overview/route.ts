@@ -9,7 +9,8 @@ import { getClosingStatus } from '@/lib/engines/closing-engine'
 import { getRecentEvents } from '@/lib/engines/timeline-engine'
 import { generateExplanations, type OverviewData } from '@/lib/engines/explanation-engine'
 import { getPendingRiskEvents, getBudgetOrders, getProfitSummary, getMonthlyProfitData } from '@/lib/supabase/queries'
-import { getPendingTasks } from '@/lib/engines/orchestration-engine'
+import { getPendingTasks, getAutomationHealth } from '@/lib/engines/orchestration-engine'
+import { getRecentOverrides } from '@/lib/engines/override-engine'
 
 export async function GET() {
   try {
@@ -32,6 +33,8 @@ export async function GET() {
       profitSummary,
       monthlyProfit,
       pendingTasks,
+      automationHealth,
+      recentOverrides,
     ] = await Promise.all([
       getAuditFindings({ status: 'open' }),
       getActiveFreezes(),
@@ -43,6 +46,8 @@ export async function GET() {
       getProfitSummary(),
       getMonthlyProfitData(),
       getPendingTasks().catch(() => []),
+      getAutomationHealth().catch(() => ({ score: 0, successRate: 0, conflictRate: 0, overrideRate: 0, dryRunPending: 0, totalExecutions: 0, riskiestRules: [], trend: 'stable' as const })),
+      getRecentOverrides(5).catch(() => []),
     ])
 
     // ---- 计算聚合指标 ----
@@ -189,6 +194,8 @@ export async function GET() {
         blocked: pendingTasks.filter((t: Record<string, unknown>) => t.status === 'blocked').length,
         items: pendingTasks.slice(0, 10),
       },
+      automationHealth,
+      recentOverrides,
     })
   } catch (error) {
     console.error('[overview GET]', error)
