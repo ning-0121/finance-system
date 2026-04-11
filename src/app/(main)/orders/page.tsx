@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/table'
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
 import { getBudgetOrders } from '@/lib/supabase/queries'
-import { Plus, Search, Download, Loader2 } from 'lucide-react'
+import { Plus, Search, Download, Loader2, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { exportBudgetOrdersToExcel } from '@/lib/excel'
 import { exportProfitAnalysisReport } from '@/lib/excel/export-professional'
@@ -25,33 +25,50 @@ export default function OrdersPage() {
   const [search, setSearch] = useState('')
 
   const [syncedMap, setSyncedMap] = useState<Record<string, { qmNo: string; internalNo: string }>>({})
+  const [syncing, setSyncing] = useState(false)
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true)
-      try {
-        const data = await getBudgetOrders()
-        setOrders(data)
-
-        // 加载synced_orders获取QM号和内部单号
-        const { createClient } = await import('@/lib/supabase/client')
-        const supabase = createClient()
-        const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null)
-        if (synced) {
-          const map: Record<string, { qmNo: string; internalNo: string }> = {}
-          synced.forEach((s: Record<string, unknown>) => {
-            if (s.budget_order_id) map[s.budget_order_id as string] = { qmNo: s.order_no as string || '', internalNo: s.style_no as string || '' }
-          })
-          setSyncedMap(map)
-        }
-      } catch {
-        toast.error('加载订单失败')
-      } finally {
-        setLoading(false)
+  const loadOrders = async () => {
+    setLoading(true)
+    try {
+      const data = await getBudgetOrders()
+      setOrders(data)
+      const { createClient } = await import('@/lib/supabase/client')
+      const supabase = createClient()
+      const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null)
+      if (synced) {
+        const map: Record<string, { qmNo: string; internalNo: string }> = {}
+        synced.forEach((s: Record<string, unknown>) => {
+          if (s.budget_order_id) map[s.budget_order_id as string] = { qmNo: s.order_no as string || '', internalNo: s.style_no as string || '' }
+        })
+        setSyncedMap(map)
       }
+    } catch {
+      toast.error('加载订单失败')
+    } finally {
+      setLoading(false)
     }
-    load()
-  }, [])
+  }
+
+  useEffect(() => { loadOrders() }, [])
+
+  const handleSync = async () => {
+    setSyncing(true)
+    try {
+      const res = await fetch('/api/integration/sync', { method: 'POST' })
+      const result = await res.json()
+      if (result.error) {
+        toast.error(`同步失败: ${result.error}`)
+      } else if (result.synced === 0) {
+        toast.info('所有订单已是最新')
+      } else {
+        toast.success(`同步完成：新增 ${result.synced} 个订单，创建 ${result.created} 个预算单`)
+        await loadOrders()
+      }
+    } catch {
+      toast.error('同步请求失败')
+    }
+    setSyncing(false)
+  }
 
   const filteredOrders = orders.filter((order) => {
     const matchesStatus = statusFilter === 'all' || order.status === statusFilter
@@ -84,6 +101,10 @@ export default function OrdersPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" disabled={syncing} onClick={handleSync}>
+              <RefreshCw className={`h-4 w-4 mr-1 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? '同步中...' : '从节拍器同步'}
+            </Button>
             <Button variant="outline" size="sm" onClick={() => {
               exportBudgetOrdersToExcel(filteredOrders)
               toast.success(`已导出 ${filteredOrders.length} 条订单`)
