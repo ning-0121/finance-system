@@ -8,11 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Download, FileText } from 'lucide-react'
 import { toast } from 'sonner'
 
-const demoTaxRefunds = [
-  { orderNo: 'BO-202604-0001', customer: 'Global Trading Inc.', exportAmount: 58500, refundRate: 13, refundAmount: 7605, status: '已申报', appliedDate: '2026-04-15' },
-  { orderNo: 'BO-202603-0005', customer: 'Global Trading Inc.', exportAmount: 13500, refundRate: 13, refundAmount: 1755, status: '已到账', appliedDate: '2026-03-25' },
-  { orderNo: 'BO-202604-0002', customer: 'Euro Imports GmbH', exportAmount: 60000, refundRate: 13, refundAmount: 7800, status: '待申报', appliedDate: '' },
-]
+const demoTaxRefunds: { orderNo: string; customer: string; exportAmount: number; refundRate: number; refundAmount: number; status: string; appliedDate: string }[] = []
 
 export default function TaxReportPage() {
   const total = demoTaxRefunds.reduce((s, t) => s + t.refundAmount, 0)

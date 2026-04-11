@@ -45,16 +45,8 @@ interface CostRecord {
   created_at: string
 }
 
-// 演示费用数据
-const demoCostItems: CostRecord[] = [
-  { id: 'ci-1', budget_order_id: 'bo-1', order_no: 'BO-202604-0001', cost_type: 'freight', description: '深圳-洛杉矶 海运费 20GP', amount: 3450, currency: 'USD', exchange_rate: 7.24, created_at: '2026-04-05T10:00:00Z' },
-  { id: 'ci-2', budget_order_id: 'bo-1', order_no: 'BO-202604-0001', cost_type: 'commission', description: '销售佣金 5%', amount: 2925, currency: 'USD', exchange_rate: 7.24, created_at: '2026-04-05T10:05:00Z' },
-  { id: 'ci-3', budget_order_id: 'bo-1', order_no: 'BO-202604-0001', cost_type: 'customs', description: '报关+检验检疫', amount: 750, currency: 'USD', exchange_rate: 7.24, created_at: '2026-04-06T09:00:00Z' },
-  { id: 'ci-4', budget_order_id: 'bo-1', order_no: 'BO-202604-0001', cost_type: 'procurement', description: 'LED灯带+面板灯采购款', amount: 39200, currency: 'USD', exchange_rate: 7.24, created_at: '2026-04-03T14:00:00Z' },
-  { id: 'ci-5', budget_order_id: 'bo-4', order_no: 'BO-202603-0005', cost_type: 'freight', description: '深圳-洛杉矶 拼柜运费', amount: 2100, currency: 'USD', exchange_rate: 7.22, created_at: '2026-03-28T11:00:00Z' },
-  { id: 'ci-6', budget_order_id: 'bo-4', order_no: 'BO-202603-0005', cost_type: 'other', description: '包装材料+打托', amount: 250, currency: 'USD', exchange_rate: 7.22, created_at: '2026-03-27T16:00:00Z' },
-  { id: 'ci-7', budget_order_id: null, order_no: undefined, cost_type: 'other', description: '办公室快递费（待归集）', amount: 120, currency: 'CNY', exchange_rate: 1, created_at: '2026-04-08T15:00:00Z' },
-]
+// 空数据占位（不再显示假数据）
+const demoCostItems: CostRecord[] = []
 
 export default function CostsPage() {
   const [costItems, setCostItems] = useState<CostRecord[]>(demoCostItems)

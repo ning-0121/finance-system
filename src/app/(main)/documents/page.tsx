@@ -199,7 +199,14 @@ export default function DocumentsPage() {
                             </Link>
                           )}
                           {doc.status === 'confirmed' && (
-                            <span className="text-xs text-green-600">✓ 已入库</span>
+                            <Link href={`/documents/${doc.id}`}>
+                              <Button size="sm" variant="ghost" className="text-green-600"><Eye className="h-3.5 w-3.5 mr-1" />已入库</Button>
+                            </Link>
+                          )}
+                          {doc.status === 'pending' && (
+                            <Link href={`/documents/${doc.id}`}>
+                              <Button size="sm" variant="outline"><Eye className="h-3.5 w-3.5 mr-1" />查看</Button>
+                            </Link>
                           )}
                         </TableCell>
                       </TableRow>

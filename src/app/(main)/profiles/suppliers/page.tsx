@@ -14,13 +14,7 @@ import { createClient } from '@/lib/supabase/client'
 import { CUSTOMER_RISK_LABELS, CUSTOMER_RISK_COLORS, type SupplierFinancialProfile, type CustomerRiskLevel } from '@/lib/types/agent'
 import { toast } from 'sonner'
 
-const demoSuppliers: SupplierFinancialProfile[] = [
-  { id: 'sp1', supplier_name: '深圳华锦纺织', avg_payment_term_days: 30, avg_delay_tolerance_days: 7, historical_stop_supply_count: 0, urgency_score: 40, dependency_score: 65, risk_level: 'A', preferred_payment_method: 'bank_transfer', current_outstanding: 36000, next_due_amount: 36000, next_due_date: '2026-04-11' },
-  { id: 'sp2', supplier_name: '东莞利达辅料', avg_payment_term_days: 45, avg_delay_tolerance_days: 14, historical_stop_supply_count: 0, urgency_score: 25, dependency_score: 30, risk_level: 'A', preferred_payment_method: 'bank_transfer', current_outstanding: 0, next_due_amount: 0, next_due_date: null },
-  { id: 'sp3', supplier_name: '广州顺风物流', avg_payment_term_days: 15, avg_delay_tolerance_days: 3, historical_stop_supply_count: 1, urgency_score: 75, dependency_score: 50, risk_level: 'B', preferred_payment_method: 'bank_transfer', current_outstanding: 24000, next_due_amount: 12000, next_due_date: '2026-04-12' },
-  { id: 'sp4', supplier_name: '佛山永兴制衣厂', avg_payment_term_days: 30, avg_delay_tolerance_days: 5, historical_stop_supply_count: 2, urgency_score: 85, dependency_score: 70, risk_level: 'C', preferred_payment_method: 'bank_transfer', current_outstanding: 140000, next_due_amount: 70000, next_due_date: '2026-04-14' },
-  { id: 'sp5', supplier_name: '中山鑫达包装', avg_payment_term_days: 60, avg_delay_tolerance_days: 30, historical_stop_supply_count: 0, urgency_score: 15, dependency_score: 20, risk_level: 'A', preferred_payment_method: 'bank_transfer', current_outstanding: 0, next_due_amount: 0, next_due_date: null },
-]
+const demoSuppliers: SupplierFinancialProfile[] = []
 
 export default function SupplierProfilesPage() {
   const [profiles, setProfiles] = useState<SupplierFinancialProfile[]>(demoSuppliers)

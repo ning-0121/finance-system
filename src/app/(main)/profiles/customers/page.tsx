@@ -15,13 +15,7 @@ import { CUSTOMER_RISK_LABELS, CUSTOMER_RISK_COLORS, type CustomerFinancialProfi
 import { toast } from 'sonner'
 import { exportCostSummaryReport } from '@/lib/excel/export-professional'
 
-const demoProfiles: CustomerFinancialProfile[] = [
-  { id: 'cp1', customer_id: 'cust-1', customer_name: 'Global Trading Inc.', avg_payment_days: 35, overdue_rate: 0.15, average_order_profit_rate: 20.09, deduction_frequency: 1, late_confirmation_frequency: 2, invoice_dispute_frequency: 0, bad_debt_score: 12, dependency_score: 35, total_outstanding: 28500, credit_limit: 500000, risk_level: 'B', last_updated_at: '2026-04-09T10:00:00Z' },
-  { id: 'cp2', customer_id: 'cust-2', customer_name: 'Euro Imports GmbH', avg_payment_days: 42, overdue_rate: 0.08, average_order_profit_rate: 11.17, deduction_frequency: 0, late_confirmation_frequency: 1, invoice_dispute_frequency: 0, bad_debt_score: 8, dependency_score: 25, total_outstanding: 60000, credit_limit: 300000, risk_level: 'B', last_updated_at: '2026-04-09T10:00:00Z' },
-  { id: 'cp3', customer_id: 'cust-3', customer_name: 'Tokyo Solutions Ltd.', avg_payment_days: 22, overdue_rate: 0, average_order_profit_rate: 24.22, deduction_frequency: 0, late_confirmation_frequency: 0, invoice_dispute_frequency: 0, bad_debt_score: 0, dependency_score: 20, total_outstanding: 0, credit_limit: 50000000, risk_level: 'A', last_updated_at: '2026-04-09T10:00:00Z' },
-  { id: 'cp4', customer_id: null, customer_name: 'ABC Trading Co.', avg_payment_days: 55, overdue_rate: 0.45, average_order_profit_rate: 15.5, deduction_frequency: 3, late_confirmation_frequency: 4, invoice_dispute_frequency: 2, bad_debt_score: 42, dependency_score: 15, total_outstanding: 42000, credit_limit: 100000, risk_level: 'C', last_updated_at: '2026-04-07T09:00:00Z' },
-  { id: 'cp5', customer_id: null, customer_name: 'MegaCorp International', avg_payment_days: 78, overdue_rate: 0.65, average_order_profit_rate: 18.0, deduction_frequency: 2, late_confirmation_frequency: 5, invoice_dispute_frequency: 3, bad_debt_score: 68, dependency_score: 10, total_outstanding: 45000, credit_limit: 80000, risk_level: 'D', last_updated_at: '2026-04-09T10:00:00Z' },
-]
+const demoProfiles: CustomerFinancialProfile[] = []
 
 export default function CustomerProfilesPage() {
   const [profiles, setProfiles] = useState<CustomerFinancialProfile[]>(demoProfiles)

@@ -17,15 +17,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
 
-// 演示应收数据
-const demoReceivables = [
-  { id: 'r-1', customer: 'Global Trading Inc.', country: '美国', invoiceNo: 'INV-202604-001', orderNo: 'BO-202604-0001', currency: 'USD', amount: 58500, paid: 30000, balance: 28500, invoiceDate: '2026-04-05', dueDate: '2026-05-05', status: 'partial' as const, agingDays: 4 },
-  { id: 'r-2', customer: 'Euro Imports GmbH', country: '德国', invoiceNo: 'INV-202604-002', orderNo: 'BO-202604-0002', currency: 'EUR', amount: 60000, paid: 0, balance: 60000, invoiceDate: '2026-04-08', dueDate: '2026-06-07', status: 'unpaid' as const, agingDays: 1 },
-  { id: 'r-3', customer: 'Tokyo Solutions Ltd.', country: '日本', invoiceNo: 'INV-202603-015', orderNo: 'BO-202603-0005', currency: 'USD', amount: 13500, paid: 13500, balance: 0, invoiceDate: '2026-03-20', dueDate: '2026-04-20', status: 'paid' as const, agingDays: 0 },
-  { id: 'r-4', customer: 'Global Trading Inc.', country: '美国', invoiceNo: 'INV-202602-008', orderNo: 'BO-202602-0003', currency: 'USD', amount: 42000, paid: 0, balance: 42000, invoiceDate: '2026-02-15', dueDate: '2026-03-15', status: 'overdue' as const, agingDays: 25 },
-  { id: 'r-5', customer: 'ABC Trading Co.', country: '英国', invoiceNo: 'INV-202601-022', orderNo: 'BO-202601-0012', currency: 'GBP', amount: 28000, paid: 0, balance: 28000, invoiceDate: '2026-01-10', dueDate: '2026-02-10', status: 'overdue' as const, agingDays: 58 },
-  { id: 'r-6', customer: 'MegaCorp International', country: '澳大利亚', invoiceNo: 'INV-202512-005', orderNo: 'BO-202512-0002', currency: 'USD', amount: 95000, paid: 50000, balance: 45000, invoiceDate: '2025-12-01', dueDate: '2026-01-30', status: 'overdue' as const, agingDays: 69 },
-]
+const demoReceivables: { id: string; customer: string; country: string; invoiceNo: string; orderNo: string; currency: string; amount: number; paid: number; balance: number; invoiceDate: string; dueDate: string; status: 'paid' | 'partial' | 'unpaid' | 'overdue'; agingDays: number }[] = []
 
 const agingBuckets = [
   { name: '0-30天', range: [0, 30], color: '#22c55e' },

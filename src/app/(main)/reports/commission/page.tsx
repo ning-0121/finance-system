@@ -9,11 +9,7 @@ import { Download, UserCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { exportCostSummaryReport } from '@/lib/excel/export-professional'
 
-const demoCommissions = [
-  { name: '方圆', role: '跟单', orders: 5, revenue: 222000, rate: 1.5, commission: 3330, currency: 'USD', status: '待确认' },
-  { name: '张伟', role: '业务', orders: 3, revenue: 148500, rate: 3.0, commission: 4455, currency: 'USD', status: '已确认' },
-  { name: '李敏', role: '业务', orders: 4, revenue: 180000, rate: 3.0, commission: 5400, currency: 'USD', status: '已发放' },
-]
+const demoCommissions: { name: string; role: string; orders: number; revenue: number; rate: number; commission: number; currency: string; status: string }[] = []
 
 export default function CommissionReportPage() {
   const total = demoCommissions.reduce((s, c) => s + c.commission, 0)

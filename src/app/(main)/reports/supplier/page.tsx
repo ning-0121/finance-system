@@ -14,13 +14,7 @@ import { toast } from 'sonner'
 import { exportCostSummaryReport } from '@/lib/excel/export-professional'
 
 // 演示数据 — 自动从actual_invoices汇总
-const demoSupplierData = [
-  { supplier: '深圳华锦纺织', invoices: 8, total: 156000, paid: 120000, unpaid: 36000, currency: 'CNY', orders: ['BO-202604-0001', 'BO-202604-0003'] },
-  { supplier: '东莞利达辅料', invoices: 5, total: 42000, paid: 42000, unpaid: 0, currency: 'CNY', orders: ['BO-202604-0001'] },
-  { supplier: '广州顺风物流', invoices: 12, total: 89000, paid: 65000, unpaid: 24000, currency: 'CNY', orders: ['BO-202604-0001', 'BO-202604-0002', 'BO-202603-0005'] },
-  { supplier: '佛山永兴制衣厂', invoices: 3, total: 280000, paid: 140000, unpaid: 140000, currency: 'CNY', orders: ['BO-202604-0002'] },
-  { supplier: '中山鑫达包装', invoices: 4, total: 18500, paid: 18500, unpaid: 0, currency: 'CNY', orders: ['BO-202604-0001', 'BO-202604-0003'] },
-]
+const demoSupplierData: { supplier: string; invoices: number; total: number; paid: number; unpaid: number; currency: string; orders: string[] }[] = []
 
 export default function SupplierReportPage() {
   const [search, setSearch] = useState('')

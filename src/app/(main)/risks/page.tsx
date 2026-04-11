@@ -11,16 +11,7 @@ import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import { RISK_TYPE_LABELS, type FinancialRiskEvent, type RiskLevel } from '@/lib/types/agent'
 
-// 演示数据
-const demoRisks: FinancialRiskEvent[] = [
-  { id: 'r1', risk_type: 'overdue_payment', risk_level: 'red', related_order_id: null, related_customer_id: null, related_supplier_name: null, title: 'MegaCorp Int. 逾期69天', description: '订单 BO-202512-0002 余额 USD 45,000，逾期69天，已催款2次未回复', suggested_action: '暂停该客户出货，降低信用额度', owner_role: 'finance_manager', status: 'pending', resolved_by: null, resolved_at: null, created_at: '2026-04-09T10:00:00Z' },
-  { id: 'r2', risk_type: 'low_profit_order', risk_level: 'red', related_order_id: null, related_customer_id: null, related_supplier_name: null, title: 'BO-202603-0005 实际亏损', description: '毛利率 -5.22%，运费超预算16.67%，采购成本上浮2.86%', suggested_action: '复盘订单，调整该品类报价策略', owner_role: 'finance_manager', status: 'pending', resolved_by: null, resolved_at: null, created_at: '2026-04-08T16:00:00Z' },
-  { id: 'r3', risk_type: 'overdue_payment', risk_level: 'yellow', related_order_id: null, related_customer_id: null, related_supplier_name: null, title: 'ABC Trading 逾期25天', description: '订单 BO-202602-0003 余额 USD 42,000', suggested_action: '发送第二次催款邮件', owner_role: 'finance_manager', status: 'processing', resolved_by: null, resolved_at: null, created_at: '2026-04-07T09:00:00Z' },
-  { id: 'r4', risk_type: 'insufficient_cashflow', risk_level: 'yellow', related_order_id: null, related_customer_id: null, related_supplier_name: null, title: '4月15日资金缺口预警', description: '预计现金余额降至 $268,000，本周必付款项 $176,000', suggested_action: '催回MegaCorp欠款或延迟非紧急付款', owner_role: 'finance_manager', status: 'pending', resolved_by: null, resolved_at: null, created_at: '2026-04-09T08:00:00Z' },
-  { id: 'r5', risk_type: 'low_profit_order', risk_level: 'yellow', related_order_id: null, related_customer_id: null, related_supplier_name: null, title: 'BO-202604-0002 毛利率仅11.17%', description: '太阳能路灯订单，低于15%警戒线', suggested_action: '下次报价提高8-10%', owner_role: 'finance_manager', status: 'pending', resolved_by: null, resolved_at: null, created_at: '2026-04-03T09:30:00Z' },
-  { id: 'r6', risk_type: 'abnormal_material_cost', risk_level: 'yellow', related_order_id: null, related_customer_id: null, related_supplier_name: '深圳华锦纺织', title: '原料成本上涨3.16%', description: 'LED灯带原材料价格较预算上浮，影响2个在产订单', suggested_action: '更新采购价格基准，评估替代供应商', owner_role: 'finance_manager', status: 'resolved', resolved_by: null, resolved_at: '2026-04-09T14:00:00Z', created_at: '2026-04-05T11:00:00Z' },
-  { id: 'r7', risk_type: 'supplier_delay', risk_level: 'green', related_order_id: null, related_customer_id: null, related_supplier_name: '广州顺风物流', title: '物流费用正常波动', description: '运费较上月上浮5%，在正常范围内', suggested_action: '持续监控', owner_role: 'finance_staff', status: 'resolved', resolved_by: null, resolved_at: '2026-04-08T10:00:00Z', created_at: '2026-04-06T15:00:00Z' },
-]
+const demoRisks: FinancialRiskEvent[] = []
 
 const riskLevelConfig: Record<RiskLevel, { label: string; color: string; bg: string }> = {
   red: { label: '严重', color: 'text-red-700', bg: 'bg-red-50 border-red-200' },
