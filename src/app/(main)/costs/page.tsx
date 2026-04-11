@@ -141,6 +141,10 @@ export default function CostsPage() {
     setSaving(true)
     try {
       const supabase = createClient()
+      // 获取当前用户profile
+      const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
+      const createdBy = profiles?.[0]?.id || null
+
       const { data, error } = await supabase
         .from('cost_items')
         .insert({
@@ -150,7 +154,8 @@ export default function CostsPage() {
           amount: Number(formAmount),
           currency: formCurrency,
           exchange_rate: Number(formRate),
-          created_by: '00000000-0000-0000-0000-000000000000',
+          supplier: formDesc.split(/[,，]/)[0]?.trim() || null,
+          ...(createdBy ? { created_by: createdBy } : {}),
         })
         .select('*, budget_orders(order_no)')
         .single()
@@ -170,21 +175,8 @@ export default function CostsPage() {
       }
       setCostItems([newItem, ...costItems])
       toast.success('费用已录入')
-    } catch {
-      // Demo mode fallback
-      const newItem: CostRecord = {
-        id: `ci-${Date.now()}`,
-        budget_order_id: formOrderId || null,
-        order_no: orders.find(o => o.id === formOrderId)?.order_no,
-        cost_type: formType,
-        description: formDesc,
-        amount: Number(formAmount),
-        currency: formCurrency,
-        exchange_rate: Number(formRate),
-        created_at: new Date().toISOString(),
-      }
-      setCostItems([newItem, ...costItems])
-      toast.success('费用已录入（演示模式）')
+    } catch (err) {
+      toast.error(`保存失败: ${err instanceof Error ? err.message : '未知错误'}`)
     } finally {
       setSaving(false)
       setShowAdd(false)

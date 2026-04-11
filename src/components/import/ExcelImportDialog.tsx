@@ -196,7 +196,12 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
 
     // 获取用户ID
     const { data: { user } } = await supabase.auth.getUser()
-    const userId = user?.id || '00000000-0000-0000-0000-000000000000'
+    let userId = user?.id
+    if (!userId) {
+      const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
+      userId = profiles?.[0]?.id
+    }
+    if (!userId) { toast.error('无法获取用户信息'); setImporting(false); return }
 
     // 去重检测
     const { data: existing } = await supabase.from('cost_items').select('description, amount').eq('source_module', 'excel_import')
