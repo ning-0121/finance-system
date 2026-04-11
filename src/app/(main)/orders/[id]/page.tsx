@@ -72,28 +72,34 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   useEffect(() => {
     async function load() {
       setLoading(true)
-      const [orderData, settlementData, logsData, subDocs, invoices, shippingDocs, orderSettlement] = await Promise.all([
-        getBudgetOrderById(id),
-        getSettlementByBudgetId(id),
-        getApprovalLogs(id),
-        getSubDocuments(id),
-        getActualInvoices(id),
-        getShippingDocuments(id),
-        getOrderSettlement(id),
-      ])
-      setOrder(orderData)
-      setSettlement(settlementData)
-      setLogs(logsData)
-      setWorkflowCtx({
-        hasSubDocs: subDocs.length > 0,
-        hasInvoices: invoices.length > 0,
-        hasShippingDocs: shippingDocs.length > 0,
-        hasSettlement: !!orderSettlement,
-        hasPayables: false,
-        hasCostItems: false,
-        invoiceCount: invoices.length,
-        paidCount: invoices.filter(i => i.status === 'paid').length,
+      try {
+        const orderData = await getBudgetOrderById(id)
+        setOrder(orderData)
+
+        // 这些查询可能失败（表为空等），不阻塞页面加载
+        const [settlementData, logsData, subDocs, invoices, shippingDocs, orderSettlement] = await Promise.all([
+          getSettlementByBudgetId(id).catch(() => null),
+          getApprovalLogs(id).catch(() => []),
+          getSubDocuments(id).catch(() => []),
+          getActualInvoices(id).catch(() => []),
+          getShippingDocuments(id).catch(() => []),
+          getOrderSettlement(id).catch(() => null),
+        ])
+        setSettlement(settlementData)
+        setLogs(logsData as ApprovalLog[])
+        setWorkflowCtx({
+          hasSubDocs: (subDocs as unknown[])?.length > 0,
+          hasInvoices: (invoices as unknown[])?.length > 0,
+          hasShippingDocs: (shippingDocs as unknown[])?.length > 0,
+          hasSettlement: !!orderSettlement,
+          hasPayables: false,
+          hasCostItems: false,
+          invoiceCount: (invoices as unknown[])?.length || 0,
+          paidCount: ((invoices as Record<string, unknown>[]) || []).filter(i => i.status === 'paid').length,
       })
+      } catch (e) {
+        console.error('订单加载失败:', e)
+      }
       setLoading(false)
     }
     load()
