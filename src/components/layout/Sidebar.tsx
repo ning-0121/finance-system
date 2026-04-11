@@ -23,7 +23,7 @@ import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canViewApprovalQueue, getRoleLabel } from '@/lib/auth/permissions'
 import { UserSwitcher } from '@/components/layout/UserSwitcher'
 import { useState, useEffect } from 'react'
-import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale } from 'lucide-react'
+import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale, Shield, Lock, Clock, FlaskConical, ShieldCheck, Search as SearchIcon } from 'lucide-react'
 
 const baseNavigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
@@ -47,11 +47,26 @@ const baseNavigation = [
   { name: '会计期间', href: '/gl/periods', icon: Calendar },
 ]
 
+const controlCenterItems = [
+  { name: '月结中心', href: '/control-center/closing', icon: Calendar },
+  { name: '财务稽核', href: '/control-center/audit', icon: SearchIcon },
+  { name: '冻结控制', href: '/control-center/freeze', icon: Lock },
+  { name: '时间线', href: '/control-center/timeline', icon: Clock },
+  { name: '沙盘模拟', href: '/control-center/simulation', icon: FlaskConical },
+  { name: '可信度', href: '/control-center/trust', icon: ShieldCheck },
+]
+
 export function Sidebar() {
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [ccOpen, setCcOpen] = useState(false)
   const { user } = useCurrentUser()
+
+  // 自动展开控制中心组（如果当前路径在组内）
+  useEffect(() => {
+    if (pathname.startsWith('/control-center')) setCcOpen(true)
+  }, [pathname])
 
   // 根据角色动态生成导航
   const navigation = user && canViewApprovalQueue(user)
@@ -130,6 +145,41 @@ export function Sidebar() {
             </Link>
           )
         })}
+
+        {/* 控制中心 — 可折叠组 */}
+        <div className="mt-1 pt-1 border-t">
+          <button
+            onClick={() => setCcOpen(!ccOpen)}
+            className={cn(
+              'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium w-full transition-colors',
+              pathname.startsWith('/control-center') ? 'text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            )}
+          >
+            <Shield className="h-4.5 w-4.5 shrink-0" />
+            {!collapsed && (
+              <>
+                <span className="flex-1 truncate text-left">控制中心</span>
+                <ChevronDown className={cn('h-3 w-3 transition-transform', ccOpen ? '' : '-rotate-90')} />
+              </>
+            )}
+          </button>
+          {ccOpen && !collapsed && (
+            <div className="ml-4 space-y-0.5">
+              {controlCenterItems.map(item => {
+                const isActive = pathname === item.href
+                return (
+                  <Link key={item.name} href={item.href} className={cn(
+                    'flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors',
+                    isActive ? 'bg-primary/5 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  )}>
+                    <item.icon className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{item.name}</span>
+                  </Link>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </nav>
 
       {/* AI Assistant */}

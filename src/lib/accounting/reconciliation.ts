@@ -1,7 +1,7 @@
 // 定时对账引擎 — 自动检测数据异常
 import { createClient } from '@/lib/supabase/client'
 
-interface CheckResult {
+export interface CheckResult {
   type: string
   status: 'passed' | 'failed' | 'warning'
   expected?: number
@@ -44,7 +44,7 @@ export async function runAllReconciliationChecks(periodCode: string): Promise<Ch
 /**
  * 检查1: 总账借贷平衡
  */
-async function checkGLBalance(periodCode: string): Promise<CheckResult> {
+export async function checkGLBalance(periodCode: string): Promise<CheckResult> {
   const supabase = createClient()
   const { data } = await supabase
     .from('gl_balances')
@@ -71,7 +71,7 @@ async function checkGLBalance(periodCode: string): Promise<CheckResult> {
  * 检查2: 应收账款一致性
  * 验证: 订单总收入(CNY) ≈ 已收款 + 应收余额
  */
-async function checkARConsistency(): Promise<CheckResult> {
+export async function checkARConsistency(): Promise<CheckResult> {
   const supabase = createClient()
   const { data: orders } = await supabase
     .from('budget_orders')
@@ -110,7 +110,7 @@ async function checkARConsistency(): Promise<CheckResult> {
 /**
  * 检查3: 应付账款一致性
  */
-async function checkAPConsistency(): Promise<CheckResult> {
+export async function checkAPConsistency(): Promise<CheckResult> {
   const supabase = createClient()
   const { data: payables } = await supabase
     .from('payable_records')
@@ -135,7 +135,7 @@ async function checkAPConsistency(): Promise<CheckResult> {
 /**
  * 检查4: 重复订单号
  */
-async function checkDuplicateOrders(): Promise<CheckResult> {
+export async function checkDuplicateOrders(): Promise<CheckResult> {
   const supabase = createClient()
   const { data } = await supabase.from('budget_orders').select('order_no')
 
@@ -162,7 +162,7 @@ async function checkDuplicateOrders(): Promise<CheckResult> {
 /**
  * 检查5: 孤立记录（有synced_orders但无budget_orders）
  */
-async function checkOrphanedRecords(): Promise<CheckResult> {
+export async function checkOrphanedRecords(): Promise<CheckResult> {
   const supabase = createClient()
   const { data: synced } = await supabase
     .from('synced_orders')
