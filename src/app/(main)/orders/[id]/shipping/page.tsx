@@ -28,13 +28,7 @@ const statusLabels: Record<string, { label: string; variant: 'default' | 'second
   completed: { label: '已完成', variant: 'default' },
 }
 
-// 演示数据
-const demoDocs: ShippingDocument[] = [
-  { id: 'sd1', budget_order_id: 'bo-1', doc_type: 'pi', document_no: 'PI-202604-001', items: [], total_amount: 58500, currency: 'USD', status: 'completed', attachment_url: null, created_at: '2026-04-02T10:00:00Z' },
-  { id: 'sd2', budget_order_id: 'bo-1', doc_type: 'ci', document_no: 'CI-202604-001', items: [], total_amount: 58500, currency: 'USD', status: 'completed', attachment_url: null, created_at: '2026-04-06T10:00:00Z' },
-  { id: 'sd3', budget_order_id: 'bo-1', doc_type: 'packing_list', document_no: 'PL-202604-001', items: [], total_amount: 0, currency: 'USD', status: 'submitted', attachment_url: null, created_at: '2026-04-06T11:00:00Z' },
-  { id: 'sd4', budget_order_id: 'bo-1', doc_type: 'customs_declaration', document_no: 'CD-202604-001', items: [], total_amount: 58500, currency: 'USD', status: 'draft', attachment_url: null, created_at: '2026-04-07T09:00:00Z' },
-]
+const demoDocs: ShippingDocument[] = []
 
 export default function ShippingPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
