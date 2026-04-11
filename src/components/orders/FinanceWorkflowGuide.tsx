@@ -212,7 +212,27 @@ export function FinanceWorkflowGuide({ order, context, onNavigate }: Props) {
 
                   {/* 操作按钮 */}
                   {isCurrent && !blocked && (
-                    step.actionHref ? (
+                    step.key === 'confirm' || step.key === 'budget' ? (
+                      <Button size="sm" className="shrink-0 h-7 text-xs" onClick={() => {
+                        // 滚动到预算单详情区域
+                        document.querySelector('[data-slot="tabs-content"]')?.scrollIntoView({ behavior: 'smooth' })
+                        if (onNavigate) onNavigate('budget')
+                      }}>
+                        {actionLabel} <ArrowRight className="h-3 w-3 ml-1" />
+                      </Button>
+                    ) : step.key === 'shipping' ? (
+                      <Link href={`/orders/${order.id}/shipping`}>
+                        <Button size="sm" className="shrink-0 h-7 text-xs">
+                          管理出货 <ArrowRight className="h-3 w-3 ml-1" />
+                        </Button>
+                      </Link>
+                    ) : step.key === 'settlement' ? (
+                      <Link href={`/orders/${order.id}/settlement`}>
+                        <Button size="sm" className="shrink-0 h-7 text-xs">
+                          生成决算 <ArrowRight className="h-3 w-3 ml-1" />
+                        </Button>
+                      </Link>
+                    ) : step.actionHref ? (
                       <Link href={step.actionHref}>
                         <Button size="sm" className="shrink-0 h-7 text-xs">
                           {actionLabel} <ArrowRight className="h-3 w-3 ml-1" />
@@ -229,7 +249,8 @@ export function FinanceWorkflowGuide({ order, context, onNavigate }: Props) {
                     )
                   )}
 
-                  {step.key === 'shipping' && isCurrent && !blocked && (
+                  {/* 移除重复的shipping和settlement按钮，已在上方合并 */}
+                  {false && step.key === 'shipping' && isCurrent && !blocked && (
                     <Link href={`/orders/${order.id}/shipping`}>
                       <Button size="sm" className="shrink-0 h-7 text-xs">
                         管理出货 <ArrowRight className="h-3 w-3 ml-1" />
@@ -237,7 +258,7 @@ export function FinanceWorkflowGuide({ order, context, onNavigate }: Props) {
                     </Link>
                   )}
 
-                  {step.key === 'settlement' && isCurrent && !blocked && (
+                  {false && step.key === 'settlement' && isCurrent && !blocked && (
                     <Link href={`/orders/${order.id}/settlement`}>
                       <Button size="sm" className="shrink-0 h-7 text-xs">
                         生成决算 <ArrowRight className="h-3 w-3 ml-1" />

@@ -276,6 +276,7 @@ export default function CostsPage() {
                     <TableHead>币种</TableHead>
                     <TableHead>汇率</TableHead>
                     <TableHead>日期</TableHead>
+                    <TableHead className="text-center">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -302,12 +303,23 @@ export default function CostsPage() {
                         <TableCell className="text-sm text-muted-foreground">
                           {new Date(item.created_at).toLocaleDateString('zh-CN')}
                         </TableCell>
+                        <TableCell className="text-center">
+                          <Button variant="ghost" size="sm" className="h-7 text-xs text-red-500 hover:text-red-700" onClick={async () => {
+                            if (!confirm(`确定删除这笔费用？\n${item.description}\n金额: ${item.amount}`)) return
+                            try {
+                              const supabase = createClient()
+                              await supabase.from('cost_items').delete().eq('id', item.id)
+                              setCostItems(costItems.filter(c => c.id !== item.id))
+                              toast.success('已删除')
+                            } catch { toast.error('删除失败') }
+                          }}>删除</Button>
+                        </TableCell>
                       </TableRow>
                     )
                   })}
                   {filteredItems.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">暂无费用记录</TableCell>
+                      <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">暂无费用记录</TableCell>
                     </TableRow>
                   )}
                 </TableBody>
