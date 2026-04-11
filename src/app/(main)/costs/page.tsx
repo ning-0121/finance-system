@@ -65,12 +65,23 @@ export default function CostsPage() {
   const [formCurrency, setFormCurrency] = useState('USD')
   const [formRate, setFormRate] = useState('7.24')
 
+  const [syncedOrderMap, setSyncedOrderMap] = useState<Record<string, string>>({}) // budget_order_id → QM订单号
+
   useEffect(() => {
     async function load() {
       setLoading(true)
       try {
         const ordersData = await getBudgetOrders()
         setOrders(ordersData)
+
+        // 加载synced_orders获取QM订单号映射
+        const supabase2 = createClient()
+        const { data: syncedOrders } = await supabase2.from('synced_orders').select('order_no, budget_order_id').not('budget_order_id', 'is', null)
+        if (syncedOrders) {
+          const map: Record<string, string> = {}
+          syncedOrders.forEach((s: Record<string, unknown>) => { if (s.budget_order_id) map[s.budget_order_id as string] = s.order_no as string })
+          setSyncedOrderMap(map)
+        }
 
         // 尝试从Supabase加载费用
         const supabase = createClient()
@@ -358,9 +369,10 @@ export default function CostsPage() {
                 <Select value={formOrderId} onValueChange={(v) => setFormOrderId(v || '')}>
                   <SelectTrigger><SelectValue placeholder="选择订单（可选）" /></SelectTrigger>
                   <SelectContent>
-                    {orders.map(o => (
-                      <SelectItem key={o.id} value={o.id}>{o.order_no} - {o.customer?.company || ''}</SelectItem>
-                    ))}
+                    {orders.map(o => {
+                      const qmNo = syncedOrderMap[o.id]
+                      return <SelectItem key={o.id} value={o.id}>{qmNo || o.order_no} - {o.customer?.company || ''}{qmNo ? ` (${o.order_no})` : ''}</SelectItem>
+                    })}
                   </SelectContent>
                 </Select>
               </div>
