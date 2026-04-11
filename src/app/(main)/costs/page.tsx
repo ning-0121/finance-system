@@ -74,12 +74,17 @@ export default function CostsPage() {
         const ordersData = await getBudgetOrders()
         setOrders(ordersData)
 
-        // 加载synced_orders获取QM订单号映射
+        // 加载synced_orders获取QM订单号+内部单号映射
         const supabase2 = createClient()
-        const { data: syncedOrders } = await supabase2.from('synced_orders').select('order_no, budget_order_id').not('budget_order_id', 'is', null)
+        const { data: syncedOrders } = await supabase2.from('synced_orders').select('order_no, budget_order_id, po_number').not('budget_order_id', 'is', null)
         if (syncedOrders) {
           const map: Record<string, string> = {}
-          syncedOrders.forEach((s: Record<string, unknown>) => { if (s.budget_order_id) map[s.budget_order_id as string] = s.order_no as string })
+          syncedOrders.forEach((s: Record<string, unknown>) => {
+            if (s.budget_order_id) {
+              const internal = s.po_number ? `${s.po_number} | ` : ''
+              map[s.budget_order_id as string] = `${internal}${s.order_no as string}`
+            }
+          })
           setSyncedOrderMap(map)
         }
 
