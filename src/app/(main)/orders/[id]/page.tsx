@@ -116,6 +116,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   // 编辑模式 — 外贸服装成本细分
   const [editMode, setEditMode] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
+  const [editRate, setEditRate] = useState('')       // 结汇汇率
   const [editRevenue, setEditRevenue] = useState('')
   const [editFabric, setEditFabric] = useState('')      // 面料
   const [editAccessory, setEditAccessory] = useState('') // 辅料
@@ -127,6 +128,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   // 进入编辑模式时预填当前值（从items或现有字段解析）
   useEffect(() => {
     if (editMode && order) {
+      setEditRate((order.exchange_rate || 7).toString())
       setEditRevenue(order.total_revenue.toString())
       // 尝试从items中读取细分（之前保存的）
       const breakdown = (order.items as unknown as Record<string, unknown>[])?.[0]
@@ -153,16 +155,19 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const handleSaveEdit = async () => {
     if (!order) return
     setSavingEdit(true)
-    const revenue = Number(editRevenue) || 0
+    const revenueUsd = Number(editRevenue) || 0
+    const rate = Number(editRate) || order.exchange_rate || 7
+    const revenueCny = revenueUsd * rate
     const fabric = Number(editFabric) || 0
     const accessory = Number(editAccessory) || 0
     const processing = Number(editProcessing) || 0
     const forwarder = Number(editForwarder) || 0
     const container = Number(editContainer) || 0
     const logistics = Number(editLogistics) || 0
-    const totalCost = fabric + accessory + processing + forwarder + container + logistics
-    const profit = revenue - totalCost
-    const margin = revenue > 0 ? Math.round((profit / revenue) * 10000) / 100 : 0
+    const totalCostCny = fabric + accessory + processing + forwarder + container + logistics
+    // 利润 = 收入USD × 汇率 - 成本CNY（全部人民币口径）
+    const profitCny = revenueCny - totalCostCny
+    const margin = revenueCny > 0 ? Math.round((profitCny / revenueCny) * 10000) / 100 : 0
     // 映射到数据库字段
     const purchase = fabric + accessory  // 面料+辅料合并到采购价
     const freight = forwarder            // 货代费→运费字段
@@ -173,23 +178,24 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     try {
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
-      const costBreakdown = { _cost_breakdown: { fabric, accessory, processing, forwarder, container, logistics } }
+      const costBreakdown = { _cost_breakdown: { fabric, accessory, processing, forwarder, container, logistics, _currency: 'CNY', _revenue_usd: revenueUsd, _rate: rate } }
       const { error } = await supabase.from('budget_orders').update({
-        total_revenue: revenue,
+        total_revenue: revenueUsd,
+        exchange_rate: rate,
         target_purchase_price: purchase,
         estimated_freight: freight,
         estimated_commission: commission,
         estimated_customs_fee: customs,
         other_costs: other,
-        total_cost: totalCost,
-        estimated_profit: profit,
+        total_cost: totalCostCny,
+        estimated_profit: profitCny,
         estimated_margin: margin,
-        items: [costBreakdown], // 保存细分明细
+        items: [costBreakdown], // 保存细分明细（含汇率信息）
       }).eq('id', order.id)
 
       if (error) { toast.error('保存失败: ' + error.message) }
       else {
-        setOrder({ ...order, total_revenue: revenue, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCost, estimated_profit: profit, estimated_margin: margin })
+        setOrder({ ...order, total_revenue: revenueUsd, exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin })
         setEditMode(false)
         toast.success('预算已保存')
       }
@@ -350,37 +356,63 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm">
                   {editMode ? (
-                    <div className="space-y-3">
-                      <div className="space-y-1"><Label className="text-xs font-semibold text-primary">总收入 ({order.currency})</Label><Input type="number" step="0.01" value={editRevenue} onChange={e => setEditRevenue(e.target.value)} className="border-primary/30" /></div>
-                      <Separator />
-                      <p className="text-[10px] text-muted-foreground font-medium">成本明细</p>
-                      <div className="space-y-1"><Label className="text-xs">面料 ({order.currency})</Label><Input type="number" step="0.01" value={editFabric} onChange={e => setEditFabric(e.target.value)} /></div>
-                      <div className="space-y-1"><Label className="text-xs">辅料 ({order.currency})</Label><Input type="number" step="0.01" value={editAccessory} onChange={e => setEditAccessory(e.target.value)} /></div>
-                      <div className="space-y-1"><Label className="text-xs">加工费 ({order.currency})</Label><Input type="number" step="0.01" value={editProcessing} onChange={e => setEditProcessing(e.target.value)} /></div>
-                      <div className="space-y-1"><Label className="text-xs">货代费 ({order.currency})</Label><Input type="number" step="0.01" value={editForwarder} onChange={e => setEditForwarder(e.target.value)} /></div>
-                      <div className="space-y-1"><Label className="text-xs">装柜费 ({order.currency})</Label><Input type="number" step="0.01" value={editContainer} onChange={e => setEditContainer(e.target.value)} /></div>
-                      <div className="space-y-1"><Label className="text-xs">物流费 ({order.currency})</Label><Input type="number" step="0.01" value={editLogistics} onChange={e => setEditLogistics(e.target.value)} /></div>
-                      <Separator />
-                      <div className="flex gap-2">
-                        <Button size="sm" className="flex-1" disabled={savingEdit} onClick={handleSaveEdit}>
-                          {savingEdit ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}保存
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => setEditMode(false)}>取消</Button>
+                    (() => {
+                      const rate = Number(editRate) || order.exchange_rate || 7
+                      const revenueCny = (Number(editRevenue) || 0) * rate
+                      const costTotal = [editFabric, editAccessory, editProcessing, editForwarder, editContainer, editLogistics].reduce((s, v) => s + (Number(v) || 0), 0)
+                      const profitCny = revenueCny - costTotal
+                      const marginPct = revenueCny > 0 ? (profitCny / revenueCny * 100).toFixed(1) : '0'
+                      return <div className="space-y-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs font-semibold text-primary">合同金额 (USD)</Label>
+                          <Input type="number" step="0.01" value={editRevenue} onChange={e => setEditRevenue(e.target.value)} className="border-primary/30" />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs font-semibold text-amber-600">结汇汇率</Label>
+                          <Input type="number" step="0.01" value={editRate} onChange={e => setEditRate(e.target.value)} className="border-amber-300" />
+                          <p className="text-[10px] text-muted-foreground">折合人民币 ¥{revenueCny.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                        </div>
+                        <Separator />
+                        <p className="text-[10px] text-muted-foreground font-medium">成本明细 (CNY 人民币)</p>
+                        <div className="space-y-1"><Label className="text-xs">面料 (¥)</Label><Input type="number" step="0.01" value={editFabric} onChange={e => setEditFabric(e.target.value)} /></div>
+                        <div className="space-y-1"><Label className="text-xs">辅料 (¥)</Label><Input type="number" step="0.01" value={editAccessory} onChange={e => setEditAccessory(e.target.value)} /></div>
+                        <div className="space-y-1"><Label className="text-xs">加工费 (¥)</Label><Input type="number" step="0.01" value={editProcessing} onChange={e => setEditProcessing(e.target.value)} /></div>
+                        <div className="space-y-1"><Label className="text-xs">货代费 (¥)</Label><Input type="number" step="0.01" value={editForwarder} onChange={e => setEditForwarder(e.target.value)} /></div>
+                        <div className="space-y-1"><Label className="text-xs">装柜费 (¥)</Label><Input type="number" step="0.01" value={editContainer} onChange={e => setEditContainer(e.target.value)} /></div>
+                        <div className="space-y-1"><Label className="text-xs">物流费 (¥)</Label><Input type="number" step="0.01" value={editLogistics} onChange={e => setEditLogistics(e.target.value)} /></div>
+                        <Separator />
+                        <div className="p-2 rounded-lg bg-muted text-xs space-y-1">
+                          <div className="flex justify-between"><span>成本合计</span><span className="font-medium">¥{costTotal.toLocaleString()}</span></div>
+                          <div className="flex justify-between"><span>预计利润</span><span className={`font-semibold ${profitCny < 0 ? 'text-red-600' : 'text-green-600'}`}>¥{profitCny.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></div>
+                          <div className="flex justify-between"><span>毛利率</span><span className={`font-medium ${Number(marginPct) < 15 ? 'text-amber-600' : 'text-green-600'}`}>{marginPct}%</span></div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button size="sm" className="flex-1" disabled={savingEdit} onClick={handleSaveEdit}>
+                            {savingEdit ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}保存
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setEditMode(false)}>取消</Button>
+                        </div>
                       </div>
-                    </div>
+                    })()
                   ) : (
                     (() => {
                       const bd = (order.items as unknown as Record<string, unknown>[])?.[0]
                       const cb = bd?._cost_breakdown as Record<string, number> | undefined
+                      const rate = order.exchange_rate || 1
+                      const revenueCny = order.total_revenue * rate
                       return <>
-                        <div className="flex justify-between"><span className="text-muted-foreground">面料</span><span className="font-medium">{order.currency} {(cb?.fabric ?? order.target_purchase_price).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">辅料</span><span>{order.currency} {(cb?.accessory ?? 0).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">加工费</span><span>{order.currency} {(cb?.processing ?? order.estimated_commission).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">货代费</span><span>{order.currency} {(cb?.forwarder ?? order.estimated_freight).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">装柜费</span><span>{order.currency} {(cb?.container ?? order.estimated_customs_fee).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">物流费</span><span>{order.currency} {(cb?.logistics ?? order.other_costs).toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">合同金额</span><span className="font-medium">$ {order.total_revenue.toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">汇率 {rate} 结汇</span><span className="font-medium text-primary">¥ {revenueCny.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></div>
                         <Separator />
-                        <div className="flex justify-between font-semibold"><span>总成本</span><span>{order.currency} {order.total_cost.toLocaleString()}</span></div>
+                        <p className="text-[10px] text-muted-foreground font-medium">成本明细 (CNY)</p>
+                        <div className="flex justify-between"><span className="text-muted-foreground">面料</span><span className="font-medium">¥ {(cb?.fabric ?? order.target_purchase_price).toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">辅料</span><span>¥ {(cb?.accessory ?? 0).toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">加工费</span><span>¥ {(cb?.processing ?? order.estimated_commission).toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">货代费</span><span>¥ {(cb?.forwarder ?? order.estimated_freight).toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">装柜费</span><span>¥ {(cb?.container ?? order.estimated_customs_fee).toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">物流费</span><span>¥ {(cb?.logistics ?? order.other_costs).toLocaleString()}</span></div>
+                        <Separator />
+                        <div className="flex justify-between font-semibold"><span>成本合计</span><span>¥ {order.total_cost.toLocaleString()}</span></div>
                       </>
                     })()
                   )}
@@ -391,15 +423,15 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 <CardHeader className="pb-3"><CardTitle className="text-sm">利润概览</CardTitle></CardHeader>
                 <CardContent className="space-y-4">
                   <div className="text-center p-4 rounded-lg bg-muted">
-                    <p className="text-sm text-muted-foreground mb-1">预计利润</p>
+                    <p className="text-sm text-muted-foreground mb-1">预计利润 (CNY)</p>
                     <p className={`text-3xl font-bold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      {order.currency} {order.estimated_profit.toLocaleString()}
+                      ¥ {order.estimated_profit.toLocaleString()}
                     </p>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="text-center p-3 rounded-lg bg-blue-50">
-                      <p className="text-xs text-muted-foreground">总收入</p>
-                      <p className="text-sm font-semibold text-blue-700">{order.currency} {order.total_revenue.toLocaleString()}</p>
+                      <p className="text-xs text-muted-foreground">合同金额</p>
+                      <p className="text-sm font-semibold text-blue-700">$ {order.total_revenue.toLocaleString()}</p>
                     </div>
                     <div className="text-center p-3 rounded-lg bg-amber-50">
                       <p className="text-xs text-muted-foreground">毛利率</p>
