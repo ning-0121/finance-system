@@ -40,19 +40,23 @@ export default function CustomerProfilesPage() {
           map.get(name)!.orders.push(o)
         }
         const summaries: CustomerSummary[] = Array.from(map.entries()).map(([name, { orders: ords }]) => {
-          const totalRevenue = ords.reduce((s, o) => s + o.total_revenue, 0)
+          // 全部转CNY口径计算
+          const totalRevenueCny = ords.reduce((s, o) => {
+            const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate || 7)
+            return s + o.total_revenue * rate
+          }, 0)
           const totalCost = ords.reduce((s, o) => s + o.total_cost, 0)
-          const totalProfit = ords.reduce((s, o) => s + o.estimated_profit, 0)
-          const avgMargin = totalRevenue > 0 ? Math.round(totalProfit / (totalRevenue * (ords[0]?.exchange_rate || 7)) * 10000) / 100 : 0
+          const totalProfit = totalRevenueCny - totalCost
+          const avgMargin = totalRevenueCny > 0 ? Math.round(totalProfit / totalRevenueCny * 10000) / 100 : 0
           return {
             name,
             country: ords[0]?.customer?.country || '',
             orderCount: ords.length,
-            totalRevenue: Math.round(totalRevenue),
+            totalRevenue: Math.round(totalRevenueCny),
             totalCost: Math.round(totalCost),
             totalProfit: Math.round(totalProfit),
             avgMargin,
-            currency: ords[0]?.currency || 'USD',
+            currency: 'CNY', // 汇总后统一CNY
           }
         }).sort((a, b) => b.totalRevenue - a.totalRevenue)
         setCustomers(summaries)
@@ -75,7 +79,7 @@ export default function CustomerProfilesPage() {
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
         <div className="grid grid-cols-3 gap-4">
           <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">客户总数</p><p className="text-2xl font-bold">{totalCustomers}</p></CardContent></Card>
-          <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">总收入(USD)</p><p className="text-2xl font-bold">$ {totalRevenue.toLocaleString()}</p></CardContent></Card>
+          <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">总收入(CNY)</p><p className="text-2xl font-bold">¥ {totalRevenue.toLocaleString()}</p></CardContent></Card>
           <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">总利润(CNY)</p><p className="text-2xl font-bold">¥ {totalProfit.toLocaleString()}</p></CardContent></Card>
         </div>
 
@@ -92,7 +96,7 @@ export default function CustomerProfilesPage() {
                   <TableHead>客户</TableHead>
                   <TableHead>国家</TableHead>
                   <TableHead className="text-right">订单数</TableHead>
-                  <TableHead className="text-right">总收入(USD)</TableHead>
+                  <TableHead className="text-right">总收入(CNY)</TableHead>
                   <TableHead className="text-right">总成本(CNY)</TableHead>
                   <TableHead className="text-right">总利润(CNY)</TableHead>
                   <TableHead className="text-right">平均毛利率</TableHead>
@@ -104,7 +108,7 @@ export default function CustomerProfilesPage() {
                     <TableCell className="font-medium">{c.name}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{c.country}</TableCell>
                     <TableCell className="text-right">{c.orderCount}</TableCell>
-                    <TableCell className="text-right font-medium">$ {c.totalRevenue.toLocaleString()}</TableCell>
+                    <TableCell className="text-right font-medium">¥ {c.totalRevenue.toLocaleString()}</TableCell>
                     <TableCell className="text-right">¥ {c.totalCost.toLocaleString()}</TableCell>
                     <TableCell className={`text-right font-semibold ${c.totalProfit < 0 ? 'text-red-600' : 'text-green-600'}`}>
                       ¥ {c.totalProfit.toLocaleString()}

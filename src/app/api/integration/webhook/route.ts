@@ -250,8 +250,13 @@ async function autoCreateBudgetDraft(order: SyncedOrder) {
 
   if (existing?.length) return // 已存在
 
+  // 获取创建者profile
+  const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
+  const createdBy = profiles?.[0]?.id
+  if (!createdBy) return // 无可用profile，跳过
+
   // 查找或创建客户
-  let customerId = '00000000-0000-0000-0000-000000000000'
+  let customerId: string | null = null
   if (order.customer_name) {
     const { data: customer } = await supabase
       .from('customers')
@@ -272,6 +277,8 @@ async function autoCreateBudgetDraft(order: SyncedOrder) {
     }
   }
 
+  if (!customerId) return // 无客户信息，跳过
+
   const totalAmount = Number(order.total_amount) || (Number(order.unit_price || 0) * Number(order.quantity || 0))
 
   await supabase.from('budget_orders').insert({
@@ -280,7 +287,7 @@ async function autoCreateBudgetDraft(order: SyncedOrder) {
     total_revenue: totalAmount,
     currency: order.currency || 'USD',
     status: 'draft',
-    created_by: '00000000-0000-0000-0000-000000000000',
+    created_by: createdBy,
     notes: `来源: 订单节拍器自动同步\n节拍器订单号: ${order.order_no}\n客户: ${order.customer_name || ''}\nPO: ${order.po_number || ''}`,
     has_sub_documents: false,
   })

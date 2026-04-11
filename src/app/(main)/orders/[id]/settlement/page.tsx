@@ -168,14 +168,14 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
                         <TableRow key={r.id}>
                           <TableCell><Badge variant="outline">{returnTypeLabels[r.return_type]}</Badge></TableCell>
                           <TableCell>{r.items?.[0]?.name || '-'}</TableCell>
-                          <TableCell className="text-right font-medium">${r.total_value.toLocaleString()}</TableCell>
+                          <TableCell className="text-right font-medium">¥{r.total_value.toLocaleString()}</TableCell>
                           <TableCell><Badge variant={r.accounting_treatment === 'reduce_cost' ? 'default' : r.accounting_treatment === 'scrap' ? 'destructive' : 'secondary'}>{treatmentLabels[r.accounting_treatment]}</Badge></TableCell>
                         </TableRow>
                       ))}
                       {totalReturnCredit > 0 && (
                         <TableRow className="bg-green-50/50 font-semibold">
                           <TableCell colSpan={2} className="text-right">冲减成本合计</TableCell>
-                          <TableCell className="text-right text-green-600">-${totalReturnCredit.toLocaleString()}</TableCell>
+                          <TableCell className="text-right text-green-600">-¥{totalReturnCredit.toLocaleString()}</TableCell>
                           <TableCell />
                         </TableRow>
                       )}
@@ -194,14 +194,14 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
               <>
                 {/* 决算汇总 */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                  <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">预算总成本</p><p className="text-xl font-bold">${settlement.total_budget.toLocaleString()}</p></CardContent></Card>
-                  <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">实际总成本</p><p className="text-xl font-bold">${settlement.total_actual.toLocaleString()}</p></CardContent></Card>
+                  <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">预算总成本</p><p className="text-xl font-bold">¥{settlement.total_budget.toLocaleString()}</p></CardContent></Card>
+                  <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">实际总成本</p><p className="text-xl font-bold">¥{settlement.total_actual.toLocaleString()}</p></CardContent></Card>
                   <Card className={settlement.total_variance > 0 ? 'border-red-200' : 'border-green-200'}>
                     <CardContent className="p-4 text-center">
                       <p className="text-xs text-muted-foreground">总差异</p>
                       <p className={`text-xl font-bold flex items-center justify-center gap-1 ${settlement.total_variance > 0 ? 'text-red-600' : 'text-green-600'}`}>
                         {settlement.total_variance > 0 ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
-                        ${Math.abs(settlement.total_variance).toLocaleString()}
+                        ¥{Math.abs(settlement.total_variance).toLocaleString()}
                       </p>
                     </CardContent>
                   </Card>
@@ -209,7 +209,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
                     <CardContent className="p-4 text-center">
                       <p className="text-xs text-muted-foreground">最终利润</p>
                       <p className={`text-xl font-bold ${settlement.final_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        ${settlement.final_profit.toLocaleString()} ({settlement.final_margin}%)
+                        ¥{settlement.final_profit.toLocaleString()} ({settlement.final_margin}%)
                       </p>
                     </CardContent>
                   </Card>
@@ -244,10 +244,10 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
                             <TableRow key={i}>
                               <TableCell>{s.doc_type}</TableCell>
                               <TableCell>{s.supplier_name || '-'}</TableCell>
-                              <TableCell className="text-right">${s.budgeted.toLocaleString()}</TableCell>
-                              <TableCell className="text-right">${s.actual.toLocaleString()}</TableCell>
+                              <TableCell className="text-right">¥{s.budgeted.toLocaleString()}</TableCell>
+                              <TableCell className="text-right">¥{s.actual.toLocaleString()}</TableCell>
                               <TableCell className={`text-right font-semibold ${s.variance > 0 ? 'text-red-600' : s.variance < 0 ? 'text-green-600' : ''}`}>
-                                {s.variance > 0 ? '+' : ''}${s.variance.toLocaleString()}
+                                {s.variance > 0 ? '+' : ''}¥{s.variance.toLocaleString()}
                               </TableCell>
                               <TableCell className={`text-right ${s.variance_pct > 0 ? 'text-red-600' : s.variance_pct < 0 ? 'text-green-600' : ''}`}>
                                 {s.variance_pct > 0 ? '+' : ''}{s.variance_pct}%
@@ -265,7 +265,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
                   <Card className="border-green-200">
                     <CardContent className="p-4 flex items-center justify-between">
                       <div><p className="text-sm font-medium">剩余物料冲减</p><p className="text-xs text-muted-foreground">冲减后已从实际成本中扣除</p></div>
-                      <p className="text-lg font-bold text-green-600">-${settlement.inventory_credit.toLocaleString()}</p>
+                      <p className="text-lg font-bold text-green-600">-¥{settlement.inventory_credit.toLocaleString()}</p>
                     </CardContent>
                   </Card>
                 )}

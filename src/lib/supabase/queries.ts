@@ -114,7 +114,7 @@ export async function createBudgetOrder(order: Partial<BudgetOrder>): Promise<{ 
         currency: order.currency || 'USD',
         exchange_rate: order.exchange_rate || 1,
         status: order.status || 'draft',
-        created_by: userData?.user?.id || '00000000-0000-0000-0000-000000000000',
+        created_by: userData?.user?.id || (await supabase.from('profiles').select('id').limit(1).then(r => r.data?.[0]?.id)),
         notes: order.notes || null,
       })
       .select()
@@ -214,7 +214,7 @@ export async function createApprovalLog(log: Partial<ApprovalLog>): Promise<{ er
         action: log.action,
         from_status: log.from_status,
         to_status: log.to_status,
-        operator_id: log.operator_id || '00000000-0000-0000-0000-000000000000',
+        operator_id: log.operator_id || (await supabase.from('profiles').select('id').limit(1).then(r => r.data?.[0]?.id)),
         comment: log.comment ? String(log.comment).slice(0, 500) : null, // 限制长度
       })
 
@@ -342,22 +342,24 @@ export async function getProfitSummary(): Promise<ProfitSummary> {
     const supabase = createClient()
     const { data, error } = await supabase
       .from('budget_orders')
-      .select('total_revenue, total_cost, estimated_profit, estimated_margin')
+      .select('total_revenue, total_cost, estimated_profit, estimated_margin, currency, exchange_rate')
       .in('status', ['approved', 'closed'])
 
     if (error || !data?.length) return demoProfitSummary
 
-    const totalRevenue = data.reduce((s, o) => s + (o.total_revenue || 0), 0)
-    const totalCost = data.reduce((s, o) => s + (o.total_cost || 0), 0)
-    const totalProfit = data.reduce((s, o) => s + (o.estimated_profit || 0), 0)
-    const avgMargin = data.length > 0
-      ? data.reduce((s, o) => s + (o.estimated_margin || 0), 0) / data.length
-      : 0
+    // 全部转CNY口径
+    const totalRevenueCny = data.reduce((s, o) => {
+      const rate = (o.currency as string) === 'CNY' ? 1 : ((o.exchange_rate as number) || 7)
+      return s + (o.total_revenue || 0) * rate
+    }, 0)
+    const totalCost = data.reduce((s, o) => s + (o.total_cost || 0), 0) // 已经是CNY
+    const totalProfit = totalRevenueCny - totalCost
+    const avgMargin = totalRevenueCny > 0 ? totalProfit / totalRevenueCny * 100 : 0
 
     return {
-      total_revenue: totalRevenue,
-      total_cost: totalCost,
-      total_profit: totalProfit,
+      total_revenue: Math.round(totalRevenueCny),
+      total_cost: Math.round(totalCost),
+      total_profit: Math.round(totalProfit),
       avg_margin: Math.round(avgMargin * 100) / 100,
       order_count: data.length,
       period: new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' }),
@@ -373,19 +375,22 @@ export async function getMonthlyProfitData() {
     const supabase = createClient()
     const { data: orders } = await supabase
       .from('budget_orders')
-      .select('order_date, total_revenue, total_cost, estimated_profit, estimated_margin')
+      .select('order_date, total_revenue, total_cost, estimated_profit, estimated_margin, currency, exchange_rate')
       .not('order_date', 'is', null)
       .order('order_date')
     if (!orders || orders.length === 0) return demoMonthlyProfit
 
-    // 按月聚合
+    // 按月聚合（全部转CNY）
     const monthMap = new Map<string, { revenue: number; cost: number; profit: number; count: number }>()
     for (const o of orders) {
-      const month = (o.order_date as string).substring(0, 7) // YYYY-MM
+      const month = (o.order_date as string).substring(0, 7)
+      const rate = (o.currency as string) === 'CNY' ? 1 : ((o.exchange_rate as number) || 7)
+      const revCny = (o.total_revenue as number) * rate
+      const costCny = o.total_cost as number
       const existing = monthMap.get(month) || { revenue: 0, cost: 0, profit: 0, count: 0 }
-      existing.revenue += o.total_revenue as number
-      existing.cost += o.total_cost as number
-      existing.profit += o.estimated_profit as number
+      existing.revenue += revCny
+      existing.cost += costCny
+      existing.profit += revCny - costCny
       existing.count += 1
       monthMap.set(month, existing)
     }

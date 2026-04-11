@@ -57,10 +57,11 @@ export default function PaymentsPage() {
     setProcessing(true)
     try {
       const supabase = createClient()
-      await supabase.from('payable_records').update({ payment_status: 'approved', approved_at: new Date().toISOString() }).eq('id', id)
+      const { error } = await supabase.from('payable_records').update({ payment_status: 'approved', approved_at: new Date().toISOString() }).eq('id', id)
+      if (error) throw error
       setRecords(records.map(r => r.id === id ? { ...r, payment_status: 'approved' as PaymentStatus } : r))
       toast.success('已审批通过')
-    } catch { toast.error('操作失败') }
+    } catch (err) { toast.error(`审批失败: ${err instanceof Error ? err.message : '未知错误'}`) }
     setProcessing(false)
   }
 
@@ -69,11 +70,12 @@ export default function PaymentsPage() {
     setProcessing(true)
     try {
       const supabase = createClient()
-      await supabase.from('payable_records').update({
+      const { error } = await supabase.from('payable_records').update({
         payment_status: 'paid', paid_at: new Date().toISOString(),
         paid_amount: payDialog.amount, payment_method: 'bank_transfer',
         payment_reference: payRef || null, notes: payNote || null,
       }).eq('id', payDialog.id)
+      if (error) throw error
 
       if (payDialog.invoice_id) {
         await supabase.from('actual_invoices').update({ status: 'paid' }).eq('id', payDialog.invoice_id)
@@ -82,7 +84,7 @@ export default function PaymentsPage() {
       setRecords(records.map(r => r.id === payDialog.id ? { ...r, payment_status: 'paid' as PaymentStatus } : r))
       toast.success('付款完成')
       setPayDialog(null); setPayRef(''); setPayNote('')
-    } catch { toast.error('操作失败') }
+    } catch (err) { toast.error(`付款失败: ${err instanceof Error ? err.message : '未知错误'}`) }
     setProcessing(false)
   }
 

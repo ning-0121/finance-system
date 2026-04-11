@@ -65,27 +65,27 @@ export default function DashboardPage() {
     : `所有订单利润率正常`
 
   const stats = [
-    { key: 'revenue', title: '本月营收', value: `$${(s.total_revenue / 1000).toFixed(0)}K`, change: 5.2, icon: DollarSign, color: 'text-blue-600', bgColor: 'bg-blue-50' },
-    { key: 'profit', title: '本月利润', value: `$${(s.total_profit / 1000).toFixed(0)}K`, change: -3.4, icon: TrendingUp, color: 'text-green-600', bgColor: 'bg-green-50' },
+    { key: 'revenue', title: '本月营收', value: `¥${(s.total_revenue / 1000).toFixed(0)}K`, change: 5.2, icon: DollarSign, color: 'text-blue-600', bgColor: 'bg-blue-50' },
+    { key: 'profit', title: '本月利润', value: `¥${(s.total_profit / 1000).toFixed(0)}K`, change: -3.4, icon: TrendingUp, color: 'text-green-600', bgColor: 'bg-green-50' },
     { key: 'orders', title: '活跃订单', value: s.order_count.toString(), change: 12, icon: Package, color: 'text-purple-600', bgColor: 'bg-purple-50' },
     { key: 'margin', title: '平均毛利率', value: `${s.avg_margin}%`, change: -1.2, icon: AlertTriangle, color: 'text-amber-600', bgColor: 'bg-amber-50' },
   ]
 
   const handleMarkResolved = async (alertId: string) => {
-    setAlerts(alerts.map(a => a.id === alertId ? { ...a, is_read: true } : a))
     try {
       const supabase = createClient()
       await supabase.from('alerts').update({ is_read: true }).eq('id', alertId)
       await supabase.from('financial_risk_events').update({ status: 'resolved', resolved_at: new Date().toISOString() }).eq('id', alertId)
-    } catch { /* demo */ }
-    toast.success('已标记处理')
+      setAlerts(alerts.map(a => a.id === alertId ? { ...a, is_read: true } : a))
+      toast.success('已标记处理')
+    } catch (err) { toast.error(`操作失败: ${err instanceof Error ? err.message : '未知错误'}`) }
   }
 
   // Drill-down数据
   const getDrillDownContent = (key: string) => {
     switch (key) {
-      case 'revenue': return { title: '营收分析', items: [...orders].sort((a, b) => b.total_revenue - a.total_revenue).slice(0, 5).map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `${o.currency} ${o.total_revenue.toLocaleString()}` })) }
-      case 'profit': return { title: '利润分析', items: [...topProfit, ...bottomProfit].map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `${o.currency} ${o.estimated_profit.toLocaleString()} (${o.estimated_margin}%)` })) }
+      case 'revenue': return { title: '营收分析', items: [...orders].sort((a, b) => b.total_revenue - a.total_revenue).slice(0, 5).map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `${o.currency === 'CNY' ? '¥' : '$'} ${o.total_revenue.toLocaleString()}` })) }
+      case 'profit': return { title: '利润分析', items: [...topProfit, ...bottomProfit].map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `¥ ${o.estimated_profit.toLocaleString()} (${o.estimated_margin}%)` })) }
       case 'orders': return { title: '订单状态', items: [{ label: '草稿', value: orders.filter(o => o.status === 'draft').length.toString() }, { label: '待审批', value: orders.filter(o => o.status === 'pending_review').length.toString() }, { label: '已通过', value: orders.filter(o => o.status === 'approved').length.toString() }, { label: '已关闭', value: orders.filter(o => o.status === 'closed').length.toString() }] }
       case 'margin': return { title: '毛利率分析', items: [...orders].sort((a, b) => a.estimated_margin - b.estimated_margin).slice(0, 5).map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `${o.estimated_margin}%` })) }
       default: return { title: '', items: [] }
@@ -200,8 +200,8 @@ export default function DashboardPage() {
                 <BarChart data={monthlyProfit}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} />
-                  <Tooltip formatter={(value) => [`$${Number(value).toLocaleString()}`, '']} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `¥${(v / 1000).toFixed(0)}K`} />
+                  <Tooltip formatter={(value) => [`¥${Number(value).toLocaleString()}`, '']} />
                   <Bar dataKey="revenue" name="营收" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                   <Bar dataKey="profit" name="利润" fill="#22c55e" radius={[4, 4, 0, 0]} />
                 </BarChart>

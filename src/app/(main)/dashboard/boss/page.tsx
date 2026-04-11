@@ -53,14 +53,17 @@ export default function BossDashboardPage() {
 
   if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
 
-  // 从真实订单数据估算现金流
-  const totalRevenue = allOrders.reduce((s, o) => s + o.total_revenue, 0)
-  const totalCost = allOrders.reduce((s, o) => s + o.total_cost, 0)
-  const totalProfit = totalRevenue - totalCost
+  // 从真实订单数据估算现金流（全部转换为CNY口径）
+  const totalRevenueCny = allOrders.reduce((s, o) => {
+    const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate || 7)
+    return s + o.total_revenue * rate
+  }, 0)
+  const totalCost = allOrders.reduce((s, o) => s + o.total_cost, 0) // 已经是CNY
+  const totalProfit = totalRevenueCny - totalCost
   // 估算：已收回收入的60%作为当前现金余额
-  const cashBalance = Math.round(totalRevenue * 0.6 - totalCost * 0.8)
+  const cashBalance = Math.round(totalRevenueCny * 0.6 - totalCost * 0.8)
   // 估算本周收入和支出
-  const avgWeeklyRevenue = allOrders.length > 0 ? Math.round(totalRevenue / Math.max(allOrders.length, 1) * 2) : 0
+  const avgWeeklyRevenue = allOrders.length > 0 ? Math.round(totalRevenueCny / Math.max(allOrders.length, 1) * 2) : 0
   const avgWeeklyExpense = allOrders.length > 0 ? Math.round(totalCost / Math.max(allOrders.length, 1) * 2) : 0
   const weekInflow = avgWeeklyRevenue
   const weekOutflow = avgWeeklyExpense
@@ -80,10 +83,10 @@ export default function BossDashboardPage() {
                 <Badge variant="outline" className="text-[10px]">实时</Badge>
               </div>
               <p className="text-xs text-muted-foreground">当前现金余额</p>
-              <p className="text-2xl font-bold">${cashBalance.toLocaleString()}</p>
+              <p className="text-2xl font-bold">¥{cashBalance.toLocaleString()}</p>
               <div className="flex items-center gap-3 mt-2 text-xs">
-                <span className="text-green-600 flex items-center"><ArrowUpRight className="h-3 w-3" />本周入 ${weekInflow.toLocaleString()}</span>
-                <span className="text-red-600 flex items-center"><ArrowDownRight className="h-3 w-3" />本周出 ${weekOutflow.toLocaleString()}</span>
+                <span className="text-green-600 flex items-center"><ArrowUpRight className="h-3 w-3" />本周入 ¥{weekInflow.toLocaleString()}</span>
+                <span className="text-red-600 flex items-center"><ArrowDownRight className="h-3 w-3" />本周出 ¥{weekOutflow.toLocaleString()}</span>
               </div>
             </CardContent>
           </Card>

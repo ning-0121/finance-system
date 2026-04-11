@@ -49,12 +49,13 @@ export default function RisksPage() {
   const pendingCount = risks.filter(r => r.status === 'pending').length
 
   const handleResolve = async (id: string) => {
-    setRisks(risks.map(r => r.id === id ? { ...r, status: 'resolved' as const, resolved_at: new Date().toISOString() } : r))
     try {
       const supabase = createClient()
-      await supabase.from('financial_risk_events').update({ status: 'resolved', resolved_at: new Date().toISOString() }).eq('id', id)
-    } catch { /* demo */ }
-    toast.success('风险已标记为已处理')
+      const { error } = await supabase.from('financial_risk_events').update({ status: 'resolved', resolved_at: new Date().toISOString() }).eq('id', id)
+      if (error) throw error
+      setRisks(risks.map(r => r.id === id ? { ...r, status: 'resolved' as const, resolved_at: new Date().toISOString() } : r))
+      toast.success('风险已标记为已处理')
+    } catch (err) { toast.error(`操作失败: ${err instanceof Error ? err.message : '未知错误'}`) }
   }
 
   return (
