@@ -353,3 +353,32 @@ export interface OrderLevelCost {
   actual: number
   variance: number
 }
+
+// 应付记录（从决算中自动剥离）
+export type PaymentStatus = 'unpaid' | 'pending_approval' | 'approved' | 'paid' | 'cancelled'
+
+export interface PayableRecord {
+  id: string
+  budget_order_id: string | null
+  settlement_id: string | null
+  invoice_id: string | null
+  order_no: string | null
+  supplier_name: string
+  description: string
+  cost_category: string | null
+  amount: number
+  currency: string
+  budget_amount: number | null
+  over_budget: boolean
+  due_date: string | null
+  payment_status: PaymentStatus
+  approved_by: string | null
+  approved_at: string | null
+  paid_at: string | null
+  paid_amount: number | null
+  payment_method: string | null
+  payment_reference: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}

@@ -7,6 +7,7 @@ import type {
   SubDocument, SubDocumentType, SubDocItem,
   ActualInvoice, ShippingDocument, InventoryReturn,
   OrderSettlement, SubSettlement, OrderLevelCost,
+  PayableRecord,
 } from '@/lib/types'
 
 // ============================================================
@@ -271,6 +272,124 @@ export async function getOrderSettlement(budgetOrderId: string): Promise<OrderSe
     return data as OrderSettlement
   } catch {
     return null
+  }
+}
+
+// ============================================================
+// 应付自动生成（从决算中剥离）
+// ============================================================
+
+export async function generatePayablesFromSettlement(budgetOrderId: string): Promise<{ created: number; error: string | null }> {
+  try {
+    const supabase = createClient()
+
+    // 1. 获取决算单
+    const { data: settlement } = await supabase
+      .from('order_settlements')
+      .select('id, status')
+      .eq('budget_order_id', budgetOrderId)
+      .single()
+
+    if (!settlement) return { created: 0, error: '决算单不存在' }
+    if (settlement.status !== 'confirmed' && settlement.status !== 'locked') {
+      return { created: 0, error: '决算单未确认，不能生成应付' }
+    }
+
+    // 2. 获取该订单的所有实际发票（已确认但未付的）
+    const { data: invoices } = await supabase
+      .from('actual_invoices')
+      .select('id, invoice_no, supplier_name, invoice_type, total_amount, currency, due_date, status, sub_document_id')
+      .eq('budget_order_id', budgetOrderId)
+      .in('status', ['approved', 'pending'])
+
+    if (!invoices?.length) return { created: 0, error: null }
+
+    // 3. 获取预算子单据（用于对比超支）
+    const { data: subDocs } = await supabase
+      .from('budget_sub_documents')
+      .select('id, doc_type, estimated_total')
+      .eq('budget_order_id', budgetOrderId)
+
+    const subDocMap = new Map<string, number>()
+    subDocs?.forEach(d => subDocMap.set(d.id, d.estimated_total || 0))
+
+    // 4. 获取订单号
+    const { data: order } = await supabase
+      .from('budget_orders')
+      .select('order_no')
+      .eq('id', budgetOrderId)
+      .single()
+
+    // 5. 检查已有应付记录（防重复）
+    const { data: existing } = await supabase
+      .from('payable_records')
+      .select('invoice_id')
+      .eq('budget_order_id', budgetOrderId)
+
+    const existingInvoiceIds = new Set((existing || []).map(e => e.invoice_id))
+
+    // 6. 生成应付记录
+    const invoiceTypeToCostCategory: Record<string, string> = {
+      purchase_order: 'raw_material', supplier_invoice: 'raw_material',
+      factory_contract: 'factory', factory_statement: 'factory',
+      freight_bill: 'freight', commission_bill: 'commission',
+      tax_invoice: 'tax', other_invoice: 'other',
+    }
+
+    let created = 0
+    for (const inv of invoices) {
+      if (existingInvoiceIds.has(inv.id)) continue // 已有应付，跳过
+
+      const budgetAmount = inv.sub_document_id ? subDocMap.get(inv.sub_document_id) || null : null
+      const overBudget = budgetAmount !== null && inv.total_amount > budgetAmount
+
+      const { error } = await supabase.from('payable_records').insert({
+        budget_order_id: budgetOrderId,
+        settlement_id: settlement.id,
+        invoice_id: inv.id,
+        order_no: order?.order_no || null,
+        supplier_name: inv.supplier_name || '未知供应商',
+        description: `${inv.invoice_no} - ${inv.supplier_name || ''}`,
+        cost_category: invoiceTypeToCostCategory[inv.invoice_type] || 'other',
+        amount: inv.total_amount,
+        currency: inv.currency,
+        budget_amount: budgetAmount,
+        over_budget: overBudget,
+        due_date: inv.due_date,
+        payment_status: 'unpaid',
+      })
+
+      if (!error) created++
+    }
+
+    return { created, error: null }
+  } catch (e) {
+    return { created: 0, error: e instanceof Error ? e.message : 'Unknown error' }
+  }
+}
+
+// 获取应付记录列表
+export async function getPayableRecords(filters?: {
+  budgetOrderId?: string
+  paymentStatus?: string
+  supplierName?: string
+}): Promise<PayableRecord[]> {
+  try {
+    const supabase = createClient()
+    let query = supabase
+      .from('payable_records')
+      .select('*')
+      .order('created_at', { ascending: false })
+
+    if (filters?.budgetOrderId) query = query.eq('budget_order_id', filters.budgetOrderId)
+    if (filters?.paymentStatus) query = query.eq('payment_status', filters.paymentStatus)
+    if (filters?.supplierName) query = query.ilike('supplier_name', `%${filters.supplierName}%`)
+
+    const { data, error } = await query
+    if (error || !data) return []
+    return data as PayableRecord[]
+  } catch {
+    return []
   }
 }
 
