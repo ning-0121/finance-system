@@ -60,6 +60,8 @@ export default function CostsPage() {
   // 新费用表单
   const [formType, setFormType] = useState<CostType>('freight')
   const [formOrderId, setFormOrderId] = useState('')
+  const [orderSearch, setOrderSearch] = useState('')
+  const [showOrderList, setShowOrderList] = useState(false)
   const [formDesc, setFormDesc] = useState('')
   const [formAmount, setFormAmount] = useState('')
   const [formCurrency, setFormCurrency] = useState('USD')
@@ -74,15 +76,16 @@ export default function CostsPage() {
         const ordersData = await getBudgetOrders()
         setOrders(ordersData)
 
-        // 加载synced_orders获取QM订单号+内部单号映射
+        // 加载synced_orders获取内部单号+QM号+客户映射
         const supabase2 = createClient()
-        const { data: syncedOrders } = await supabase2.from('synced_orders').select('order_no, budget_order_id, po_number').not('budget_order_id', 'is', null)
+        const { data: syncedOrders } = await supabase2.from('synced_orders').select('order_no, budget_order_id, style_no, customer_name').not('budget_order_id', 'is', null)
         if (syncedOrders) {
           const map: Record<string, string> = {}
           syncedOrders.forEach((s: Record<string, unknown>) => {
             if (s.budget_order_id) {
-              const internal = s.po_number ? `${s.po_number} | ` : ''
-              map[s.budget_order_id as string] = `${internal}${s.order_no as string}`
+              const internal = s.style_no ? `${s.style_no} | ` : ''
+              const customer = s.customer_name ? ` - ${s.customer_name}` : ''
+              map[s.budget_order_id as string] = `${internal}${s.order_no as string}${customer}`
             }
           })
           setSyncedOrderMap(map)
@@ -370,16 +373,36 @@ export default function CostsPage() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>关联订单</Label>
-                <Select value={formOrderId} onValueChange={(v) => setFormOrderId(v || '')}>
-                  <SelectTrigger><SelectValue placeholder="选择订单（可选）" /></SelectTrigger>
-                  <SelectContent>
-                    {orders.map(o => {
-                      const qmNo = syncedOrderMap[o.id]
-                      return <SelectItem key={o.id} value={o.id}>{qmNo || o.order_no} - {o.customer?.company || ''}{qmNo ? ` (${o.order_no})` : ''}</SelectItem>
-                    })}
-                  </SelectContent>
-                </Select>
+                <Label>关联订单（输入搜索）</Label>
+                <div className="relative">
+                  <Input
+                    placeholder="输入内部单号/订单号/客户名搜索..."
+                    value={formOrderId ? (syncedOrderMap[formOrderId] || orders.find(o => o.id === formOrderId)?.order_no || formOrderId) : orderSearch}
+                    onChange={(e) => { setOrderSearch(e.target.value); setFormOrderId('') }}
+                    onFocus={() => setShowOrderList(true)}
+                  />
+                  {showOrderList && (
+                    <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-white border rounded-lg shadow-lg max-h-[200px] overflow-y-auto">
+                      {orders
+                        .filter(o => {
+                          if (!orderSearch) return true
+                          const label = syncedOrderMap[o.id] || o.order_no
+                          return label.toLowerCase().includes(orderSearch.toLowerCase()) || (o.customer?.company || '').toLowerCase().includes(orderSearch.toLowerCase())
+                        })
+                        .slice(0, 20)
+                        .map(o => {
+                          const label = syncedOrderMap[o.id] || o.order_no
+                          return (
+                            <button key={o.id} className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors" onClick={() => { setFormOrderId(o.id); setOrderSearch(''); setShowOrderList(false) }}>
+                              {label}
+                            </button>
+                          )
+                        })}
+                      {orders.length === 0 && <p className="px-3 py-2 text-sm text-muted-foreground">暂无订单</p>}
+                    </div>
+                  )}
+                </div>
+                {formOrderId && <button className="text-xs text-muted-foreground hover:text-red-500" onClick={() => setFormOrderId('')}>清除关联</button>}
               </div>
             </div>
             <div className="space-y-2">
