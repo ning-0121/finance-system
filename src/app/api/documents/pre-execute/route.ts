@@ -5,6 +5,7 @@
 
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { requireAuth } from '@/lib/auth/api-guard'
 import { getActionsForCategory, canExecuteAction } from '@/lib/document-engine/action-registry'
 import { assessSafety, SAFETY_LEVEL_CONFIG, getFieldRiskLevel } from '@/lib/document-engine/safety'
 import type { DocCategory, ExtractionResult } from '@/lib/types/document'
@@ -26,6 +27,9 @@ export interface PreExecutionAction {
 }
 
 export async function POST(request: Request) {
+  const auth = await requireAuth()
+  if (!auth.authenticated) return auth.error!
+
   try {
     const { document_id, confirmed_fields } = await request.json()
     if (!document_id) return NextResponse.json({ error: 'Missing document_id' }, { status: 400 })

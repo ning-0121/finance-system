@@ -229,11 +229,16 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         estimated_profit: profitCny,
         estimated_margin: margin,
         items: updatedItems,
-      }).eq('id', order.id)
+      }).eq('id', order.id).eq('version', order.version || 1)
 
-      if (error) { toast.error('保存失败: ' + error.message) }
-      else {
-        setOrder({ ...order, total_revenue: revenueInput, currency: editCurrencyMode === 'CNY' ? 'CNY' : 'USD', exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin, items: updatedItems as unknown as typeof order.items })
+      if (error) {
+        if (error.message.includes('已审批')) {
+          toast.error('已审批的订单不能修改金额，如需修改请先撤回审批')
+        } else {
+          toast.error('保存失败: ' + error.message)
+        }
+      } else {
+        setOrder({ ...order, total_revenue: revenueInput, currency: editCurrencyMode === 'CNY' ? 'CNY' : 'USD', exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin, version: (order.version || 1) + 1, items: updatedItems as unknown as typeof order.items })
         setEditMode(false)
         toast.success('预算已保存')
       }
@@ -258,6 +263,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   }
 
   const handleStatusChange = async (action: 'submit' | 'approve' | 'reject', newStatus: BudgetOrderStatus) => {
+    // 自审批阻止：审批人不能是创建人
+    if (action === 'approve' && demoUser.id === order.created_by) {
+      toast.error('不能审批自己创建的订单')
+      return
+    }
+
     // 1. 持久化状态变更到数据库
     const { error: statusError } = await updateBudgetOrderStatus(order.id, newStatus, demoUser.id)
     if (statusError) {

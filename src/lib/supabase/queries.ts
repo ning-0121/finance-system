@@ -520,6 +520,7 @@ function mapDbBudgetOrder(row: Record<string, unknown>): BudgetOrder {
     estimated_margin: (row.estimated_margin as number) || 0,
     currency: (row.currency as string) || 'USD',
     exchange_rate: (row.exchange_rate as number) || 1,
+    version: (row.version as number) || 1,
     status: row.status as BudgetOrderStatus,
     created_by: row.created_by as string,
     approved_by: (row.approved_by as string) || null,

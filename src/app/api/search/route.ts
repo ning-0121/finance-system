@@ -5,8 +5,12 @@
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { requireAuth } from '@/lib/auth/api-guard'
 
 export async function GET(request: NextRequest) {
+  const auth = await requireAuth()
+  if (!auth.authenticated) return auth.error!
+
   const q = request.nextUrl.searchParams.get('q')?.trim()
   if (!q || q.length < 2) {
     return NextResponse.json({ results: [] })

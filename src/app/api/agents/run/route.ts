@@ -5,6 +5,7 @@
 
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { requireAuth } from '@/lib/auth/api-guard'
 import { generateCollectionList, evaluateCustomerRisk, generateOverdueRiskEvents } from '@/lib/agents/collection-agent'
 import { generatePaymentPlan, getWeeklyPaymentSummary } from '@/lib/agents/payment-agent'
 import { detectProfitAnomalies, generateProfitRiskEvents } from '@/lib/agents/profit-agent'
@@ -12,6 +13,9 @@ import { runCircuitBreakerChecks, generateBreakerActions } from '@/lib/agents/ci
 import type { CustomerFinancialProfile } from '@/lib/types/agent'
 
 export async function POST(request: Request) {
+  const auth = await requireAuth()
+  if (!auth.authenticated) return auth.error!
+
   try {
     const { agent_type } = await request.json() as { agent_type?: string }
     const supabase = await createClient()

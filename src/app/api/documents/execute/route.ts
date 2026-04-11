@@ -6,10 +6,14 @@
 
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { requireAuth } from '@/lib/auth/api-guard'
 import { executeDocumentActions } from '@/lib/document-engine/executor'
 import type { DocCategory } from '@/lib/types/document'
 
 export async function POST(request: Request) {
+  const auth = await requireAuth()
+  if (!auth.authenticated) return auth.error!
+
   try {
     const {
       document_id,

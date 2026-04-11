@@ -5,11 +5,15 @@
 
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { requireAuth } from '@/lib/auth/api-guard'
 import { extractWithVision, extractFromExcelHeaders } from '@/lib/document-engine/extractor'
 import { autoMatch, calculateDuplicateProbability, generateSuggestedActions } from '@/lib/document-engine/matcher'
 import type { FileType, ExtractionResult } from '@/lib/types/document'
 
 export async function POST(request: Request) {
+  const auth = await requireAuth()
+  if (!auth.authenticated) return auth.error!
+
   try {
     const formData = await request.formData()
     const file = formData.get('file') as File | null

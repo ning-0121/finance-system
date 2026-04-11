@@ -78,6 +78,7 @@ export interface BudgetOrder {
   estimated_margin: number
   currency: string
   exchange_rate: number
+  version: number
   status: BudgetOrderStatus
   created_by: string
   creator?: User

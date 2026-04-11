@@ -5,8 +5,12 @@
 
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { requireAuth } from '@/lib/auth/api-guard'
 
 export async function POST(request: Request) {
+  const auth = await requireAuth()
+  if (!auth.authenticated) return auth.error!
+
   try {
     const { document_id, rollback_reason, requested_by } = await request.json()
     if (!document_id) return NextResponse.json({ error: 'Missing document_id' }, { status: 400 })
