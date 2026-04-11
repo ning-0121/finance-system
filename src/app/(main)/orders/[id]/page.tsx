@@ -178,7 +178,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     try {
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
-      const costBreakdown = { _cost_breakdown: { fabric, accessory, processing, forwarder, container, logistics, _currency: 'CNY', _revenue_usd: revenueUsd, _rate: rate } }
+      const breakdownData = { fabric, accessory, processing, forwarder, container, logistics, _currency: 'CNY', _revenue_usd: revenueUsd, _rate: rate }
+      // 保留原有产品明细，将cost breakdown存入第一个item或单独追加
+      const existingItems = (order.items || []) as unknown as Record<string, unknown>[]
+      const updatedItems = existingItems.length > 0
+        ? [{ ...existingItems[0], _cost_breakdown: breakdownData }, ...existingItems.slice(1)]
+        : [{ _cost_breakdown: breakdownData }]
       const { error } = await supabase.from('budget_orders').update({
         total_revenue: revenueUsd,
         exchange_rate: rate,
@@ -190,12 +195,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         total_cost: totalCostCny,
         estimated_profit: profitCny,
         estimated_margin: margin,
-        items: [costBreakdown], // 保存细分明细（含汇率信息）
+        items: updatedItems,
       }).eq('id', order.id)
 
       if (error) { toast.error('保存失败: ' + error.message) }
       else {
-        setOrder({ ...order, total_revenue: revenueUsd, exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin, items: [costBreakdown] as unknown as typeof order.items })
+        setOrder({ ...order, total_revenue: revenueUsd, exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin, items: updatedItems as unknown as typeof order.items })
         setEditMode(false)
         toast.success('预算已保存')
       }
@@ -501,14 +506,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {order.items.map((item, idx) => (
+                    {order.items.filter(item => item.sku || item.product_name).map((item, idx) => (
                       <TableRow key={idx}>
-                        <TableCell className="font-mono text-sm">{item.sku}</TableCell>
-                        <TableCell>{item.product_name}</TableCell>
-                        <TableCell className="text-right">{item.qty.toLocaleString()}</TableCell>
-                        <TableCell>{item.unit}</TableCell>
-                        <TableCell className="text-right">{order.currency} {item.unit_price.toFixed(2)}</TableCell>
-                        <TableCell className="text-right font-medium">{order.currency} {item.amount.toLocaleString()}</TableCell>
+                        <TableCell className="font-mono text-sm">{item.sku || '-'}</TableCell>
+                        <TableCell>{item.product_name || '-'}</TableCell>
+                        <TableCell className="text-right">{(item.qty || 0).toLocaleString()}</TableCell>
+                        <TableCell>{item.unit || '-'}</TableCell>
+                        <TableCell className="text-right">{order.currency} {(item.unit_price || 0).toFixed(2)}</TableCell>
+                        <TableCell className="text-right font-medium">{order.currency} {(item.amount || 0).toLocaleString()}</TableCell>
                       </TableRow>
                     ))}
                     <TableRow className="font-semibold bg-muted/50">
