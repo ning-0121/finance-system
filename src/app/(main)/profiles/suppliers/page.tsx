@@ -3,53 +3,75 @@
 import { useState, useEffect } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { Search, Factory, Download, AlertTriangle } from 'lucide-react'
+import { Search, Loader2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
-import { CUSTOMER_RISK_LABELS, CUSTOMER_RISK_COLORS, type SupplierFinancialProfile, type CustomerRiskLevel } from '@/lib/types/agent'
-import { toast } from 'sonner'
 
-const demoSuppliers: SupplierFinancialProfile[] = []
+type SupplierSummary = {
+  name: string
+  invoiceCount: number
+  totalAmount: number
+  costTypes: string[]
+  lastDate: string
+}
 
 export default function SupplierProfilesPage() {
-  const [profiles, setProfiles] = useState<SupplierFinancialProfile[]>(demoSuppliers)
+  const [suppliers, setSuppliers] = useState<SupplierSummary[]>([])
   const [search, setSearch] = useState('')
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
       try {
         const supabase = createClient()
-        const { data } = await supabase.from('supplier_financial_profiles').select('*').order('urgency_score', { ascending: false })
-        if (data?.length) setProfiles(data as SupplierFinancialProfile[])
-      } catch { /* demo */ }
+        const { data: costs } = await supabase
+          .from('cost_items')
+          .select('supplier, cost_type, amount, created_at')
+          .order('created_at', { ascending: false })
+
+        if (costs?.length) {
+          const map = new Map<string, { items: typeof costs }>()
+          for (const c of costs) {
+            const name = (c.supplier as string) || '未指定'
+            if (!map.has(name)) map.set(name, { items: [] })
+            map.get(name)!.items.push(c)
+          }
+          const summaries: SupplierSummary[] = Array.from(map.entries()).map(([name, { items }]) => ({
+            name,
+            invoiceCount: items.length,
+            totalAmount: Math.round(items.reduce((s, i) => s + (i.amount as number || 0), 0)),
+            costTypes: [...new Set(items.map(i => i.cost_type as string).filter(Boolean))],
+            lastDate: items[0]?.created_at ? new Date(items[0].created_at as string).toLocaleDateString('zh-CN') : '-',
+          })).sort((a, b) => b.totalAmount - a.totalAmount)
+          setSuppliers(summaries)
+        }
+      } catch { /* empty */ }
+      setLoading(false)
     }
     load()
   }, [])
 
-  const filtered = profiles.filter(p => !search || p.supplier_name.includes(search))
+  const filtered = suppliers.filter(s => !search || s.name.toLowerCase().includes(search.toLowerCase()))
+  const totalAmount = suppliers.reduce((s, c) => s + c.totalAmount, 0)
+
+  if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
 
   return (
     <div className="flex flex-col h-full">
-      <Header title="供应商财务画像" subtitle="付款习惯 · 断供风险 · 依赖度评估" />
+      <Header title="供应商画像" subtitle="基于费用记录聚合 · 付款金额排名" />
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
         <div className="grid grid-cols-3 gap-4">
-          <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">供应商总数</p><p className="text-2xl font-bold">{profiles.length}</p></CardContent></Card>
-          <Card className={profiles.some(p => p.historical_stop_supply_count > 0) ? 'border-amber-200' : ''}>
-            <CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">有断供记录</p><p className="text-2xl font-bold text-amber-600">{profiles.filter(p => p.historical_stop_supply_count > 0).length}</p></CardContent>
-          </Card>
-          <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">总待付</p><p className="text-2xl font-bold">¥{profiles.reduce((s, p) => s + p.current_outstanding, 0).toLocaleString()}</p></CardContent></Card>
+          <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">供应商总数</p><p className="text-2xl font-bold">{suppliers.length}</p></CardContent></Card>
+          <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">费用记录数</p><p className="text-2xl font-bold">{suppliers.reduce((s, c) => s + c.invoiceCount, 0)}</p></CardContent></Card>
+          <Card><CardContent className="p-4 text-center"><p className="text-xs text-muted-foreground">总付款金额</p><p className="text-2xl font-bold">¥ {totalAmount.toLocaleString()}</p></CardContent></Card>
         </div>
 
-        <div className="flex items-center justify-between gap-4">
-          <div className="relative max-w-sm flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input placeholder="搜索供应商..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
-          </div>
+        <div className="relative max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input placeholder="搜索供应商..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
 
         <Card>
@@ -58,41 +80,25 @@ export default function SupplierProfilesPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>供应商</TableHead>
-                  <TableHead className="text-center">风险</TableHead>
-                  <TableHead className="text-right">账期</TableHead>
-                  <TableHead className="text-right">延迟容忍</TableHead>
-                  <TableHead className="text-center">断供次数</TableHead>
-                  <TableHead className="text-right">紧迫度</TableHead>
-                  <TableHead className="text-right">依赖度</TableHead>
-                  <TableHead className="text-right">待付金额</TableHead>
-                  <TableHead>下次到期</TableHead>
+                  <TableHead className="text-right">费用笔数</TableHead>
+                  <TableHead className="text-right">总金额(CNY)</TableHead>
+                  <TableHead>费用类型</TableHead>
+                  <TableHead>最近记录</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map(p => (
-                  <TableRow key={p.id} className={p.urgency_score > 70 ? 'bg-amber-50/50' : ''}>
-                    <TableCell className="font-medium">
-                      <div className="flex items-center gap-2">
-                        {p.supplier_name}
-                        {p.historical_stop_supply_count > 0 && <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Badge className={`${CUSTOMER_RISK_COLORS[p.risk_level as CustomerRiskLevel]} border-0`}>{p.risk_level}</Badge>
-                    </TableCell>
-                    <TableCell className="text-right">{p.avg_payment_term_days}天</TableCell>
-                    <TableCell className={`text-right ${p.avg_delay_tolerance_days < 5 ? 'text-red-600' : ''}`}>{p.avg_delay_tolerance_days}天</TableCell>
-                    <TableCell className={`text-center ${p.historical_stop_supply_count > 0 ? 'text-red-600 font-semibold' : ''}`}>{p.historical_stop_supply_count}</TableCell>
-                    <TableCell className="text-right">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                        p.urgency_score > 70 ? 'bg-red-100 text-red-700' : p.urgency_score > 40 ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'
-                      }`}>{p.urgency_score}</span>
-                    </TableCell>
-                    <TableCell className={`text-right ${p.dependency_score > 60 ? 'text-amber-600 font-semibold' : ''}`}>{p.dependency_score}%</TableCell>
-                    <TableCell className="text-right font-semibold">¥{p.current_outstanding.toLocaleString()}</TableCell>
-                    <TableCell className="text-sm">{p.next_due_date || '-'}</TableCell>
+                {filtered.map(s => (
+                  <TableRow key={s.name}>
+                    <TableCell className="font-medium">{s.name}</TableCell>
+                    <TableCell className="text-right">{s.invoiceCount}</TableCell>
+                    <TableCell className="text-right font-semibold">¥ {s.totalAmount.toLocaleString()}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{s.costTypes.join('、') || '-'}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{s.lastDate}</TableCell>
                   </TableRow>
                 ))}
+                {filtered.length === 0 && (
+                  <TableRow><TableCell colSpan={5} className="text-center py-12 text-muted-foreground">暂无供应商数据，费用录入后自动生成</TableCell></TableRow>
+                )}
               </TableBody>
             </Table>
           </CardContent>

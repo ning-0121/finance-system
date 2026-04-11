@@ -126,9 +126,9 @@ export default function OrdersPage() {
                     <TableHead>订单号</TableHead>
                     <TableHead>内部单号</TableHead>
                     <TableHead>客户</TableHead>
-                    <TableHead className="text-right">总收入</TableHead>
-                    <TableHead className="text-right">总成本</TableHead>
-                    <TableHead className="text-right">预计利润</TableHead>
+                    <TableHead className="text-right">收入(USD)</TableHead>
+                    <TableHead className="text-right">成本(CNY)</TableHead>
+                    <TableHead className="text-right">利润(CNY)</TableHead>
                     <TableHead className="text-right">毛利率</TableHead>
                     <TableHead>状态</TableHead>
                     <TableHead>下单日期</TableHead>
@@ -151,10 +151,10 @@ export default function OrdersPage() {
                           <p className="text-xs text-muted-foreground">{order.customer?.country || ''}</p>
                         </div>
                       </TableCell>
-                      <TableCell className="text-right font-medium">{order.currency} {order.total_revenue.toLocaleString()}</TableCell>
-                      <TableCell className="text-right">{order.currency} {order.total_cost.toLocaleString()}</TableCell>
+                      <TableCell className="text-right font-medium">$ {order.total_revenue.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">¥ {order.total_cost.toLocaleString()}</TableCell>
                       <TableCell className={`text-right font-semibold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        {order.currency} {order.estimated_profit.toLocaleString()}
+                        ¥ {order.estimated_profit.toLocaleString()}
                       </TableCell>
                       <TableCell className="text-right">
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
