@@ -38,7 +38,8 @@ export async function POST(request: Request) {
 
         const riskEvents = generateOverdueRiskEvents(collections)
         if (riskEvents.length) {
-          await supabase.from('financial_risk_events').insert(riskEvents)
+          const { error: riskErr } = await supabase.from('financial_risk_events').insert(riskEvents)
+          if (riskErr) console.error('风险事件写入失败:', riskErr.message)
         }
         results.collection = { items: collections.length, risks: riskEvents.length }
       } else {
@@ -64,7 +65,8 @@ export async function POST(request: Request) {
 
         const riskEvents = generateProfitRiskEvents(anomalies)
         if (riskEvents.length) {
-          await supabase.from('financial_risk_events').insert(riskEvents)
+          const { error: riskErr } = await supabase.from('financial_risk_events').insert(riskEvents)
+          if (riskErr) console.error('利润风险事件写入失败:', riskErr.message)
         }
         results.profit = { anomalies: anomalies.length, risks: riskEvents.length }
       } else {

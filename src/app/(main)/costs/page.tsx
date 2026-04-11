@@ -319,10 +319,11 @@ export default function CostsPage() {
                             if (!confirm(`确定删除这笔费用？\n${item.description}\n金额: ${item.amount}`)) return
                             try {
                               const supabase = createClient()
-                              await supabase.from('cost_items').delete().eq('id', item.id)
+                              const { error } = await supabase.from('cost_items').delete().eq('id', item.id)
+                              if (error) throw error
                               setCostItems(costItems.filter(c => c.id !== item.id))
                               toast.success('已删除')
-                            } catch { toast.error('删除失败') }
+                            } catch (err) { toast.error(`删除失败: ${err instanceof Error ? err.message : '未知错误'}`) }
                           }}>删除</Button>
                         </TableCell>
                       </TableRow>

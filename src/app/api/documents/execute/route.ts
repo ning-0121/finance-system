@@ -71,16 +71,18 @@ export async function POST(request: Request) {
 
     // 更新document_actions的decision状态
     if (approved_actions?.length) {
-      await supabase.from('document_actions')
+      const { error: approveErr } = await supabase.from('document_actions')
         .update({ decision: 'accepted', decided_by: confirmed_by, decided_at: new Date().toISOString() })
         .eq('document_id', document_id)
         .in('action_type', approved_actions)
+      if (approveErr) console.error('动作审批状态更新失败:', approveErr.message)
     }
     if (rejected_actions?.length) {
-      await supabase.from('document_actions')
+      const { error: rejectErr } = await supabase.from('document_actions')
         .update({ decision: 'rejected', decided_by: confirmed_by, decided_at: new Date().toISOString() })
         .eq('document_id', document_id)
         .in('action_type', rejected_actions)
+      if (rejectErr) console.error('动作拒绝状态更新失败:', rejectErr.message)
     }
 
     // 执行（只执行approved的）

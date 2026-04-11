@@ -141,7 +141,7 @@ export async function POST(request: Request) {
     const suggestedActions = generateSuggestedActions(extraction.doc_category, extraction.extracted_fields, matches)
 
     // ========== Step 8: 写入数据库 ==========
-    await supabase.from('uploaded_documents').update({
+    const { error: updateErr } = await supabase.from('uploaded_documents').update({
       status: 'extracted',
       doc_category: extraction.doc_category,
       doc_category_confidence: extraction.classification_confidence / 100,
@@ -160,12 +160,14 @@ export async function POST(request: Request) {
       matched_order_id: matches.find(m => m.type === 'order')?.matched_id || null,
       template_id: templateHint ? 'template_used' : null,
     }).eq('id', doc.id)
+    if (updateErr) console.error('文档更新失败:', updateErr.message)
 
     // 插入建议操作
     if (suggestedActions.length) {
-      await supabase.from('document_actions').insert(
+      const { error: actionsErr } = await supabase.from('document_actions').insert(
         suggestedActions.map(a => ({ document_id: doc.id, action_type: a.action_type, action_data: a.action_data }))
       )
+      if (actionsErr) console.error('建议操作写入失败:', actionsErr.message)
     }
 
     return NextResponse.json({

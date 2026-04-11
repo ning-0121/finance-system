@@ -154,9 +154,11 @@ export default function SupplierReportPage() {
     }
 
     if (snapshotId) {
-      await supabase.from('report_snapshots').update(snapshotData).eq('id', snapshotId)
+      const { error } = await supabase.from('report_snapshots').update(snapshotData).eq('id', snapshotId)
+      if (error) { toast.error(`保存失败: ${error.message}`); setProcessing(false); return }
     } else {
-      const { data } = await supabase.from('report_snapshots').insert(snapshotData).select('id').single()
+      const { data, error } = await supabase.from('report_snapshots').insert(snapshotData).select('id').single()
+      if (error) { toast.error(`保存失败: ${error.message}`); setProcessing(false); return }
       if (data) setSnapshotId(data.id)
     }
 

@@ -134,7 +134,7 @@ async function handleOrderSync(order: SyncedOrder, event: string) {
 
   // 新订单自动创建预算单草稿
   if (event === 'order.created' || event === 'order.activated') {
-    try { await autoCreateBudgetDraft(order) } catch {}
+    try { await autoCreateBudgetDraft(order) } catch (err) { console.error('自动创建预算单失败:', err) }
   }
 
   return { action: 'synced', order_no: order.order_no, event }
