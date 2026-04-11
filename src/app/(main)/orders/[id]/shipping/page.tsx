@@ -81,15 +81,8 @@ export default function ShippingPage({ params }: { params: Promise<{ id: string 
       if (error) throw error
       setDocs([...docs, data as ShippingDocument])
       toast.success('单据已创建')
-    } catch {
-      // Demo fallback
-      setDocs([...docs, {
-        id: `sd-${Date.now()}`, budget_order_id: id, doc_type: formType,
-        document_no: formNo, items: [], total_amount: Number(formAmount) || 0,
-        currency: 'USD', status: 'draft', attachment_url: null,
-        created_at: new Date().toISOString(),
-      }])
-      toast.success('单据已创建（演示模式）')
+    } catch (err) {
+      toast.error(`创建失败: ${err instanceof Error ? err.message : '未知错误'}`)
     }
     setSaving(false)
     setShowAdd(false)

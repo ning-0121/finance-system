@@ -80,15 +80,16 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
     }
 
     const supabase = createClient()
-    await supabase.from('uploaded_documents').update({
+    const { error: updateErr } = await supabase.from('uploaded_documents').update({
       extracted_fields: editedFields,
       confirmation_changes: Object.keys(changes).length > 0 ? changes : null,
     }).eq('id', id)
+    if (updateErr) console.error('文档字段更新失败:', updateErr.message)
 
     // 保存模板记忆
     const entityName = (editedFields.customer_name || editedFields.supplier_name || editedFields.payer_name) as string
     if (entityName && doc.doc_category) {
-      await supabase.from('extraction_templates').upsert({
+      const { error: tplErr } = await supabase.from('extraction_templates').upsert({
         template_name: `${entityName}_${doc.doc_category}`,
         entity_name: entityName,
         entity_type: editedFields.customer_name ? 'customer' : 'supplier',
@@ -96,6 +97,7 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
         column_mapping: editedFields,
         last_used_at: new Date().toISOString(),
       }, { onConflict: 'template_name' })
+      if (tplErr) console.error('模板保存失败:', tplErr.message)
     }
 
     // 执行（只传accepted的动作）
@@ -112,22 +114,23 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
         }),
       })
       const execResult = await execRes.json()
-
-      setSaving(false)
-      setShowReview(false)
-      toast.success(`执行完成: ${execResult.succeeded}项成功, ${rejectedActions.length}项被拒绝`, {
-        description: `${Object.keys(changes).length}个字段被修改`,
-      })
-    } catch {
-      setSaving(false)
-      toast.success('文档已确认入库')
+      if (execResult.error) {
+        toast.error(`执行失败: ${execResult.error}`)
+      } else {
+        toast.success(`执行完成: ${execResult.succeeded}项成功, ${rejectedActions.length}项被拒绝`)
+      }
+    } catch (err) {
+      toast.error(`执行失败: ${err instanceof Error ? err.message : '未知错误'}`)
     }
+    setSaving(false)
+    setShowReview(false)
     router.push('/documents')
   }
 
   const handleReject = async () => {
     const supabase = createClient()
-    await supabase.from('uploaded_documents').update({ status: 'rejected' }).eq('id', id)
+    const { error } = await supabase.from('uploaded_documents').update({ status: 'rejected' }).eq('id', id)
+    if (error) { toast.error(`操作失败: ${error.message}`); return }
     toast.info('文档已拒绝')
     router.push('/documents')
   }

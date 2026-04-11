@@ -99,17 +99,10 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
 
       if (error) throw error
       setReturns([...returns, data as InventoryReturn])
-    } catch {
-      setReturns([...returns, {
-        id: `ir-${Date.now()}`, budget_order_id: id, sub_document_id: null,
-        return_type: returnType as InventoryReturn['return_type'],
-        items: [{ name: returnDesc, specification: null, qty: 1, unit: 'LOT', unit_price: Number(returnValue), amount: Number(returnValue) }],
-        total_value: Number(returnValue), warehouse_location: null,
-        accounting_treatment: returnTreatment as InventoryReturn['accounting_treatment'],
-        processed_by: null, processed_at: null, created_at: new Date().toISOString(),
-      }])
+      toast.success('入库记录已添加')
+    } catch (err) {
+      toast.error(`保存失败: ${err instanceof Error ? err.message : '未知错误'}`)
     }
-    toast.success('入库记录已添加')
     setShowAddReturn(false)
     setReturnDesc('')
     setReturnValue('')
