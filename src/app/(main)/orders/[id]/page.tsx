@@ -25,8 +25,10 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
+import { FinanceWorkflowGuide } from '@/components/orders/FinanceWorkflowGuide'
 import { demoUser } from '@/lib/demo-data'
 import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
+import { getSubDocuments, getActualInvoices, getShippingDocuments, getOrderSettlement } from '@/lib/supabase/queries-v2'
 import type { BudgetOrder, BudgetOrderStatus, ApprovalLog } from '@/lib/types'
 import {
   ArrowLeft,
@@ -60,18 +62,38 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [settlement, setSettlement] = useState<ReturnType<typeof useState<import('@/lib/types').SettlementOrder | null>>[0]>(null)
   const [logs, setLogs] = useState<ApprovalLog[]>([])
   const [loading, setLoading] = useState(true)
+  const [workflowCtx, setWorkflowCtx] = useState({
+    hasSubDocs: false, hasInvoices: false, hasShippingDocs: false,
+    hasSettlement: false, hasPayables: false, hasCostItems: false,
+    invoiceCount: 0, paidCount: 0,
+  })
+  const [activeTab, setActiveTab] = useState('budget')
 
   useEffect(() => {
     async function load() {
       setLoading(true)
-      const [orderData, settlementData, logsData] = await Promise.all([
+      const [orderData, settlementData, logsData, subDocs, invoices, shippingDocs, orderSettlement] = await Promise.all([
         getBudgetOrderById(id),
         getSettlementByBudgetId(id),
         getApprovalLogs(id),
+        getSubDocuments(id),
+        getActualInvoices(id),
+        getShippingDocuments(id),
+        getOrderSettlement(id),
       ])
       setOrder(orderData)
       setSettlement(settlementData)
       setLogs(logsData)
+      setWorkflowCtx({
+        hasSubDocs: subDocs.length > 0,
+        hasInvoices: invoices.length > 0,
+        hasShippingDocs: shippingDocs.length > 0,
+        hasSettlement: !!orderSettlement,
+        hasPayables: false,
+        hasCostItems: false,
+        invoiceCount: invoices.length,
+        paidCount: invoices.filter(i => i.status === 'paid').length,
+      })
       setLoading(false)
     }
     load()
@@ -185,7 +207,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           </div>
         </div>
 
-        <Tabs defaultValue="budget">
+        {/* 财务流程引导 */}
+        <FinanceWorkflowGuide order={order} context={workflowCtx} onNavigate={setActiveTab} />
+
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="flex-wrap">
             <TabsTrigger value="budget">预算单详情</TabsTrigger>
             <TabsTrigger value="settlement" disabled={!settlement}>
