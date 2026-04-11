@@ -1,5 +1,8 @@
 'use client'
 
+import { useState, useEffect } from 'react'
+import { Loader2 } from 'lucide-react'
+import { getBudgetOrders, getPendingRiskEvents, getHighRiskCustomers } from '@/lib/supabase/queries'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -40,6 +43,32 @@ const urgentPayments = [
 ]
 
 export default function BossDashboardPage() {
+  const [loading, setLoading] = useState(true)
+  const [realRiskCustomers, setRealRiskCustomers] = useState<Record<string, unknown>[]>([])
+  const [realRiskOrders, setRealRiskOrders] = useState<{ orderNo: string; customer: string; margin: number; issue: string }[]>([])
+  const [riskEventCount, setRiskEventCount] = useState(0)
+
+  useEffect(() => {
+    async function load() {
+      const [customers, orders, risks] = await Promise.all([
+        getHighRiskCustomers(),
+        getBudgetOrders(),
+        getPendingRiskEvents(),
+      ])
+      setRealRiskCustomers(customers.length > 0 ? customers : riskCustomers.map(c => c as Record<string, unknown>))
+      setRealRiskOrders(orders.filter(o => o.estimated_margin < 10).map(o => ({
+        orderNo: o.order_no, customer: o.customer?.company || '', margin: o.estimated_margin,
+        issue: o.estimated_margin < 0 ? '实际亏损' : `毛利率${o.estimated_margin}%低于10%`,
+      })).slice(0, 5))
+      if (realRiskOrders.length === 0) setRealRiskOrders(riskOrders)
+      setRiskEventCount(risks.length)
+      setLoading(false)
+    }
+    load()
+  }, [])
+
+  if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
+
   const cashBalance = 320000
   const weekInflow = 125000
   const weekOutflow = 170000

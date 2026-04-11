@@ -373,6 +373,77 @@ export function getMonthlyProfitData() {
 }
 
 // ============================================================
+// 风险事件 + 信任分值 + 待处理动作
+// ============================================================
+
+export async function getPendingRiskEvents(): Promise<Record<string, unknown>[]> {
+  if (!isSupabaseConfigured()) return []
+  try {
+    const supabase = createClient()
+    const { data } = await supabase
+      .from('financial_risk_events')
+      .select('*')
+      .in('status', ['pending', 'processing'])
+      .order('created_at', { ascending: false })
+      .limit(20)
+    return data || []
+  } catch { return [] }
+}
+
+export async function getPendingDocumentActions(): Promise<Record<string, unknown>[]> {
+  if (!isSupabaseConfigured()) return []
+  try {
+    const supabase = createClient()
+    const { data } = await supabase
+      .from('document_actions')
+      .select('*, uploaded_documents(file_name, doc_category)')
+      .eq('decision', 'pending')
+      .order('created_at', { ascending: false })
+      .limit(20)
+    return data || []
+  } catch { return [] }
+}
+
+export async function getTrustScoreSummary(): Promise<{
+  distribution: Record<string, number>
+  recentDegrades: Record<string, unknown>[]
+}> {
+  const defaultResult = { distribution: { T0: 0, T1: 0, T2: 0, T3: 0, T4: 0, T5: 0 }, recentDegrades: [] }
+  if (!isSupabaseConfigured()) return defaultResult
+  try {
+    const supabase = createClient()
+    const { data: scores } = await supabase.from('automation_trust_scores').select('trust_level, subject_type, subject_id, trust_score')
+    if (!scores?.length) return defaultResult
+
+    const distribution: Record<string, number> = { T0: 0, T1: 0, T2: 0, T3: 0, T4: 0, T5: 0 }
+    for (const s of scores) {
+      distribution[s.trust_level] = (distribution[s.trust_level] || 0) + 1
+    }
+
+    const recentDegrades = scores
+      .filter(s => s.trust_score < 40)
+      .sort((a, b) => a.trust_score - b.trust_score)
+      .slice(0, 5)
+
+    return { distribution, recentDegrades }
+  } catch { return defaultResult }
+}
+
+export async function getHighRiskCustomers(): Promise<Record<string, unknown>[]> {
+  if (!isSupabaseConfigured()) return []
+  try {
+    const supabase = createClient()
+    const { data } = await supabase
+      .from('customer_financial_profiles')
+      .select('*')
+      .in('risk_level', ['C', 'D', 'E'])
+      .order('bad_debt_score', { ascending: false })
+      .limit(10)
+    return data || []
+  } catch { return [] }
+}
+
+// ============================================================
 // 数据映射
 // ============================================================
 
