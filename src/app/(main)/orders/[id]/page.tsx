@@ -232,15 +232,25 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       }).eq('id', order.id).eq('version', order.version || 1)
 
       if (error) {
-        if (error.message.includes('已审批')) {
-          toast.error('已审批的订单不能修改金额，如需修改请先撤回审批')
-        } else {
-          toast.error('保存失败: ' + error.message)
-        }
+        const msg = error.message
+        if (msg.includes('已审批')) toast.error('已审批的订单不能修改金额，如需修改请先撤回审批')
+        else if (msg.includes('非法状态转换')) toast.error(msg)
+        else if (!error.details && error.code === 'PGRST116') toast.error('保存冲突：该记录已被其他用户修改，请刷新后重试')
+        else toast.error('保存失败: ' + msg)
       } else {
-        setOrder({ ...order, total_revenue: revenueInput, currency: editCurrencyMode === 'CNY' ? 'CNY' : 'USD', exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin, version: (order.version || 1) + 1, items: updatedItems as unknown as typeof order.items })
+        // 写后验证
+        const { data: verify } = await supabase.from('budget_orders').select('id, version, total_revenue, total_cost').eq('id', order.id).single()
+        if (!verify) {
+          console.error('[SaveGuard] budget_orders写后验证失败')
+          toast.error('保存异常：请刷新页面确认')
+        } else if (Math.abs((verify.total_cost as number) - totalCostCny) > 0.01) {
+          console.error('[SaveGuard] budget_orders字段不一致: wrote cost=', totalCostCny, 'read=', verify.total_cost)
+          toast.error('保存异常：金额不一致，请刷新页面')
+        } else {
+          toast.success('预算已保存')
+        }
+        setOrder({ ...order, total_revenue: revenueInput, currency: editCurrencyMode === 'CNY' ? 'CNY' : 'USD', exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin, version: (verify?.version as number) || (order.version || 1) + 1, items: updatedItems as unknown as typeof order.items })
         setEditMode(false)
-        toast.success('预算已保存')
       }
     } catch { toast.error('保存失败') }
     setSavingEdit(false)

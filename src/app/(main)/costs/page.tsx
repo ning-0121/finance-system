@@ -141,10 +141,11 @@ export default function CostsPage() {
     setSaving(true)
     try {
       const supabase = createClient()
-      // 获取当前用户profile
       const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-      const createdBy = profiles?.[0]?.id || null
+      const createdBy = profiles?.[0]?.id
+      if (!createdBy) { toast.error('无法获取用户信息'); setSaving(false); return }
 
+      // 1. 写入
       const { data, error } = await supabase
         .from('cost_items')
         .insert({
@@ -155,12 +156,21 @@ export default function CostsPage() {
           currency: formCurrency,
           exchange_rate: Number(formRate),
           supplier: formDesc.split(/[,，]/)[0]?.trim() || null,
-          ...(createdBy ? { created_by: createdBy } : {}),
+          created_by: createdBy,
         })
         .select('*, budget_orders(order_no)')
         .single()
 
       if (error) throw error
+
+      // 2. 写后验证：回读确认数据存在
+      const { data: verify } = await supabase.from('cost_items').select('id').eq('id', data.id).single()
+      if (!verify) {
+        console.error('[SaveGuard] cost_items写后验证失败: id=', data.id)
+        toast.error('保存异常：数据写入但回读失败，请刷新页面')
+        setSaving(false)
+        return
+      }
 
       const newItem: CostRecord = {
         id: data.id,
