@@ -151,7 +151,7 @@ export async function executeDocumentActions(
       execution_result: failed > 0 ? 'failed' : 'success',
     }).select('id').single()
     auditLogId = audit?.id || null
-  } catch { /* audit is best-effort */ }
+  } catch (err) { console.error('审计日志写入失败:', err) }
 
   // 更新文档状态
   await supabase.from('uploaded_documents').update({
@@ -160,11 +160,16 @@ export async function executeDocumentActions(
     confirmed_at: new Date().toISOString(),
   }).eq('id', documentId)
 
-  // 更新document_actions状态
+  // 更新document_actions状态（同步status和decision两个字段）
   for (const r of results) {
     if (r.status === 'success') {
       await supabase.from('document_actions')
-        .update({ status: 'executed', executed_at: new Date().toISOString() })
+        .update({ status: 'executed', decision: 'accepted', executed_at: new Date().toISOString(), executed_by: confirmedBy })
+        .eq('document_id', documentId)
+        .eq('action_type', r.action_type)
+    } else if (r.status === 'failed') {
+      await supabase.from('document_actions')
+        .update({ status: 'rejected', decision: 'rejected' })
         .eq('document_id', documentId)
         .eq('action_type', r.action_type)
     }
