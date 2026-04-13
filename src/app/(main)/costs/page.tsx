@@ -589,22 +589,41 @@ export default function CostsPage() {
             </div>
             {/* 额外明细行（同一供应商多个品目） */}
             {extraLines.map((line, idx) => (
-              <div key={idx} className="grid grid-cols-5 gap-2 items-end bg-muted/30 p-2 rounded">
-                <div className="col-span-1">
-                  <Input placeholder="品名" value={line.desc} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], desc: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
+              <div key={idx} className="bg-muted/30 p-3 rounded space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground font-medium">品目 {idx + 2}</span>
+                  <Button type="button" size="sm" variant="ghost" className="h-6 w-6 p-0 text-red-400 hover:text-red-600" onClick={() => setExtraLines(extraLines.filter((_, i) => i !== idx))}>×</Button>
                 </div>
-                <div>
-                  <Input type="number" placeholder="数量" value={line.qty} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], qty: e.target.value }; if (e.target.value && line.unitPrice) n[idx].amount = (Number(e.target.value) * Number(line.unitPrice)).toFixed(2); setExtraLines(n) }} className="text-xs h-8" />
+                <div className="space-y-1">
+                  <Input placeholder="品名（如：天地盖、腰卡、挂衣袋）" value={line.desc} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], desc: e.target.value }; setExtraLines(n) }} className="text-sm h-8" />
                 </div>
-                <div>
-                  <Input placeholder="单位" value={line.unit} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], unit: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
-                </div>
-                <div>
-                  <Input type="number" step="0.01" placeholder="单价" value={line.unitPrice} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], unitPrice: e.target.value }; if (e.target.value && line.qty) n[idx].amount = (Number(line.qty) * Number(e.target.value)).toFixed(2); setExtraLines(n) }} className="text-xs h-8" />
-                </div>
-                <div className="flex gap-1">
-                  <Input type="number" step="0.01" placeholder="金额" value={line.amount} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], amount: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
-                  <Button type="button" size="sm" variant="ghost" className="h-8 w-8 p-0 text-red-400" onClick={() => setExtraLines(extraLines.filter((_, i) => i !== idx))}>×</Button>
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">数量</Label>
+                    <Input type="number" step="1" placeholder="0" value={line.qty} onChange={e => {
+                      const n = [...extraLines]
+                      n[idx] = { ...n[idx], qty: e.target.value }
+                      if (e.target.value && line.unitPrice) n[idx].amount = (Number(e.target.value) * Number(line.unitPrice)).toFixed(2)
+                      setExtraLines(n)
+                    }} className="text-xs h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">单位</Label>
+                    <Input placeholder="件" value={line.unit} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], unit: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">单价</Label>
+                    <Input type="number" step="0.01" placeholder="0.00" value={line.unitPrice} onChange={e => {
+                      const n = [...extraLines]
+                      n[idx] = { ...n[idx], unitPrice: e.target.value }
+                      if (e.target.value && line.qty) n[idx].amount = (Number(line.qty) * Number(e.target.value)).toFixed(2)
+                      setExtraLines(n)
+                    }} className="text-xs h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px] font-semibold">金额</Label>
+                    <Input type="number" step="0.01" placeholder="0.00" value={line.amount} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], amount: e.target.value }; setExtraLines(n) }} className="text-xs h-8 border-primary/30" />
+                  </div>
                 </div>
               </div>
             ))}
