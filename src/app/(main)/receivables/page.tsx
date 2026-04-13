@@ -91,10 +91,15 @@ export default function ReceivablesPage() {
   const [loading, setLoading] = useState(true)
   const [receivables, setReceivables] = useState<ReceivableRow[]>([])
 
+  const [allOrderCount, setAllOrderCount] = useState(0)
+  const [draftCount, setDraftCount] = useState(0)
+
   useEffect(() => {
     async function load() {
       try {
         const orders = await getBudgetOrders()
+        setAllOrderCount(orders.length)
+        setDraftCount(orders.filter(o => o.status === 'draft' || o.status === 'pending_review').length)
         setReceivables(buildReceivables(orders))
       } catch { /* empty */ }
       setLoading(false)
@@ -167,6 +172,19 @@ export default function ReceivablesPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* 引导提示 */}
+        {receivables.length === 0 && draftCount > 0 && (
+          <Card className="border-amber-200 bg-amber-50/50">
+            <CardContent className="p-4 flex items-center gap-3">
+              <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-amber-800">当前有 {draftCount} 个订单待审批</p>
+                <p className="text-xs text-amber-600 mt-0.5">订单审批通过后，应收账款会自动生成。请先到「订单成本核算」页面提交审批。</p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Aging Chart */}
         <Card>

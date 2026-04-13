@@ -191,7 +191,12 @@ export default function CostsPage() {
       setCostItems([newItem, ...costItems])
       toast.success('费用已录入')
     } catch (err) {
-      toast.error(`保存失败: ${err instanceof Error ? err.message : '未知错误'}`)
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('cost_type')) toast.error('费用类型不支持，请刷新页面后重试')
+      else if (msg.includes('foreign key')) toast.error('关联的订单不存在，请检查')
+      else if (msg.includes('not-null')) toast.error('必填字段为空')
+      else toast.error(`保存失败: ${msg}`)
+      console.error('[费用录入失败]', msg, { formType, formAmount, formCurrency, formRate, formOrderId })
       setSaving(false)
       return // 失败时不关闭弹窗，保留用户输入
     }
