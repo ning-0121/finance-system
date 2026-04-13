@@ -412,9 +412,7 @@ export default function CostsPage() {
                     <TableHead>描述</TableHead>
                     <TableHead>数量×单价</TableHead>
                     <TableHead>关联订单</TableHead>
-                    <TableHead className="text-right">金额</TableHead>
-                    <TableHead>币种</TableHead>
-                    <TableHead>汇率</TableHead>
+                    <TableHead className="text-right">金额(¥)</TableHead>
                     <TableHead>付款</TableHead>
                     <TableHead>日期</TableHead>
                     <TableHead className="text-center">操作</TableHead>
@@ -442,9 +440,7 @@ export default function CostsPage() {
                             <Badge variant="destructive" className="text-[10px]">待归集</Badge>
                           )}
                         </TableCell>
-                        <TableCell className="text-right font-semibold">{item.amount.toLocaleString()}</TableCell>
-                        <TableCell>{item.currency}</TableCell>
-                        <TableCell>{item.exchange_rate}</TableCell>
+                        <TableCell className="text-right font-semibold">¥{item.amount.toLocaleString()}</TableCell>
                         <TableCell>
                           <Badge variant={item.is_paid ? 'default' : 'outline'} className={item.is_paid ? 'bg-green-100 text-green-700 border-0' : 'text-amber-600'}>
                             {item.is_paid ? '已付' : '未付'}
@@ -510,8 +506,8 @@ export default function CostsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>费用类型</Label>
-                <Select value={formType} onValueChange={(v) => setFormType((v || 'freight') as CostType)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                <Select value={formType} onValueChange={(v) => setFormType((v || 'fabric') as CostType)}>
+                  <SelectTrigger><SelectValue>{costTypeConfig[formType]?.label || formType}</SelectValue></SelectTrigger>
                   <SelectContent>
                     {Object.entries(costTypeConfig).map(([key, cfg]) => (
                       <SelectItem key={key} value={key}>{cfg.label}</SelectItem>
