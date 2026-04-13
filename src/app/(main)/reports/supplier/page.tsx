@@ -79,17 +79,16 @@ export default function SupplierReportPage() {
       // 没有快照或是草稿 → 从实时数据自动汇总
       const { data: costItems } = await supabase
         .from('cost_items')
-        .select('description, amount, currency, cost_type, budget_order_id, budget_orders(order_no)')
+        .select('description, amount, currency, cost_type, supplier, budget_order_id, budget_orders(order_no)')
         .order('created_at', { ascending: false })
 
       if (costItems?.length) {
-        // 按供应商（description中提取）汇总
+        // 按供应商汇总
         const supplierMap = new Map<string, { count: number; total: number; paid: number; currency: string; orders: Set<string> }>()
 
         for (const item of costItems) {
-          // 从description中提取供应商名（格式：供应商 - 描述）
-          const parts = (item.description as string || '').split(' - ')
-          const supplier = parts[0] || '未知供应商'
+          // 优先用supplier字段，没有则从description提取
+          const supplier = (item.supplier as string) || (item.description as string || '').split(' - ')[0] || '未指定供应商'
           const orderNo = (item.budget_orders as unknown as Record<string, unknown>)?.order_no as string || ''
 
           const existing = supplierMap.get(supplier) || { count: 0, total: 0, paid: 0, currency: item.currency || 'CNY', orders: new Set<string>() }
