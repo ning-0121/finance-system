@@ -323,8 +323,10 @@ export default function CostsPage() {
                         </TableCell>
                         <TableCell className="max-w-[250px]">{item.description}</TableCell>
                         <TableCell>
-                          {item.order_no ? (
-                            <span className="text-primary font-medium">{item.order_no}</span>
+                          {item.budget_order_id ? (
+                            <div>
+                              <span className="text-primary font-medium">{syncedOrderMap[item.budget_order_id] || item.order_no || item.budget_order_id.slice(0,8)}</span>
+                            </div>
                           ) : (
                             <Badge variant="destructive" className="text-[10px]">待归集</Badge>
                           )}
