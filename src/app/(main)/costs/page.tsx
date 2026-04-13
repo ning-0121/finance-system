@@ -80,6 +80,8 @@ export default function CostsPage() {
   const [formRate, setFormRate] = useState('1')
   const [formPaid, setFormPaid] = useState(false)
   const [editItem, setEditItem] = useState<CostRecord | null>(null)
+  // 多行明细（同一供应商多个品目）
+  const [extraLines, setExtraLines] = useState<{ desc: string; qty: string; unit: string; unitPrice: string; amount: string }[]>([])
 
   const [syncedOrderMap, setSyncedOrderMap] = useState<Record<string, string>>({}) // budget_order_id → QM订单号
 
@@ -226,8 +228,47 @@ export default function CostsPage() {
         setCostItems(costItems.map(c => c.id === editItem.id ? savedItem : c))
         toast.success('费用已更新')
       } else {
-        setCostItems([savedItem, ...costItems])
-        toast.success('费用已录入')
+        const newItems = [savedItem]
+
+        // 保存额外明细行（同一供应商的多个品目）
+        for (const line of extraLines) {
+          if (!line.desc || !line.amount || Number(line.amount) <= 0) continue
+          const lineMeta = (line.qty || line.unitPrice) ? JSON.stringify({ qty: Number(line.qty) || 0, unit: line.unit, unit_price: Number(line.unitPrice) || 0 }) : null
+          const { data: lineData } = await supabase.from('cost_items').insert({
+            budget_order_id: formOrderId || null,
+            cost_type: formType,
+            description: line.desc,
+            amount: Number(line.amount),
+            currency: formCurrency,
+            exchange_rate: Number(formRate),
+            supplier: formSupplier || null,
+            source_module: formPaid ? 'paid' : null,
+            source_id: lineMeta,
+            created_by: createdBy,
+          }).select('*, budget_orders(order_no)').single()
+
+          if (lineData) {
+            let lm: CostRecord['detail_meta']
+            try { if (lineData.source_id) lm = JSON.parse(lineData.source_id as string) } catch { /* */ }
+            newItems.push({
+              id: lineData.id as string,
+              budget_order_id: lineData.budget_order_id as string | null,
+              order_no: (lineData.budget_orders as Record<string, unknown>)?.order_no as string | undefined,
+              supplier: lineData.supplier as string | undefined,
+              cost_type: lineData.cost_type as CostType,
+              description: lineData.description as string,
+              amount: lineData.amount as number,
+              currency: lineData.currency as string,
+              exchange_rate: lineData.exchange_rate as number,
+              is_paid: lineData.source_module === 'paid',
+              detail_meta: lm,
+              created_at: lineData.created_at as string,
+            })
+          }
+        }
+
+        setCostItems([...newItems, ...costItems])
+        toast.success(`已录入 ${newItems.length} 条费用`)
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -251,6 +292,7 @@ export default function CostsPage() {
     setFormAmount('')
     setFormOrderId('')
     setFormPaid(false)
+    setExtraLines([])
   }
 
   return (
@@ -545,6 +587,32 @@ export default function CostsPage() {
                 <Input type="number" step="0.01" value={formRate} onChange={e => setFormRate(e.target.value)} disabled={formCurrency === 'CNY'} />
               </div>
             </div>
+            {/* 额外明细行（同一供应商多个品目） */}
+            {!editItem && extraLines.map((line, idx) => (
+              <div key={idx} className="grid grid-cols-5 gap-2 items-end bg-muted/30 p-2 rounded">
+                <div className="col-span-1">
+                  <Input placeholder="品名" value={line.desc} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], desc: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
+                </div>
+                <div>
+                  <Input type="number" placeholder="数量" value={line.qty} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], qty: e.target.value }; if (e.target.value && line.unitPrice) n[idx].amount = (Number(e.target.value) * Number(line.unitPrice)).toFixed(2); setExtraLines(n) }} className="text-xs h-8" />
+                </div>
+                <div>
+                  <Input placeholder="单位" value={line.unit} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], unit: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
+                </div>
+                <div>
+                  <Input type="number" step="0.01" placeholder="单价" value={line.unitPrice} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], unitPrice: e.target.value }; if (e.target.value && line.qty) n[idx].amount = (Number(line.qty) * Number(e.target.value)).toFixed(2); setExtraLines(n) }} className="text-xs h-8" />
+                </div>
+                <div className="flex gap-1">
+                  <Input type="number" step="0.01" placeholder="金额" value={line.amount} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], amount: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
+                  <Button type="button" size="sm" variant="ghost" className="h-8 w-8 p-0 text-red-400" onClick={() => setExtraLines(extraLines.filter((_, i) => i !== idx))}>×</Button>
+                </div>
+              </div>
+            ))}
+            {!editItem && (
+              <Button type="button" size="sm" variant="outline" className="w-full text-xs h-7" onClick={() => setExtraLines([...extraLines, { desc: '', qty: '', unit: '件', unitPrice: '', amount: '' }])}>
+                + 添加更多品目（同一供应商）
+              </Button>
+            )}
             <div className="flex items-center gap-2">
               <input type="checkbox" id="formPaid" checked={formPaid} onChange={e => setFormPaid(e.target.checked)} className="rounded" />
               <Label htmlFor="formPaid" className="text-sm cursor-pointer">已付款</Label>
