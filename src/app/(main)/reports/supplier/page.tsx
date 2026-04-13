@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -41,6 +41,8 @@ const STATUS_CONFIG: Record<ReportStatus, { label: string; color: string }> = {
 
 export default function SupplierReportPage() {
   const [lines, setLines] = useState<SupplierLine[]>([])
+  const [allCostDetails, setAllCostDetails] = useState<{ supplier: string; description: string; amount: number; currency: string; cost_type: string; order_no: string; created_at: string }[]>([])
+  const [expandedSupplier, setExpandedSupplier] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<ReportStatus>('draft')
@@ -77,23 +79,44 @@ export default function SupplierReportPage() {
       }
 
       // 没有快照或是草稿 → 从实时数据自动汇总
-      const { data: costItems } = await supabase
-        .from('cost_items')
-        .select('description, amount, currency, cost_type, supplier, budget_order_id, budget_orders(order_no)')
-        .order('created_at', { ascending: false })
+      // 加载费用和已付款数据
+      const [costRes, payRes] = await Promise.all([
+        supabase.from('cost_items').select('id, description, amount, currency, cost_type, supplier, budget_order_id, created_at, budget_orders(order_no)').order('created_at', { ascending: false }),
+        supabase.from('payable_records').select('supplier_name, amount, payment_status').eq('payment_status', 'paid'),
+      ])
+      const costItems = costRes.data
+      const paidRecords = payRes.data
+
+      // 按供应商汇总已付金额
+      const paidMap = new Map<string, number>()
+      paidRecords?.forEach(p => {
+        const name = p.supplier_name as string
+        paidMap.set(name, (paidMap.get(name) || 0) + (p.amount as number || 0))
+      })
 
       if (costItems?.length) {
+        // 保存明细（用于导出）
+        setAllCostDetails(costItems.map(item => ({
+          supplier: (item.supplier as string) || '未指定',
+          description: item.description as string,
+          amount: item.amount as number,
+          currency: (item.currency as string) || 'CNY',
+          cost_type: item.cost_type as string,
+          order_no: (item.budget_orders as unknown as Record<string, unknown>)?.order_no as string || '',
+          created_at: item.created_at as string,
+        })))
+
         // 按供应商汇总
         const supplierMap = new Map<string, { count: number; total: number; paid: number; currency: string; orders: Set<string> }>()
 
         for (const item of costItems) {
-          // 优先用supplier字段，没有则从description提取
           const supplier = (item.supplier as string) || (item.description as string || '').split(' - ')[0] || '未指定供应商'
           const orderNo = (item.budget_orders as unknown as Record<string, unknown>)?.order_no as string || ''
 
-          const existing = supplierMap.get(supplier) || { count: 0, total: 0, paid: 0, currency: item.currency || 'CNY', orders: new Set<string>() }
+          const existing = supplierMap.get(supplier) || { count: 0, total: 0, paid: 0, currency: (item.currency as string) || 'CNY', orders: new Set<string>() }
           existing.count++
           existing.total += Number(item.amount) || 0
+          existing.paid = paidMap.get(supplier) || 0
           if (orderNo) existing.orders.add(orderNo)
           supplierMap.set(supplier, existing)
         }
@@ -301,32 +324,68 @@ export default function SupplierReportPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filtered.map((s, i) => (
-                    <TableRow key={i} className={s.isEdited ? 'bg-amber-50/50' : ''}>
-                      <TableCell className="font-medium">
-                        {s.supplier}
-                        {s.isEdited && <Badge variant="secondary" className="ml-1 text-[9px]">已修正</Badge>}
-                      </TableCell>
-                      <TableCell className="text-center">{s.count}</TableCell>
-                      <TableCell className="text-right font-semibold">
-                        ¥{s.total.toLocaleString()}
-                        {s.isEdited && <span className="text-amber-600 text-[10px] ml-1">✎</span>}
-                      </TableCell>
-                      <TableCell className="text-right text-green-600">¥{s.paid.toLocaleString()}</TableCell>
-                      <TableCell className={`text-right font-semibold ${s.unpaid > 0 ? 'text-amber-600' : 'text-green-600'}`}>¥{s.unpaid.toLocaleString()}</TableCell>
-                      <TableCell>
-                        <div className="flex gap-1 flex-wrap">{s.orders.slice(0, 3).map(o => <Badge key={o} variant="outline" className="text-[10px]">{o}</Badge>)}{s.orders.length > 3 && <span className="text-[10px] text-muted-foreground">+{s.orders.length - 3}</span>}</div>
-                      </TableCell>
-                      <TableCell><Badge variant={s.unpaid === 0 ? 'default' : 'secondary'}>{s.unpaid === 0 ? '已结清' : '有余额'}</Badge></TableCell>
-                      {!isLocked && (
-                        <TableCell className="text-center">
-                          <Button size="sm" variant="ghost" className="h-7" onClick={() => { setEditDialog({ index: i, line: s }); setEditAmount(s.total.toString()) }}>
-                            <Edit className="h-3.5 w-3.5" />
-                          </Button>
-                        </TableCell>
-                      )}
-                    </TableRow>
-                  ))}
+                  {filtered.map((s, i) => {
+                    const details = allCostDetails.filter(d => d.supplier === s.supplier)
+                    const isExpanded = expandedSupplier === s.supplier
+                    return (
+                      <React.Fragment key={i}>
+                        <TableRow className={`cursor-pointer hover:bg-muted/50 ${s.isEdited ? 'bg-amber-50/50' : ''}`} onClick={() => setExpandedSupplier(isExpanded ? null : s.supplier)}>
+                          <TableCell className="font-medium">
+                            <span className="mr-1">{isExpanded ? '▼' : '▶'}</span>
+                            {s.supplier}
+                            {s.isEdited && <Badge variant="secondary" className="ml-1 text-[9px]">已修正</Badge>}
+                          </TableCell>
+                          <TableCell className="text-center">{s.count}</TableCell>
+                          <TableCell className="text-right font-semibold">¥{s.total.toLocaleString()}</TableCell>
+                          <TableCell className="text-right text-green-600">¥{s.paid.toLocaleString()}</TableCell>
+                          <TableCell className={`text-right font-semibold ${s.unpaid > 0 ? 'text-amber-600' : 'text-green-600'}`}>¥{s.unpaid.toLocaleString()}</TableCell>
+                          <TableCell>
+                            <div className="flex gap-1 flex-wrap">{s.orders.slice(0, 3).map(o => <Badge key={o} variant="outline" className="text-[10px]">{o}</Badge>)}{s.orders.length > 3 && <span className="text-[10px] text-muted-foreground">+{s.orders.length - 3}</span>}</div>
+                          </TableCell>
+                          <TableCell><Badge variant={s.unpaid === 0 ? 'default' : 'secondary'} className={s.unpaid === 0 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}>{s.unpaid === 0 ? '已付清' : '未付清'}</Badge></TableCell>
+                          {!isLocked && (
+                            <TableCell className="text-center" onClick={e => e.stopPropagation()}>
+                              <Button size="sm" variant="ghost" className="h-7" onClick={() => { setEditDialog({ index: i, line: s }); setEditAmount(s.total.toString()) }}>
+                                <Edit className="h-3.5 w-3.5" />
+                              </Button>
+                            </TableCell>
+                          )}
+                        </TableRow>
+                        {/* 展开的明细行 */}
+                        {isExpanded && details.map((d, di) => (
+                          <TableRow key={`detail-${di}`} className="bg-muted/30 text-xs">
+                            <TableCell className="pl-10 text-muted-foreground">{d.cost_type}</TableCell>
+                            <TableCell></TableCell>
+                            <TableCell className="text-right">¥{d.amount.toLocaleString()}</TableCell>
+                            <TableCell colSpan={2} className="text-muted-foreground">{d.description}</TableCell>
+                            <TableCell className="text-muted-foreground">{d.order_no || '-'}</TableCell>
+                            <TableCell className="text-muted-foreground">{new Date(d.created_at).toLocaleDateString('zh-CN')}</TableCell>
+                            {!isLocked && <TableCell></TableCell>}
+                          </TableRow>
+                        ))}
+                        {isExpanded && (
+                          <TableRow className="bg-muted/20">
+                            <TableCell colSpan={isLocked ? 7 : 8} className="text-center py-1">
+                              <Button size="sm" variant="ghost" className="text-xs h-6" onClick={(e) => {
+                                e.stopPropagation()
+                                // 导出该供应商明细为CSV
+                                const csv = ['供应商,费用类型,描述,金额,币种,关联订单,日期']
+                                details.forEach(d => csv.push(`${d.supplier},${d.cost_type},${d.description},${d.amount},${d.currency},${d.order_no},${new Date(d.created_at).toLocaleDateString('zh-CN')}`))
+                                const blob = new Blob(['\uFEFF' + csv.join('\n')], { type: 'text/csv;charset=utf-8' })
+                                const url = URL.createObjectURL(blob)
+                                const a = document.createElement('a')
+                                a.href = url; a.download = `${s.supplier}_费用明细.csv`; a.click()
+                                URL.revokeObjectURL(url)
+                                toast.success(`已导出 ${s.supplier} 的 ${details.length} 条明细`)
+                              }}>
+                                <Download className="h-3 w-3 mr-1" />导出该供应商明细
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </React.Fragment>
+                    )
+                  })}
                 </TableBody>
               </Table>
             )}

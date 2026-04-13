@@ -48,6 +48,8 @@ interface CostRecord {
   amount: number
   currency: string
   exchange_rate: number
+  is_paid: boolean
+  detail_meta?: { qty: number; unit: string; unit_price: number }
   created_at: string
 }
 
@@ -70,9 +72,13 @@ export default function CostsPage() {
   const [showOrderList, setShowOrderList] = useState(false)
   const [formSupplier, setFormSupplier] = useState('')
   const [formDesc, setFormDesc] = useState('')
+  const [formQty, setFormQty] = useState('')
+  const [formUnitPrice, setFormUnitPrice] = useState('')
+  const [formUnit, setFormUnit] = useState('件')
   const [formAmount, setFormAmount] = useState('')
   const [formCurrency, setFormCurrency] = useState('CNY')
   const [formRate, setFormRate] = useState('1')
+  const [formPaid, setFormPaid] = useState(false)
   const [editItem, setEditItem] = useState<CostRecord | null>(null)
 
   const [syncedOrderMap, setSyncedOrderMap] = useState<Record<string, string>>({}) // budget_order_id → QM订单号
@@ -107,18 +113,24 @@ export default function CostsPage() {
           .order('created_at', { ascending: false })
 
         if (data && data.length > 0) {
-          setCostItems(data.map((r: Record<string, unknown>) => ({
-            id: r.id as string,
-            budget_order_id: r.budget_order_id as string | null,
-            order_no: (r.budget_orders as Record<string, unknown>)?.order_no as string | undefined,
-            supplier: (r.supplier as string) || undefined,
-            cost_type: r.cost_type as CostType,
-            description: r.description as string,
-            amount: r.amount as number,
-            currency: r.currency as string,
-            exchange_rate: r.exchange_rate as number,
-            created_at: r.created_at as string,
-          })))
+          setCostItems(data.map((r: Record<string, unknown>) => {
+            let detailMeta: { qty: number; unit: string; unit_price: number } | undefined
+            try { if (r.source_id) detailMeta = JSON.parse(r.source_id as string) } catch { /* not json */ }
+            return {
+              id: r.id as string,
+              budget_order_id: r.budget_order_id as string | null,
+              order_no: (r.budget_orders as Record<string, unknown>)?.order_no as string | undefined,
+              supplier: (r.supplier as string) || undefined,
+              cost_type: r.cost_type as CostType,
+              description: r.description as string,
+              amount: r.amount as number,
+              currency: r.currency as string,
+              exchange_rate: r.exchange_rate as number,
+              is_paid: r.source_module === 'paid',
+              detail_meta: detailMeta,
+              created_at: r.created_at as string,
+            }
+          }))
         }
       } catch {
         // fallback to demo
@@ -154,6 +166,8 @@ export default function CostsPage() {
       const createdBy = profiles?.[0]?.id
       if (!createdBy) { toast.error('无法获取用户信息'); setSaving(false); return }
 
+      // 把数量/单价/单位存入source_id字段（JSON格式，因为表没有独立列）
+      const detailMeta = (formQty || formUnitPrice) ? JSON.stringify({ qty: Number(formQty) || 0, unit: formUnit, unit_price: Number(formUnitPrice) || 0 }) : null
       const record = {
         budget_order_id: formOrderId || null,
         cost_type: formType,
@@ -162,6 +176,8 @@ export default function CostsPage() {
         currency: formCurrency,
         exchange_rate: Number(formRate),
         supplier: formSupplier || null,
+        source_module: formPaid ? 'paid' : null,
+        source_id: detailMeta,
       }
 
       let data: Record<string, unknown>
@@ -190,6 +206,8 @@ export default function CostsPage() {
         return
       }
 
+      let savedMeta: CostRecord['detail_meta']
+      try { if (data.source_id) savedMeta = JSON.parse(data.source_id as string) } catch { /* not json */ }
       const savedItem: CostRecord = {
         id: data.id as string,
         budget_order_id: data.budget_order_id as string | null,
@@ -200,6 +218,8 @@ export default function CostsPage() {
         amount: data.amount as number,
         currency: data.currency as string,
         exchange_rate: data.exchange_rate as number,
+        is_paid: data.source_module === 'paid',
+        detail_meta: savedMeta,
         created_at: data.created_at as string,
       }
       if (editItem) {
@@ -225,8 +245,12 @@ export default function CostsPage() {
     setEditItem(null)
     setFormSupplier('')
     setFormDesc('')
+    setFormQty('')
+    setFormUnitPrice('')
+    setFormUnit('件')
     setFormAmount('')
     setFormOrderId('')
+    setFormPaid(false)
   }
 
   return (
@@ -326,10 +350,12 @@ export default function CostsPage() {
                     <TableHead>类型</TableHead>
                     <TableHead>供应商</TableHead>
                     <TableHead>描述</TableHead>
+                    <TableHead>数量×单价</TableHead>
                     <TableHead>关联订单</TableHead>
                     <TableHead className="text-right">金额</TableHead>
                     <TableHead>币种</TableHead>
                     <TableHead>汇率</TableHead>
+                    <TableHead>付款</TableHead>
                     <TableHead>日期</TableHead>
                     <TableHead className="text-center">操作</TableHead>
                   </TableRow>
@@ -346,6 +372,9 @@ export default function CostsPage() {
                         </TableCell>
                         <TableCell className="text-sm">{item.supplier || '-'}</TableCell>
                         <TableCell className="max-w-[200px] truncate">{item.description}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {item.detail_meta ? `${item.detail_meta.qty}${item.detail_meta.unit}×¥${item.detail_meta.unit_price}` : '-'}
+                        </TableCell>
                         <TableCell>
                           {item.budget_order_id ? (
                             <span className="text-primary font-medium text-xs">{syncedOrderMap[item.budget_order_id] || item.order_no || '-'}</span>
@@ -356,6 +385,11 @@ export default function CostsPage() {
                         <TableCell className="text-right font-semibold">{item.amount.toLocaleString()}</TableCell>
                         <TableCell>{item.currency}</TableCell>
                         <TableCell>{item.exchange_rate}</TableCell>
+                        <TableCell>
+                          <Badge variant={item.is_paid ? 'default' : 'outline'} className={item.is_paid ? 'bg-green-100 text-green-700 border-0' : 'text-amber-600'}>
+                            {item.is_paid ? '已付' : '未付'}
+                          </Badge>
+                        </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           {new Date(item.created_at).toLocaleDateString('zh-CN')}
                         </TableCell>
@@ -365,10 +399,14 @@ export default function CostsPage() {
                             setFormType(item.cost_type)
                             setFormSupplier(item.supplier || '')
                             setFormDesc(item.description)
+                            setFormQty(item.detail_meta?.qty?.toString() || '')
+                            setFormUnitPrice(item.detail_meta?.unit_price?.toString() || '')
+                            setFormUnit(item.detail_meta?.unit || '件')
                             setFormAmount(item.amount.toString())
                             setFormCurrency(item.currency)
                             setFormRate(item.exchange_rate.toString())
                             setFormOrderId(item.budget_order_id || '')
+                            setFormPaid(item.is_paid)
                             setShowAdd(true)
                           }}>编辑</Button>
                           <Button variant="ghost" size="sm" className="h-7 text-xs text-red-500 hover:text-red-700" onClick={async () => {
@@ -460,12 +498,30 @@ export default function CostsPage() {
             </div>
             <div className="space-y-2">
               <Label>费用描述 *</Label>
-              <Textarea placeholder="例：面料尾款、加工费第二批" value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={2} />
+              <Textarea placeholder="例：拉链、面料尾款、染色费" value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={1} />
             </div>
-            <div className="grid grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label>金额 *</Label>
-                <Input type="number" step="0.01" placeholder="0.00" value={formAmount} onChange={e => setFormAmount(e.target.value)} />
+            <div className="grid grid-cols-4 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">数量</Label>
+                <Input type="number" step="1" placeholder="0" value={formQty} onChange={e => {
+                  setFormQty(e.target.value)
+                  if (e.target.value && formUnitPrice) setFormAmount((Number(e.target.value) * Number(formUnitPrice)).toFixed(2))
+                }} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">单位</Label>
+                <Input placeholder="件/米/kg" value={formUnit} onChange={e => setFormUnit(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">单价</Label>
+                <Input type="number" step="0.01" placeholder="0.00" value={formUnitPrice} onChange={e => {
+                  setFormUnitPrice(e.target.value)
+                  if (e.target.value && formQty) setFormAmount((Number(formQty) * Number(e.target.value)).toFixed(2))
+                }} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs font-semibold">金额 *</Label>
+                <Input type="number" step="0.01" placeholder="0.00" value={formAmount} onChange={e => setFormAmount(e.target.value)} className="border-primary/30" />
               </div>
               <div className="space-y-2">
                 <Label>币种</Label>
@@ -488,6 +544,10 @@ export default function CostsPage() {
                 <Label>{formCurrency === 'CNY' ? '汇率（人民币无需填）' : '汇率'}</Label>
                 <Input type="number" step="0.01" value={formRate} onChange={e => setFormRate(e.target.value)} disabled={formCurrency === 'CNY'} />
               </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="formPaid" checked={formPaid} onChange={e => setFormPaid(e.target.checked)} className="rounded" />
+              <Label htmlFor="formPaid" className="text-sm cursor-pointer">已付款</Label>
             </div>
           </div>
           <DialogFooter>
