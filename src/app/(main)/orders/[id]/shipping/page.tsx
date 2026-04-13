@@ -83,6 +83,8 @@ export default function ShippingPage({ params }: { params: Promise<{ id: string 
       toast.success('单据已创建')
     } catch (err) {
       toast.error(`创建失败: ${err instanceof Error ? err.message : '未知错误'}`)
+      setSaving(false)
+      return // 失败不关闭弹窗
     }
     setSaving(false)
     setShowAdd(false)
@@ -91,12 +93,15 @@ export default function ShippingPage({ params }: { params: Promise<{ id: string 
   }
 
   const handleStatusChange = async (docId: string, newStatus: string) => {
-    setDocs(docs.map(d => d.id === docId ? { ...d, status: newStatus as ShippingDocument['status'] } : d))
     try {
       const supabase = createClient()
-      await supabase.from('shipping_documents').update({ status: newStatus }).eq('id', docId)
-    } catch { /* demo */ }
-    toast.success(`状态已更新为${statusLabels[newStatus]?.label || newStatus}`)
+      const { error } = await supabase.from('shipping_documents').update({ status: newStatus }).eq('id', docId)
+      if (error) throw error
+      setDocs(docs.map(d => d.id === docId ? { ...d, status: newStatus as ShippingDocument['status'] } : d))
+      toast.success(`状态已更新为${statusLabels[newStatus]?.label || newStatus}`)
+    } catch (err) {
+      toast.error(`更新失败: ${err instanceof Error ? err.message : '未知错误'}`)
+    }
   }
 
   return (

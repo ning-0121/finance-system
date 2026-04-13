@@ -64,8 +64,8 @@ export default function CostsPage() {
   const [showOrderList, setShowOrderList] = useState(false)
   const [formDesc, setFormDesc] = useState('')
   const [formAmount, setFormAmount] = useState('')
-  const [formCurrency, setFormCurrency] = useState('USD')
-  const [formRate, setFormRate] = useState('7.24')
+  const [formCurrency, setFormCurrency] = useState('CNY')
+  const [formRate, setFormRate] = useState('1')
 
   const [syncedOrderMap, setSyncedOrderMap] = useState<Record<string, string>>({}) // budget_order_id → QM订单号
 
@@ -187,13 +187,15 @@ export default function CostsPage() {
       toast.success('费用已录入')
     } catch (err) {
       toast.error(`保存失败: ${err instanceof Error ? err.message : '未知错误'}`)
-    } finally {
       setSaving(false)
-      setShowAdd(false)
-      setFormDesc('')
-      setFormAmount('')
-      setFormOrderId('')
+      return // 失败时不关闭弹窗，保留用户输入
     }
+    // 成功后才关闭弹窗并清空表单
+    setSaving(false)
+    setShowAdd(false)
+    setFormDesc('')
+    setFormAmount('')
+    setFormOrderId('')
   }
 
   return (
@@ -220,7 +222,7 @@ export default function CostsPage() {
                 <div className="p-2 rounded-lg bg-green-50"><TrendingUp className="h-4 w-4 text-green-600" /></div>
                 <div>
                   <p className="text-xs text-muted-foreground">总金额</p>
-                  <p className="text-xl font-bold">${totalAmount.toLocaleString()}</p>
+                  <p className="text-xl font-bold">¥{totalAmount.toLocaleString()}</p>
                 </div>
               </div>
             </CardContent>
@@ -255,7 +257,7 @@ export default function CostsPage() {
         <div className="flex gap-2 flex-wrap">
           {byType.map(t => (
             <Badge key={t.type} variant="outline" className={`${t.color} border-0 cursor-pointer`} onClick={() => setTab(t.type)}>
-              <t.icon className="h-3 w-3 mr-1" />{t.label}: {t.count}笔 ${t.total.toLocaleString()}
+              <t.icon className="h-3 w-3 mr-1" />{t.label}: {t.count}笔 ¥{t.total.toLocaleString()}
             </Badge>
           ))}
         </div>
@@ -419,19 +421,24 @@ export default function CostsPage() {
               </div>
               <div className="space-y-2">
                 <Label>币种</Label>
-                <Select value={formCurrency} onValueChange={(v) => setFormCurrency(v || 'USD')}>
+                <Select value={formCurrency} onValueChange={(v) => {
+                  const cur = v || 'USD'
+                  setFormCurrency(cur)
+                  if (cur === 'CNY') setFormRate('1')
+                  else if (cur === 'USD') setFormRate('6.9')
+                }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="USD">USD</SelectItem>
-                    <SelectItem value="EUR">EUR</SelectItem>
-                    <SelectItem value="CNY">CNY</SelectItem>
-                    <SelectItem value="GBP">GBP</SelectItem>
+                    <SelectItem value="CNY">人民币 CNY</SelectItem>
+                    <SelectItem value="USD">美元 USD</SelectItem>
+                    <SelectItem value="EUR">欧元 EUR</SelectItem>
+                    <SelectItem value="GBP">英镑 GBP</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>汇率</Label>
-                <Input type="number" step="0.01" value={formRate} onChange={e => setFormRate(e.target.value)} />
+                <Label>{formCurrency === 'CNY' ? '汇率（人民币无需填）' : '汇率'}</Label>
+                <Input type="number" step="0.01" value={formRate} onChange={e => setFormRate(e.target.value)} disabled={formCurrency === 'CNY'} />
               </div>
             </div>
           </div>
