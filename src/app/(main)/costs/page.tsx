@@ -150,7 +150,7 @@ export default function CostsPage() {
       const createdBy = profiles?.[0]?.id
       if (!createdBy) { toast.error('无法获取用户信息'); setSaving(false); return }
 
-      // 1. 写入
+      // 1. 写入（注意：cost_items表没有supplier列）
       const { data, error } = await supabase
         .from('cost_items')
         .insert({
@@ -160,7 +160,6 @@ export default function CostsPage() {
           amount: Number(formAmount),
           currency: formCurrency,
           exchange_rate: Number(formRate),
-          supplier: formDesc.split(/[,，]/)[0]?.trim() || null,
           created_by: createdBy,
         })
         .select('*, budget_orders(order_no)')
