@@ -486,7 +486,7 @@ export default function CostsPage() {
 
       {/* 录入费用弹窗 */}
       <Dialog open={showAdd} onOpenChange={(open) => { setShowAdd(open); if (!open) setEditItem(null) }}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editItem ? '编辑费用' : '录入费用'}</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
             <div className="grid grid-cols-2 gap-4">
@@ -588,7 +588,7 @@ export default function CostsPage() {
               </div>
             </div>
             {/* 额外明细行（同一供应商多个品目） */}
-            {!editItem && extraLines.map((line, idx) => (
+            {extraLines.map((line, idx) => (
               <div key={idx} className="grid grid-cols-5 gap-2 items-end bg-muted/30 p-2 rounded">
                 <div className="col-span-1">
                   <Input placeholder="品名" value={line.desc} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], desc: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
@@ -608,11 +608,9 @@ export default function CostsPage() {
                 </div>
               </div>
             ))}
-            {!editItem && (
-              <Button type="button" size="sm" variant="outline" className="w-full text-xs h-7" onClick={() => setExtraLines([...extraLines, { desc: '', qty: '', unit: '件', unitPrice: '', amount: '' }])}>
-                + 添加更多品目（同一供应商）
-              </Button>
-            )}
+            <Button type="button" size="sm" variant="outline" className="w-full text-xs h-7" onClick={() => setExtraLines([...extraLines, { desc: '', qty: '', unit: '件', unitPrice: '', amount: '' }])}>
+              + 添加更多品目（同一供应商）
+            </Button>
             <div className="flex items-center gap-2">
               <input type="checkbox" id="formPaid" checked={formPaid} onChange={e => setFormPaid(e.target.checked)} className="rounded" />
               <Label htmlFor="formPaid" className="text-sm cursor-pointer">已付款</Label>
