@@ -359,6 +359,25 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 </Button>
               </>
             )}
+            {order.status === 'rejected' && (
+              <>
+                <Button size="sm" variant="outline" onClick={() => handleStatusChange('submit', 'draft')}>
+                  修改预算
+                </Button>
+                <Button size="sm" onClick={async () => {
+                  // rejected → draft → pending_review
+                  const { error: e1 } = await updateBudgetOrderStatus(order.id, 'draft', demoUser.id)
+                  if (e1) { toast.error(`操作失败: ${e1}`); return }
+                  const { error: e2 } = await updateBudgetOrderStatus(order.id, 'pending_review', demoUser.id)
+                  if (e2) { toast.error(`操作失败: ${e2}`); return }
+                  setOrder({ ...order, status: 'pending_review' })
+                  toast.success('已重新提交审批')
+                }}>
+                  <Send className="h-4 w-4 mr-1" />
+                  重新提交审批
+                </Button>
+              </>
+            )}
             {order.status === 'approved' && !settlement && (
               <Button size="sm" variant="outline" onClick={handleGenerateSettlement}>
                 <FileText className="h-4 w-4 mr-1" />

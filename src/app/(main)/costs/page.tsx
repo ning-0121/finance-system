@@ -42,6 +42,7 @@ interface CostRecord {
   id: string
   budget_order_id: string | null
   order_no?: string
+  supplier?: string
   cost_type: CostType
   description: string
   amount: number
@@ -67,10 +68,12 @@ export default function CostsPage() {
   const [formOrderId, setFormOrderId] = useState('')
   const [orderSearch, setOrderSearch] = useState('')
   const [showOrderList, setShowOrderList] = useState(false)
+  const [formSupplier, setFormSupplier] = useState('')
   const [formDesc, setFormDesc] = useState('')
   const [formAmount, setFormAmount] = useState('')
   const [formCurrency, setFormCurrency] = useState('CNY')
   const [formRate, setFormRate] = useState('1')
+  const [editItem, setEditItem] = useState<CostRecord | null>(null)
 
   const [syncedOrderMap, setSyncedOrderMap] = useState<Record<string, string>>({}) // budget_order_id → QM订单号
 
@@ -108,6 +111,7 @@ export default function CostsPage() {
             id: r.id as string,
             budget_order_id: r.budget_order_id as string | null,
             order_no: (r.budget_orders as Record<string, unknown>)?.order_no as string | undefined,
+            supplier: (r.supplier as string) || undefined,
             cost_type: r.cost_type as CostType,
             description: r.description as string,
             amount: r.amount as number,
@@ -150,20 +154,30 @@ export default function CostsPage() {
       const createdBy = profiles?.[0]?.id
       if (!createdBy) { toast.error('无法获取用户信息'); setSaving(false); return }
 
-      // 1. 写入（注意：cost_items表没有supplier列）
-      const { data, error } = await supabase
-        .from('cost_items')
-        .insert({
-          budget_order_id: formOrderId || null,
-          cost_type: formType,
-          description: formDesc,
-          amount: Number(formAmount),
-          currency: formCurrency,
-          exchange_rate: Number(formRate),
-          created_by: createdBy,
-        })
-        .select('*, budget_orders(order_no)')
-        .single()
+      const record = {
+        budget_order_id: formOrderId || null,
+        cost_type: formType,
+        description: formDesc,
+        amount: Number(formAmount),
+        currency: formCurrency,
+        exchange_rate: Number(formRate),
+        supplier: formSupplier || null,
+      }
+
+      let data: Record<string, unknown>
+      let error: { message: string } | null
+
+      if (editItem) {
+        // 编辑模式：更新
+        const res = await supabase.from('cost_items').update(record).eq('id', editItem.id).select('*, budget_orders(order_no)').single()
+        data = res.data as Record<string, unknown>
+        error = res.error
+      } else {
+        // 新建模式：插入
+        const res = await supabase.from('cost_items').insert({ ...record, created_by: createdBy }).select('*, budget_orders(order_no)').single()
+        data = res.data as Record<string, unknown>
+        error = res.error
+      }
 
       if (error) throw error
 
@@ -176,19 +190,25 @@ export default function CostsPage() {
         return
       }
 
-      const newItem: CostRecord = {
-        id: data.id,
-        budget_order_id: data.budget_order_id,
-        order_no: data.budget_orders?.order_no,
-        cost_type: data.cost_type,
-        description: data.description,
-        amount: data.amount,
-        currency: data.currency,
-        exchange_rate: data.exchange_rate,
-        created_at: data.created_at,
+      const savedItem: CostRecord = {
+        id: data.id as string,
+        budget_order_id: data.budget_order_id as string | null,
+        order_no: (data.budget_orders as Record<string, unknown>)?.order_no as string | undefined,
+        supplier: data.supplier as string | undefined,
+        cost_type: data.cost_type as CostType,
+        description: data.description as string,
+        amount: data.amount as number,
+        currency: data.currency as string,
+        exchange_rate: data.exchange_rate as number,
+        created_at: data.created_at as string,
       }
-      setCostItems([newItem, ...costItems])
-      toast.success('费用已录入')
+      if (editItem) {
+        setCostItems(costItems.map(c => c.id === editItem.id ? savedItem : c))
+        toast.success('费用已更新')
+      } else {
+        setCostItems([savedItem, ...costItems])
+        toast.success('费用已录入')
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg.includes('cost_type')) toast.error('费用类型不支持，请刷新页面后重试')
@@ -202,6 +222,8 @@ export default function CostsPage() {
     // 成功后才关闭弹窗并清空表单
     setSaving(false)
     setShowAdd(false)
+    setEditItem(null)
+    setFormSupplier('')
     setFormDesc('')
     setFormAmount('')
     setFormOrderId('')
@@ -302,6 +324,7 @@ export default function CostsPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>类型</TableHead>
+                    <TableHead>供应商</TableHead>
                     <TableHead>描述</TableHead>
                     <TableHead>关联订单</TableHead>
                     <TableHead className="text-right">金额</TableHead>
@@ -321,12 +344,11 @@ export default function CostsPage() {
                             {cfg.label}
                           </Badge>
                         </TableCell>
-                        <TableCell className="max-w-[250px]">{item.description}</TableCell>
+                        <TableCell className="text-sm">{item.supplier || '-'}</TableCell>
+                        <TableCell className="max-w-[200px] truncate">{item.description}</TableCell>
                         <TableCell>
                           {item.budget_order_id ? (
-                            <div>
-                              <span className="text-primary font-medium">{syncedOrderMap[item.budget_order_id] || item.order_no || item.budget_order_id.slice(0,8)}</span>
-                            </div>
+                            <span className="text-primary font-medium text-xs">{syncedOrderMap[item.budget_order_id] || item.order_no || '-'}</span>
                           ) : (
                             <Badge variant="destructive" className="text-[10px]">待归集</Badge>
                           )}
@@ -337,7 +359,18 @@ export default function CostsPage() {
                         <TableCell className="text-sm text-muted-foreground">
                           {new Date(item.created_at).toLocaleDateString('zh-CN')}
                         </TableCell>
-                        <TableCell className="text-center">
+                        <TableCell className="text-center space-x-1">
+                          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => {
+                            setEditItem(item)
+                            setFormType(item.cost_type)
+                            setFormSupplier(item.supplier || '')
+                            setFormDesc(item.description)
+                            setFormAmount(item.amount.toString())
+                            setFormCurrency(item.currency)
+                            setFormRate(item.exchange_rate.toString())
+                            setFormOrderId(item.budget_order_id || '')
+                            setShowAdd(true)
+                          }}>编辑</Button>
                           <Button variant="ghost" size="sm" className="h-7 text-xs text-red-500 hover:text-red-700" onClick={async () => {
                             if (!confirm(`确定删除这笔费用？\n${item.description}\n金额: ${item.amount}`)) return
                             try {
@@ -372,9 +405,9 @@ export default function CostsPage() {
       />
 
       {/* 录入费用弹窗 */}
-      <Dialog open={showAdd} onOpenChange={setShowAdd}>
+      <Dialog open={showAdd} onOpenChange={(open) => { setShowAdd(open); if (!open) setEditItem(null) }}>
         <DialogContent>
-          <DialogHeader><DialogTitle>录入费用</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editItem ? '编辑费用' : '录入费用'}</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -422,8 +455,12 @@ export default function CostsPage() {
               </div>
             </div>
             <div className="space-y-2">
+              <Label>供应商</Label>
+              <Input placeholder="如：佛山永兴制衣厂" value={formSupplier} onChange={e => setFormSupplier(e.target.value)} />
+            </div>
+            <div className="space-y-2">
               <Label>费用描述 *</Label>
-              <Textarea placeholder="例：深圳-洛杉矶 海运费 20GP" value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={2} />
+              <Textarea placeholder="例：面料尾款、加工费第二批" value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={2} />
             </div>
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-2">
