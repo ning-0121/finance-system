@@ -231,14 +231,18 @@ export default function CostsPage() {
         const newItems = [savedItem]
 
         // 保存额外明细行（同一供应商的多个品目）
+        let extraFailed = 0
         for (const line of extraLines) {
-          if (!line.desc || !line.amount || Number(line.amount) <= 0) continue
+          // 跳过空行，但如果有品名就尝试保存（金额可能需要从数量×单价计算）
+          if (!line.desc) continue
+          const lineAmount = Number(line.amount) || (Number(line.qty) * Number(line.unitPrice)) || 0
+          if (lineAmount <= 0) { console.warn(`[费用录入] 品目"${line.desc}"金额为0，跳过`); continue }
           const lineMeta = (line.qty || line.unitPrice) ? JSON.stringify({ qty: Number(line.qty) || 0, unit: line.unit, unit_price: Number(line.unitPrice) || 0 }) : null
-          const { data: lineData } = await supabase.from('cost_items').insert({
+          const { data: lineData, error: lineErr } = await supabase.from('cost_items').insert({
             budget_order_id: formOrderId || null,
             cost_type: formType,
             description: line.desc,
-            amount: Number(line.amount),
+            amount: lineAmount,
             currency: formCurrency,
             exchange_rate: Number(formRate),
             supplier: formSupplier || null,
@@ -246,6 +250,12 @@ export default function CostsPage() {
             source_id: lineMeta,
             created_by: createdBy,
           }).select('*, budget_orders(order_no)').single()
+
+          if (lineErr) {
+            console.error(`[费用录入] 品目"${line.desc}"保存失败:`, lineErr.message)
+            extraFailed++
+            continue
+          }
 
           if (lineData) {
             let lm: CostRecord['detail_meta']
@@ -265,6 +275,9 @@ export default function CostsPage() {
               created_at: lineData.created_at as string,
             })
           }
+        }
+        if (extraFailed > 0) {
+          toast.error(`${extraFailed} 条品目保存失败，请检查`)
         }
 
         setCostItems([...newItems, ...costItems])
