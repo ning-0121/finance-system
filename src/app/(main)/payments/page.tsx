@@ -10,7 +10,11 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
-import { DollarSign, Clock, CheckCircle, AlertTriangle, Loader2, Search, CreditCard } from 'lucide-react'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { DollarSign, Clock, CheckCircle, AlertTriangle, Loader2, Search, CreditCard, Plus } from 'lucide-react'
+import { getBudgetOrders } from '@/lib/supabase/queries'
+import type { BudgetOrder } from '@/lib/types'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import { getPayableRecords } from '@/lib/supabase/queries-v2'
@@ -33,15 +37,50 @@ export default function PaymentsPage() {
   const [payRef, setPayRef] = useState('')
   const [payNote, setPayNote] = useState('')
   const [processing, setProcessing] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
+  const [orders, setOrders] = useState<BudgetOrder[]>([])
+  const [newSupplier, setNewSupplier] = useState('')
+  const [newDesc, setNewDesc] = useState('')
+  const [newAmount, setNewAmount] = useState('')
+  const [newOrderId, setNewOrderId] = useState('')
+  const [newDueDate, setNewDueDate] = useState('')
 
   useEffect(() => {
     async function load() {
-      const data = await getPayableRecords()
+      const [data, ordersData] = await Promise.all([getPayableRecords(), getBudgetOrders()])
       setRecords(data)
+      setOrders(ordersData)
       setLoading(false)
     }
     load()
   }, [])
+
+  const handleCreatePayable = async () => {
+    if (!newSupplier.trim()) { toast.error('请输入供应商名称'); return }
+    if (!newAmount || Number(newAmount) <= 0) { toast.error('请输入有效金额'); return }
+    setProcessing(true)
+    try {
+      const supabase = createClient()
+      const { data, error } = await supabase.from('payable_records').insert({
+        supplier_name: newSupplier,
+        description: newDesc || newSupplier,
+        amount: Number(newAmount),
+        currency: 'CNY',
+        payment_status: 'unpaid',
+        budget_order_id: newOrderId || null,
+        order_no: orders.find(o => o.id === newOrderId)?.order_no || null,
+        due_date: newDueDate || null,
+      }).select().single()
+      if (error) throw error
+      setRecords([data as unknown as PayableRecord, ...records])
+      toast.success('付款申请已创建')
+      setShowCreate(false)
+      setNewSupplier(''); setNewDesc(''); setNewAmount(''); setNewOrderId(''); setNewDueDate('')
+    } catch (err) {
+      toast.error(`创建失败: ${err instanceof Error ? err.message : '未知错误'}`)
+    }
+    setProcessing(false)
+  }
 
   const filtered = records.filter(r => {
     const matchFilter = filter === 'all' || r.payment_status === filter
@@ -94,8 +133,8 @@ export default function PaymentsPage() {
       <Header title="付款审批与出纳" subtitle="应付从决算中自动产生 · 审批→付款→回写发票状态" />
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-amber-50"><DollarSign className="h-4 w-4 text-amber-600" /></div><div><p className="text-xs text-muted-foreground">待付总额</p><p className="text-xl font-bold text-amber-600">${totalUnpaid.toLocaleString()}</p></div></CardContent></Card>
-          <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-green-50"><CheckCircle className="h-4 w-4 text-green-600" /></div><div><p className="text-xs text-muted-foreground">已付总额</p><p className="text-xl font-bold text-green-600">${totalPaid.toLocaleString()}</p></div></CardContent></Card>
+          <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-amber-50"><DollarSign className="h-4 w-4 text-amber-600" /></div><div><p className="text-xs text-muted-foreground">待付总额</p><p className="text-xl font-bold text-amber-600">¥{totalUnpaid.toLocaleString()}</p></div></CardContent></Card>
+          <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-green-50"><CheckCircle className="h-4 w-4 text-green-600" /></div><div><p className="text-xs text-muted-foreground">已付总额</p><p className="text-xl font-bold text-green-600">¥{totalPaid.toLocaleString()}</p></div></CardContent></Card>
           <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-blue-50"><CreditCard className="h-4 w-4 text-blue-600" /></div><div><p className="text-xs text-muted-foreground">应付笔数</p><p className="text-xl font-bold">{records.length}</p></div></CardContent></Card>
           <Card className={overBudgetCount > 0 ? 'border-red-200' : ''}><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-red-50"><AlertTriangle className="h-4 w-4 text-red-600" /></div><div><p className="text-xs text-muted-foreground">超预算</p><p className={`text-xl font-bold ${overBudgetCount > 0 ? 'text-red-600' : ''}`}>{overBudgetCount}</p></div></CardContent></Card>
         </div>
@@ -109,7 +148,10 @@ export default function PaymentsPage() {
               <TabsTrigger value="paid">已付款</TabsTrigger>
             </TabsList>
           </Tabs>
-          <div className="relative max-w-sm"><Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" /><Input placeholder="搜索供应商/订单号..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} /></div>
+          <div className="flex items-center gap-2">
+            <div className="relative max-w-sm"><Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" /><Input placeholder="搜索供应商/订单号..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} /></div>
+            <Button size="sm" onClick={() => setShowCreate(true)}><Plus className="h-4 w-4 mr-1" />新增付款申请</Button>
+          </div>
         </div>
 
         <Card>
@@ -185,6 +227,52 @@ export default function PaymentsPage() {
           </DialogContent>
         </Dialog>
       )}
+
+      {/* 新增付款申请弹窗 */}
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>新增付款申请</DialogTitle></DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>供应商名称 *</Label>
+              <Input placeholder="如：佛山永兴制衣厂" value={newSupplier} onChange={e => setNewSupplier(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>费用说明</Label>
+              <Input placeholder="如：2024春季面料尾款" value={newDesc} onChange={e => setNewDesc(e.target.value)} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>金额 (¥) *</Label>
+                <Input type="number" step="0.01" placeholder="0.00" value={newAmount} onChange={e => setNewAmount(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>到期日</Label>
+                <Input type="date" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>关联订单（可选）</Label>
+              <Select value={newOrderId} onValueChange={v => setNewOrderId(v || '')}>
+                <SelectTrigger><SelectValue placeholder="选择订单" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">不关联</SelectItem>
+                  {orders.map(o => (
+                    <SelectItem key={o.id} value={o.id}>{o.order_no} - {o.customer?.company || ''}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCreate(false)}>取消</Button>
+            <Button onClick={handleCreatePayable} disabled={processing}>
+              {processing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
+              创建付款申请
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

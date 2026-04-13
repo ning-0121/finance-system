@@ -131,7 +131,7 @@ export interface VarianceItem {
 }
 
 // 费用类型
-export type CostType = 'freight' | 'commission' | 'customs' | 'procurement' | 'other'
+export type CostType = 'fabric' | 'accessory' | 'processing' | 'freight' | 'container' | 'logistics' | 'commission' | 'customs' | 'procurement' | 'other'
 
 // 费用项
 export interface CostItem {

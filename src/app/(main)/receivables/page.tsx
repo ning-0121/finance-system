@@ -44,7 +44,7 @@ const agingBuckets = [
 function buildReceivables(orders: BudgetOrder[]): ReceivableRow[] {
   const now = new Date()
   return orders
-    .filter(o => o.status === 'approved' || o.status === 'closed')
+    .filter(o => o.status === 'approved' || o.status === 'closed' || o.status === 'draft' || o.status === 'pending_review')
     .map(o => {
       // 交货日期后30天为应收到期日
       const deliveryDate = o.delivery_date ? new Date(o.delivery_date) : new Date(o.order_date)
@@ -133,7 +133,7 @@ export default function ReceivablesPage() {
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div>
-                <div><p className="text-xs text-muted-foreground">应收总额</p><p className="text-xl font-bold">${totalBalance.toLocaleString()}</p></div>
+                <div><p className="text-xs text-muted-foreground">应收总额</p><p className="text-xl font-bold">¥{totalBalance.toLocaleString()}</p></div>
               </div>
             </CardContent>
           </Card>
@@ -141,7 +141,7 @@ export default function ReceivablesPage() {
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-red-50"><AlertTriangle className="h-4 w-4 text-red-600" /></div>
-                <div><p className="text-xs text-muted-foreground">逾期金额</p><p className="text-xl font-bold text-red-600">${overdueBalance.toLocaleString()}</p></div>
+                <div><p className="text-xs text-muted-foreground">逾期金额</p><p className="text-xl font-bold text-red-600">¥{overdueBalance.toLocaleString()}</p></div>
               </div>
             </CardContent>
           </Card>
@@ -172,8 +172,8 @@ export default function ReceivablesPage() {
                 <BarChart data={agingData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                  <YAxis tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
-                  <Tooltip formatter={(value) => [`$${Number(value).toLocaleString()}`, '金额']} />
+                  <YAxis tickFormatter={v => `¥${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
+                  <Tooltip formatter={(value) => [`¥${Number(value).toLocaleString()}`, '金额']} />
                   <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
                     {agingData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
                   </Bar>

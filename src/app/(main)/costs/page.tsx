@@ -26,10 +26,15 @@ import { createClient } from '@/lib/supabase/client'
 import type { BudgetOrder, CostType } from '@/lib/types'
 
 const costTypeConfig: Record<CostType, { label: string; icon: typeof Ship; color: string }> = {
-  freight: { label: '运费', icon: Ship, color: 'bg-blue-100 text-blue-700' },
+  fabric: { label: '面料', icon: Package, color: 'bg-rose-100 text-rose-700' },
+  accessory: { label: '辅料', icon: Package, color: 'bg-pink-100 text-pink-700' },
+  processing: { label: '加工费', icon: Receipt, color: 'bg-orange-100 text-orange-700' },
+  freight: { label: '货代费', icon: Ship, color: 'bg-blue-100 text-blue-700' },
+  container: { label: '装柜费', icon: Package, color: 'bg-cyan-100 text-cyan-700' },
+  logistics: { label: '物流费', icon: Ship, color: 'bg-teal-100 text-teal-700' },
   commission: { label: '佣金', icon: DollarSign, color: 'bg-green-100 text-green-700' },
   customs: { label: '报关费', icon: FileText, color: 'bg-purple-100 text-purple-700' },
-  procurement: { label: '采购成本', icon: Package, color: 'bg-amber-100 text-amber-700' },
+  procurement: { label: '其他采购', icon: Package, color: 'bg-amber-100 text-amber-700' },
   other: { label: '其他', icon: Receipt, color: 'bg-gray-100 text-gray-700' },
 }
 
@@ -200,7 +205,7 @@ export default function CostsPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <Header title="费用归集" subtitle="运费·佣金·报关费自动挂靠订单，杜绝漏算" />
+      <Header title="费用归集" subtitle="面料·辅料·加工费·货代·装柜·物流·佣金，所有实际费用归集到订单" />
 
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
         {/* Stats */}
