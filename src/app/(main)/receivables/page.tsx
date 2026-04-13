@@ -44,14 +44,19 @@ const agingBuckets = [
 function buildReceivables(orders: BudgetOrder[]): ReceivableRow[] {
   const now = new Date()
   return orders
-    .filter(o => o.status === 'approved' || o.status === 'closed' || o.status === 'draft' || o.status === 'pending_review')
+    .filter(o => {
+      // 只有已审批和已关闭的订单才算应收
+      if (o.status !== 'approved' && o.status !== 'closed') return false
+      // 金额为0的不显示
+      if (!o.total_revenue || o.total_revenue <= 0) return false
+      return true
+    })
     .map(o => {
       // 交货日期后30天为应收到期日
       const deliveryDate = o.delivery_date ? new Date(o.delivery_date) : new Date(o.order_date)
       const dueDate = new Date(deliveryDate)
       dueDate.setDate(dueDate.getDate() + 30)
 
-      const daysSinceOrder = Math.max(0, Math.floor((now.getTime() - deliveryDate.getTime()) / (1000 * 60 * 60 * 24)))
       const isPastDue = now > dueDate
       const agingDays = isPastDue ? Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24)) : 0
 

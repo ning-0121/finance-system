@@ -63,7 +63,7 @@ export default function CostsPage() {
   const [tab, setTab] = useState('all')
 
   // 新费用表单
-  const [formType, setFormType] = useState<CostType>('freight')
+  const [formType, setFormType] = useState<CostType>('fabric')
   const [formOrderId, setFormOrderId] = useState('')
   const [orderSearch, setOrderSearch] = useState('')
   const [showOrderList, setShowOrderList] = useState(false)
