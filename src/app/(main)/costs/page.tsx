@@ -224,14 +224,17 @@ export default function CostsPage() {
         detail_meta: savedMeta,
         created_at: data.created_at as string,
       }
+      // 保存额外明细行（编辑和新增模式都需要）
+      const newItems: CostRecord[] = []
+      let extraFailed = 0
+
       if (editItem) {
         setCostItems(costItems.map(c => c.id === editItem.id ? savedItem : c))
-        toast.success('费用已更新')
       } else {
-        const newItems = [savedItem]
+        newItems.push(savedItem)
+      }
 
-        // 保存额外明细行（同一供应商的多个品目）
-        let extraFailed = 0
+      // 保存额外明细行（同一供应商的多个品目）
         for (const line of extraLines) {
           // 跳过空行，但如果有品名就尝试保存（金额可能需要从数量×单价计算）
           if (!line.desc) continue
@@ -280,9 +283,11 @@ export default function CostsPage() {
           toast.error(`${extraFailed} 条品目保存失败，请检查`)
         }
 
+      if (newItems.length > 0) {
         setCostItems([...newItems, ...costItems])
-        toast.success(`已录入 ${newItems.length} 条费用`)
       }
+      const totalSaved = (editItem ? 1 : 0) + newItems.length
+      toast.success(editItem ? `已更新，共保存 ${totalSaved} 条` : `已录入 ${newItems.length} 条费用`)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg.includes('cost_type')) toast.error('费用类型不支持，请刷新页面后重试')
