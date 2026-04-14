@@ -31,6 +31,7 @@ import { FinanceWorkflowGuide } from '@/components/orders/FinanceWorkflowGuide'
 import { demoUser } from '@/lib/demo-data'
 import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
 import { validateBudgetEdit } from '@/lib/engines/validation-engine'
+import { runOrderSubmitGate, type GateResult } from '@/lib/engines/submit-gate-engine'
 import { getSubDocuments, getActualInvoices, getShippingDocuments, getOrderSettlement } from '@/lib/supabase/queries-v2'
 import type { BudgetOrder, BudgetOrderStatus, ApprovalLog } from '@/lib/types'
 import {
@@ -135,6 +136,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     load()
   }, [id])
   const [showDialog, setShowDialog] = useState<'approve' | 'reject' | null>(null)
+  const [gateResult, setGateResult] = useState<GateResult | null>(null)
+  const [gateLoading, setGateLoading] = useState(false)
   const [comment, setComment] = useState('')
 
   // 编辑模式 — 外贸服装成本细分
@@ -343,8 +346,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           <div className="flex items-center gap-2">
             <BudgetStatusBadge status={order.status} />
             {order.status === 'draft' && (
-              <Button size="sm" onClick={() => handleStatusChange('submit', 'pending_review')}>
-                <Send className="h-4 w-4 mr-1" />
+              <Button size="sm" disabled={gateLoading} onClick={async () => {
+                setGateLoading(true)
+                const result = await runOrderSubmitGate(order.id)
+                setGateResult(result)
+                setGateLoading(false)
+              }}>
+                {gateLoading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Send className="h-4 w-4 mr-1" />}
                 提交审批
               </Button>
             )}
@@ -831,6 +839,55 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* 提交前核查报告 */}
+      {gateResult && (
+        <Dialog open onOpenChange={() => setGateResult(null)}>
+          <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{gateResult.canSubmit ? '✅ 核查通过' : '❌ 核查未通过'}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2 py-2">
+              <p className="text-sm text-muted-foreground">{gateResult.summary}</p>
+              {gateResult.errors.map((c, i) => (
+                <div key={`e${i}`} className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <span className="text-red-600 font-bold shrink-0">✗</span>
+                  <div>
+                    <p className="text-sm font-medium text-red-800">{c.name}：{c.message}</p>
+                    {c.suggestion && <p className="text-xs text-red-600 mt-0.5">→ {c.suggestion}</p>}
+                  </div>
+                </div>
+              ))}
+              {gateResult.warnings.map((c, i) => (
+                <div key={`w${i}`} className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                  <span className="text-amber-600 font-bold shrink-0">⚠</span>
+                  <div>
+                    <p className="text-sm font-medium text-amber-800">{c.name}：{c.message}</p>
+                    {c.suggestion && <p className="text-xs text-amber-600 mt-0.5">→ {c.suggestion}</p>}
+                  </div>
+                </div>
+              ))}
+              {gateResult.passed.map((c, i) => (
+                <div key={`p${i}`} className="flex items-center gap-2 p-2 bg-green-50 border border-green-200 rounded-lg">
+                  <span className="text-green-600 shrink-0">✓</span>
+                  <p className="text-sm text-green-800">{c.name}：{c.message}</p>
+                </div>
+              ))}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setGateResult(null)}>返回修改</Button>
+              {gateResult.canSubmit && (
+                <Button onClick={() => {
+                  setGateResult(null)
+                  handleStatusChange('submit', 'pending_review')
+                }}>
+                  <Send className="h-4 w-4 mr-1" />确认提交
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* Approve/Reject Dialog */}
       <Dialog open={showDialog !== null} onOpenChange={() => setShowDialog(null)}>
