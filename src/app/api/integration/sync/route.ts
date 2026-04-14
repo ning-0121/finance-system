@@ -37,15 +37,11 @@ export async function POST() {
       if (s.order_no) syncedMap.set(s.order_no, s.id)
     })
 
-    // 3. 找出未同步的
+    // 3. 找出未同步的新订单
     const newOrders = metronomeOrders.filter(o => !syncedMap.has(o.order_no))
 
-    if (newOrders.length === 0) {
-      return NextResponse.json({ synced: 0, created: 0, total: metronomeOrders.length, message: '所有订单已同步' })
-    }
-
-    // 4. 批量写入synced_orders
-    const syncedInserts = newOrders.map(o => ({
+    // 4. 所有订单都upsert（更新lifecycle_status、internal_order_no等）
+    const allSyncInserts = metronomeOrders.map(o => ({
       id: o.id,
       order_no: o.order_no,
       customer_name: o.customer_name || '',
@@ -71,9 +67,15 @@ export async function POST() {
 
     const { error: syncErr } = await finance
       .from('synced_orders')
-      .upsert(syncedInserts, { onConflict: 'id' })
+      .upsert(allSyncInserts, { onConflict: 'id' })
 
     if (syncErr) throw new Error(`写入synced_orders失败: ${syncErr.message}`)
+
+    const updatedCount = metronomeOrders.length - newOrders.length
+
+    if (newOrders.length === 0) {
+      return NextResponse.json({ synced: 0, created: 0, updated: updatedCount, total: metronomeOrders.length, message: `已更新${updatedCount}个订单状态` })
+    }
 
     // 5. 为新订单创建budget_orders草稿
     let createdCount = 0

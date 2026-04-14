@@ -81,17 +81,24 @@ export default function SupplierReportPage() {
       // 没有快照或是草稿 → 从实时数据自动汇总
       // 加载费用和已付款数据
       const [costRes, payRes] = await Promise.all([
-        supabase.from('cost_items').select('id, description, amount, currency, cost_type, supplier, budget_order_id, created_at, budget_orders(order_no)').order('created_at', { ascending: false }),
+        supabase.from('cost_items').select('id, description, amount, currency, cost_type, supplier, source_module, budget_order_id, created_at, budget_orders(order_no)').order('created_at', { ascending: false }),
         supabase.from('payable_records').select('supplier_name, amount, payment_status').eq('payment_status', 'paid'),
       ])
       const costItems = costRes.data
       const paidRecords = payRes.data
 
-      // 按供应商汇总已付金额
+      // 按供应商汇总已付金额（来源1：payable_records + 来源2：cost_items标记为paid）
       const paidMap = new Map<string, number>()
       paidRecords?.forEach(p => {
         const name = p.supplier_name as string
         paidMap.set(name, (paidMap.get(name) || 0) + (p.amount as number || 0))
+      })
+      // 费用中标记为已付的也算已付
+      costItems?.forEach(c => {
+        if ((c.source_module as string) === 'paid') {
+          const name = (c.supplier as string) || '未指定'
+          paidMap.set(name, (paidMap.get(name) || 0) + (c.amount as number || 0))
+        }
       })
 
       if (costItems?.length) {
