@@ -40,38 +40,54 @@ export async function POST() {
     // 3. 找出未同步的新订单
     const newOrders = metronomeOrders.filter(o => !syncedMap.has(o.order_no))
 
-    // 4. 所有订单都upsert（更新lifecycle_status、internal_order_no等）
-    const allSyncInserts = metronomeOrders.map(o => ({
-      id: o.id,
-      order_no: o.order_no,
-      customer_name: o.customer_name || '',
-      style_no: o.internal_order_no || '',
-      currency: o.currency || 'USD',
-      quantity: o.quantity,
-      quantity_unit: o.quantity_unit || '件',
-      unit_price: o.unit_price,
-      total_amount: o.total_amount,
-      factory_name: o.factory_name,
-      lifecycle_status: o.lifecycle_status || 'draft',
-      incoterm: o.incoterm,
-      delivery_type: o.delivery_type,
-      order_type: o.order_type,
-      po_number: o.po_number,
-      etd: o.etd,
-      payment_terms: o.payment_terms,
-      notes: o.notes,
-      source_created_at: o.created_at,
-      source_updated_at: o.updated_at,
-      synced_at: new Date().toISOString(),
-    }))
+    // 4. 更新已有订单的状态（逐条update避免唯一约束冲突）
+    let updatedCount = 0
+    for (const o of metronomeOrders) {
+      if (syncedMap.has(o.order_no)) {
+        // 已存在：更新lifecycle_status和style_no
+        await finance.from('synced_orders').update({
+          style_no: o.internal_order_no || '',
+          lifecycle_status: o.lifecycle_status || 'draft',
+          customer_name: o.customer_name || '',
+          quantity: o.quantity,
+          synced_at: new Date().toISOString(),
+        }).eq('order_no', o.order_no)
+        updatedCount++
+      }
+    }
 
-    const { error: syncErr } = await finance
-      .from('synced_orders')
-      .upsert(allSyncInserts, { onConflict: 'id' })
+    // 5. 写入新订单
+    if (newOrders.length > 0) {
+      const syncedInserts = newOrders.map(o => ({
+        id: o.id,
+        order_no: o.order_no,
+        customer_name: o.customer_name || '',
+        style_no: o.internal_order_no || '',
+        currency: o.currency || 'USD',
+        quantity: o.quantity,
+        quantity_unit: o.quantity_unit || '件',
+        unit_price: o.unit_price,
+        total_amount: o.total_amount,
+        factory_name: o.factory_name,
+        lifecycle_status: o.lifecycle_status || 'draft',
+        incoterm: o.incoterm,
+        delivery_type: o.delivery_type,
+        order_type: o.order_type,
+        po_number: o.po_number,
+        etd: o.etd,
+        payment_terms: o.payment_terms,
+        notes: o.notes,
+        source_created_at: o.created_at,
+        source_updated_at: o.updated_at,
+        synced_at: new Date().toISOString(),
+      }))
 
-    if (syncErr) throw new Error(`写入synced_orders失败: ${syncErr.message}`)
+      const { error: syncErr } = await finance
+        .from('synced_orders')
+        .insert(syncedInserts)
 
-    const updatedCount = metronomeOrders.length - newOrders.length
+      if (syncErr) throw new Error(`写入synced_orders失败: ${syncErr.message}`)
+    }
 
     if (newOrders.length === 0) {
       return NextResponse.json({ synced: 0, created: 0, updated: updatedCount, total: metronomeOrders.length, message: `已更新${updatedCount}个订单状态` })
