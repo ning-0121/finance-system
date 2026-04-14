@@ -18,7 +18,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
-import { Plus, Loader2, Receipt, TrendingUp, Package, Ship, FileText, DollarSign, Upload } from 'lucide-react'
+import { Plus, Loader2, Receipt, TrendingUp, Package, Ship, FileText, DollarSign, Upload, Search } from 'lucide-react'
 import { ExcelImportDialog } from '@/components/import/ExcelImportDialog'
 import { toast } from 'sonner'
 import { getBudgetOrders } from '@/lib/supabase/queries'
@@ -147,11 +147,25 @@ export default function CostsPage() {
     load()
   }, [])
 
-  const filteredItems = tab === 'all'
-    ? costItems
-    : tab === 'unlinked'
-    ? costItems.filter(c => !c.budget_order_id)
-    : costItems.filter(c => c.cost_type === tab)
+  const [costSearch, setCostSearch] = useState('')
+
+  const filteredItems = costItems.filter(c => {
+    // tab筛选
+    if (tab === 'unlinked' && c.budget_order_id) return false
+    if (tab !== 'all' && tab !== 'unlinked' && c.cost_type !== tab) return false
+    // 搜索筛选（订单号、供应商、描述）
+    if (costSearch) {
+      const q = costSearch.toLowerCase()
+      const orderLabel = c.budget_order_id ? (syncedOrderMap[c.budget_order_id] || c.order_no || '') : ''
+      return (
+        (c.supplier || '').toLowerCase().includes(q) ||
+        c.description.toLowerCase().includes(q) ||
+        orderLabel.toLowerCase().includes(q) ||
+        (c.order_no || '').toLowerCase().includes(q)
+      )
+    }
+    return true
+  })
 
   // 统计
   const totalAmount = costItems.reduce((s, c) => s + c.amount, 0)
@@ -425,13 +439,17 @@ export default function CostsPage() {
         <div className="flex items-center justify-between">
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList>
-              <TabsTrigger value="all">全部 ({costItems.length})</TabsTrigger>
+              <TabsTrigger value="all">全部 ({costSearch ? `${filteredItems.length}/${costItems.length}` : costItems.length})</TabsTrigger>
               <TabsTrigger value="unlinked" className={unlinkedCount > 0 ? 'text-red-600' : ''}>
                 待归集 ({unlinkedCount})
               </TabsTrigger>
             </TabsList>
           </Tabs>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input placeholder="搜索订单号/供应商/描述..." className="pl-8 h-8 w-[220px] text-sm" value={costSearch} onChange={e => setCostSearch(e.target.value)} />
+            </div>
             <Button size="sm" variant="outline" onClick={() => setShowImport(true)}>
               <Upload className="h-4 w-4 mr-1" />批量导入
             </Button>
