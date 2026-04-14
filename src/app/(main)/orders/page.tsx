@@ -6,6 +6,7 @@ import { Header } from '@/components/layout/Header'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -24,7 +25,7 @@ export default function OrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [search, setSearch] = useState('')
 
-  const [syncedMap, setSyncedMap] = useState<Record<string, { qmNo: string; internalNo: string }>>({})
+  const [syncedMap, setSyncedMap] = useState<Record<string, { qmNo: string; internalNo: string; lifecycle?: string; customer?: string; qty?: number; unit?: string }>>({})
   const [syncing, setSyncing] = useState(false)
 
   const loadOrders = async () => {
@@ -34,11 +35,18 @@ export default function OrdersPage() {
       setOrders(data)
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
-      const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null)
+      const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, order_no, style_no, lifecycle_status, customer_name, quantity, quantity_unit').not('budget_order_id', 'is', null)
       if (synced) {
-        const map: Record<string, { qmNo: string; internalNo: string }> = {}
+        const map: Record<string, { qmNo: string; internalNo: string; lifecycle?: string; customer?: string; qty?: number; unit?: string }> = {}
         synced.forEach((s: Record<string, unknown>) => {
-          if (s.budget_order_id) map[s.budget_order_id as string] = { qmNo: s.order_no as string || '', internalNo: s.style_no as string || '' }
+          if (s.budget_order_id) map[s.budget_order_id as string] = {
+            qmNo: s.order_no as string || '',
+            internalNo: s.style_no as string || '',
+            lifecycle: s.lifecycle_status as string || '',
+            customer: s.customer_name as string || '',
+            qty: s.quantity as number || 0,
+            unit: s.quantity_unit as string || '件',
+          }
         })
         setSyncedMap(map)
       }
@@ -147,13 +155,13 @@ export default function OrdersPage() {
                     <TableHead>订单号</TableHead>
                     <TableHead>内部单号</TableHead>
                     <TableHead>客户</TableHead>
-                    <TableHead className="text-right">收入(USD)</TableHead>
-                    <TableHead className="text-right">成本(CNY)</TableHead>
-                    <TableHead className="text-right">利润(CNY)</TableHead>
+                    <TableHead className="text-right">合同金额</TableHead>
+                    <TableHead className="text-right">成本(¥)</TableHead>
+                    <TableHead className="text-right">利润(¥)</TableHead>
                     <TableHead className="text-right">毛利率</TableHead>
-                    <TableHead>状态</TableHead>
+                    <TableHead>财务状态</TableHead>
+                    <TableHead>订单进度</TableHead>
                     <TableHead>下单日期</TableHead>
-                    <TableHead>交货日期</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -172,7 +180,7 @@ export default function OrdersPage() {
                           <p className="text-xs text-muted-foreground">{order.customer?.country || ''}</p>
                         </div>
                       </TableCell>
-                      <TableCell className="text-right font-medium">$ {order.total_revenue.toLocaleString()}</TableCell>
+                      <TableCell className="text-right font-medium">{order.currency === 'CNY' ? '¥' : '$'} {order.total_revenue.toLocaleString()}</TableCell>
                       <TableCell className="text-right">¥ {order.total_cost.toLocaleString()}</TableCell>
                       <TableCell className={`text-right font-semibold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
                         ¥ {order.estimated_profit.toLocaleString()}
@@ -183,8 +191,14 @@ export default function OrdersPage() {
                         }`}>{order.estimated_margin}%</span>
                       </TableCell>
                       <TableCell><BudgetStatusBadge status={order.status as BudgetOrderStatus} /></TableCell>
+                      <TableCell>
+                        {syncedMap[order.id]?.lifecycle && (
+                          <Badge variant="outline" className={`text-[10px] ${syncedMap[order.id].lifecycle === '已完成' ? 'bg-green-50 text-green-700 border-green-200' : ''}`}>
+                            {syncedMap[order.id].lifecycle}
+                          </Badge>
+                        )}
+                      </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{order.order_date}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{order.delivery_date || '-'}</TableCell>
                     </TableRow>
                   ))}
                   {filteredOrders.length === 0 && !loading && (
