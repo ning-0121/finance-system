@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,6 +24,7 @@ import { toast } from 'sonner'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { createClient } from '@/lib/supabase/client'
 import type { BudgetOrder, CostType } from '@/lib/types'
+import { validateCostEntry, type ValidationWarning } from '@/lib/engines/validation-engine'
 
 const costTypeConfig: Record<CostType, { label: string; icon: typeof Ship; color: string }> = {
   fabric: { label: '面料', icon: Package, color: 'bg-rose-100 text-rose-700' },
@@ -82,6 +83,9 @@ export default function CostsPage() {
   const [editItem, setEditItem] = useState<CostRecord | null>(null)
   // 多行明细（同一供应商多个品目）
   const [extraLines, setExtraLines] = useState<{ desc: string; qty: string; unit: string; unitPrice: string; amount: string }[]>([])
+  // 防错校验
+  const [validationWarnings, setValidationWarnings] = useState<ValidationWarning[]>([])
+  const [showConfirm, setShowConfirm] = useState(false)
 
   const [syncedOrderMap, setSyncedOrderMap] = useState<Record<string, string>>({}) // budget_order_id → QM订单号
 
@@ -157,10 +161,50 @@ export default function CostsPage() {
     return { type, ...cfg, count: items.length, total: items.reduce((s, c) => s + c.amount, 0) }
   }).filter(t => t.count > 0)
 
-  const handleSave = async () => {
+  // 防错校验 → 有error阻止，有warning弹确认
+  const runValidation = useCallback(() => {
+    const amt = Number(formAmount) || 0
+    const order = orders.find(o => o.id === formOrderId)
+    const warnings = validateCostEntry({
+      amount: amt,
+      description: formDesc,
+      supplier: formSupplier.trim(),
+      costType: formType,
+      currency: formCurrency,
+      exchangeRate: Number(formRate) || 1,
+      orderRevenue: order ? order.total_revenue * (order.exchange_rate || 1) : undefined,
+      existingCosts: costItems.map(c => ({ supplier: c.supplier || '', description: c.description, amount: c.amount })),
+    })
+    return warnings
+  }, [formAmount, formDesc, formSupplier, formType, formCurrency, formRate, formOrderId, orders, costItems])
+
+  const handleSaveWithValidation = () => {
     if (!formDesc.trim()) { toast.error('请输入费用描述'); return }
     if (!formAmount || Number(formAmount) <= 0) { toast.error('请输入有效金额'); return }
 
+    // 自动trim供应商名称
+    if (formSupplier !== formSupplier.trim()) setFormSupplier(formSupplier.trim())
+
+    const warnings = runValidation()
+    setValidationWarnings(warnings)
+
+    const errors = warnings.filter(w => w.level === 'error')
+    if (errors.length > 0) {
+      toast.error(errors[0].message)
+      return
+    }
+
+    const needsConfirm = warnings.filter(w => w.level === 'warning')
+    if (needsConfirm.length > 0) {
+      setShowConfirm(true) // 显示确认弹窗
+      return
+    }
+
+    handleSave() // 无警告直接保存
+  }
+
+  const handleSave = async () => {
+    setShowConfirm(false)
     setSaving(true)
     try {
       const supabase = createClient()
@@ -651,9 +695,37 @@ export default function CostsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAdd(false)}>取消</Button>
-            <Button onClick={handleSave} disabled={saving}>
+            <Button onClick={handleSaveWithValidation} disabled={saving}>
               {saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />保存中...</> : '确认录入'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 防错确认弹窗 */}
+      <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>⚠️ 请确认以下提醒</DialogTitle></DialogHeader>
+          <div className="space-y-3 py-2">
+            {validationWarnings.filter(w => w.level === 'warning').map((w, i) => (
+              <div key={i} className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <span className="text-amber-600 text-lg shrink-0">⚠</span>
+                <div>
+                  <p className="text-sm font-medium text-amber-800">{w.message}</p>
+                  {w.suggestion && <p className="text-xs text-amber-600 mt-1">建议值: {w.suggestion}</p>}
+                </div>
+              </div>
+            ))}
+            {validationWarnings.filter(w => w.level === 'info').map((w, i) => (
+              <div key={`info-${i}`} className="flex items-start gap-2 p-2 bg-blue-50 border border-blue-200 rounded-lg">
+                <span className="text-blue-500 shrink-0">ℹ</span>
+                <p className="text-xs text-blue-700">{w.message}</p>
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowConfirm(false)}>返回修改</Button>
+            <Button onClick={handleSave}>我确认无误，继续保存</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

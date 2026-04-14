@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DollarSign, Clock, CheckCircle, AlertTriangle, Loader2, Search, CreditCard, Plus } from 'lucide-react'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import type { BudgetOrder } from '@/lib/types'
+import { validatePayment, type ValidationWarning } from '@/lib/engines/validation-engine'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import { getPayableRecords } from '@/lib/supabase/queries-v2'
@@ -55,9 +56,29 @@ export default function PaymentsPage() {
     load()
   }, [])
 
+  const [payWarnings, setPayWarnings] = useState<ValidationWarning[]>([])
+
   const handleCreatePayable = async () => {
     if (!newSupplier.trim()) { toast.error('请输入供应商名称'); return }
     if (!newAmount || Number(newAmount) <= 0) { toast.error('请输入有效金额'); return }
+
+    // 防错校验
+    const warnings = validatePayment({
+      amount: Number(newAmount),
+      supplier: newSupplier.trim(),
+      dueDate: newDueDate,
+      existingPayables: records.map(r => ({ supplier: r.supplier_name, amount: r.amount })),
+    })
+    const errors = warnings.filter(w => w.level === 'error')
+    if (errors.length > 0) { toast.error(errors[0].message); return }
+    const warns = warnings.filter(w => w.level === 'warning')
+    if (warns.length > 0 && payWarnings.length === 0) {
+      setPayWarnings(warns)
+      warns.forEach(w => toast.warning(w.message))
+      return // 第一次显示警告，用户需要再次点击确认
+    }
+    setPayWarnings([])
+
     setProcessing(true)
     try {
       const supabase = createClient()

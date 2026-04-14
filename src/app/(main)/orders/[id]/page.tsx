@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useState, useEffect } from 'react'
+import { use, useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { Header } from '@/components/layout/Header'
 import { Button } from '@/components/ui/button'
@@ -30,6 +30,7 @@ import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
 import { FinanceWorkflowGuide } from '@/components/orders/FinanceWorkflowGuide'
 import { demoUser } from '@/lib/demo-data'
 import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
+import { validateBudgetEdit } from '@/lib/engines/validation-engine'
 import { getSubDocuments, getActualInvoices, getShippingDocuments, getOrderSettlement } from '@/lib/supabase/queries-v2'
 import type { BudgetOrder, BudgetOrderStatus, ApprovalLog } from '@/lib/types'
 import {
@@ -494,6 +495,20 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           <div className="flex justify-between"><span>预计利润</span><span className={`font-semibold ${profitCny < 0 ? 'text-red-600' : 'text-green-600'}`}>¥{profitCny.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></div>
                           <div className="flex justify-between"><span>毛利率</span><span className={`font-medium ${Number(marginPct) < 15 ? 'text-amber-600' : 'text-green-600'}`}>{marginPct}%</span></div>
                         </div>
+                        {/* 防错提示 */}
+                        {(() => {
+                          const bw = validateBudgetEdit({
+                            revenue: revenueInput, rate, currency: editCurrencyMode,
+                            costs: { fabric: Number(editFabric)||0, accessory: Number(editAccessory)||0, processing: Number(editProcessing)||0, forwarder: Number(editForwarder)||0, container: Number(editContainer)||0, logistics: Number(editLogistics)||0 },
+                          })
+                          const errs = bw.filter(w => w.level === 'error')
+                          const warns = bw.filter(w => w.level === 'warning')
+                          if (errs.length === 0 && warns.length === 0) return null
+                          return <div className="space-y-1">
+                            {errs.map((w,i) => <div key={i} className="p-1.5 bg-red-50 border border-red-200 rounded text-[10px] text-red-700">❌ {w.message}</div>)}
+                            {warns.map((w,i) => <div key={`w${i}`} className="p-1.5 bg-amber-50 border border-amber-200 rounded text-[10px] text-amber-700">⚠ {w.message}</div>)}
+                          </div>
+                        })()}
                         <div className="flex gap-2">
                           <Button size="sm" className="flex-1" disabled={savingEdit} onClick={handleSaveEdit}>
                             {savingEdit ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}保存
