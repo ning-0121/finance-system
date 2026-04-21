@@ -41,10 +41,12 @@ const STATUS_CONFIG: Record<ReportStatus, { label: string; color: string }> = {
 
 export default function SupplierReportPage() {
   const [lines, setLines] = useState<SupplierLine[]>([])
-  const [allCostDetails, setAllCostDetails] = useState<{ supplier: string; description: string; amount: number; currency: string; cost_type: string; order_no: string; created_at: string }[]>([])
+  const [allCostDetails, setAllCostDetails] = useState<{ supplier: string; description: string; amount: number; currency: string; cost_type: string; order_no: string; created_at: string; is_paid: boolean }[]>([])
   const [expandedSupplier, setExpandedSupplier] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [dateStart, setDateStart] = useState('2026-02-01')
+  const [dateEnd, setDateEnd] = useState('2026-03-31')
   const [status, setStatus] = useState<ReportStatus>('draft')
   const [snapshotId, setSnapshotId] = useState<string | null>(null)
   const [corrections, setCorrections] = useState<Record<string, unknown>[]>([])
@@ -111,6 +113,7 @@ export default function SupplierReportPage() {
           cost_type: item.cost_type as string,
           order_no: (item.budget_orders as unknown as Record<string, unknown>)?.order_no as string || '',
           created_at: item.created_at as string,
+          is_paid: (item.source_module as string) === 'paid',
         })))
 
         // 按供应商汇总
@@ -152,6 +155,13 @@ export default function SupplierReportPage() {
   const totalAll = filtered.reduce((s, d) => s + d.total, 0)
   const unpaidAll = filtered.reduce((s, d) => s + d.unpaid, 0)
   const isLocked = status === 'locked' || status === 'confirmed'
+
+  const getDetails = (supplier: string) => allCostDetails.filter(d => {
+    if (d.supplier !== supplier) return false
+    if (dateStart && d.created_at < dateStart) return false
+    if (dateEnd && d.created_at > dateEnd + 'T23:59:59') return false
+    return true
+  })
 
   // 保存快照
   const saveSnapshot = async (newStatus: ReportStatus) => {
@@ -303,10 +313,18 @@ export default function SupplierReportPage() {
           <Card className={unpaidAll > 0 ? 'border-amber-200' : ''}><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-amber-50"><Clock className="h-4 w-4 text-amber-600" /></div><div><p className="text-xs text-muted-foreground">待付金额</p><p className="text-xl font-bold text-amber-600">¥{unpaidAll.toLocaleString()}</p></div></CardContent></Card>
         </div>
 
-        {/* 搜索 */}
-        <div className="relative max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="搜索供应商..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+        {/* 搜索 + 日期筛选 */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input placeholder="搜索供应商..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">明细日期</span>
+            <Input type="date" value={dateStart} onChange={e => setDateStart(e.target.value)} className="w-36 h-9" />
+            <span className="text-muted-foreground">~</span>
+            <Input type="date" value={dateEnd} onChange={e => setDateEnd(e.target.value)} className="w-36 h-9" />
+          </div>
         </div>
 
         {/* 表格 */}
@@ -332,7 +350,7 @@ export default function SupplierReportPage() {
                 </TableHeader>
                 <TableBody>
                   {filtered.map((s, i) => {
-                    const details = allCostDetails.filter(d => d.supplier === s.supplier)
+                    const details = getDetails(s.supplier)
                     const isExpanded = expandedSupplier === s.supplier
                     return (
                       <React.Fragment key={i}>
@@ -358,35 +376,58 @@ export default function SupplierReportPage() {
                             </TableCell>
                           )}
                         </TableRow>
-                        {/* 展开的明细行 */}
-                        {isExpanded && details.map((d, di) => (
-                          <TableRow key={`detail-${di}`} className="bg-muted/30 text-xs">
-                            <TableCell className="pl-10 text-muted-foreground">{d.cost_type}</TableCell>
-                            <TableCell></TableCell>
-                            <TableCell className="text-right">¥{d.amount.toLocaleString()}</TableCell>
-                            <TableCell colSpan={2} className="text-muted-foreground">{d.description}</TableCell>
-                            <TableCell className="text-muted-foreground">{d.order_no || '-'}</TableCell>
-                            <TableCell className="text-muted-foreground">{new Date(d.created_at).toLocaleDateString('zh-CN')}</TableCell>
-                            {!isLocked && <TableCell></TableCell>}
-                          </TableRow>
-                        ))}
+                        {/* 展开明细 — 独立子表，不受外层列宽干扰 */}
                         {isExpanded && (
-                          <TableRow className="bg-muted/20">
-                            <TableCell colSpan={isLocked ? 7 : 8} className="text-center py-1">
-                              <Button size="sm" variant="ghost" className="text-xs h-6" onClick={(e) => {
-                                e.stopPropagation()
-                                // 导出该供应商明细为CSV
-                                const csv = ['供应商,费用类型,描述,金额,币种,关联订单,日期']
-                                details.forEach(d => csv.push(`${d.supplier},${d.cost_type},${d.description},${d.amount},${d.currency},${d.order_no},${new Date(d.created_at).toLocaleDateString('zh-CN')}`))
-                                const blob = new Blob(['\uFEFF' + csv.join('\n')], { type: 'text/csv;charset=utf-8' })
-                                const url = URL.createObjectURL(blob)
-                                const a = document.createElement('a')
-                                a.href = url; a.download = `${s.supplier}_费用明细.csv`; a.click()
-                                URL.revokeObjectURL(url)
-                                toast.success(`已导出 ${s.supplier} 的 ${details.length} 条明细`)
-                              }}>
-                                <Download className="h-3 w-3 mr-1" />导出该供应商明细
-                              </Button>
+                          <TableRow>
+                            <TableCell colSpan={isLocked ? 7 : 8} className="p-0 bg-slate-50">
+                              {details.length === 0 ? (
+                                <div className="text-center py-4 text-xs text-muted-foreground">该时间段内无记录</div>
+                              ) : (
+                                <table className="w-full text-xs border-t border-slate-200">
+                                  <thead className="bg-slate-100 border-b border-slate-200">
+                                    <tr>
+                                      <th className="pl-10 pr-3 py-2 text-left font-semibold text-slate-600 w-28">费用类型</th>
+                                      <th className="px-3 py-2 text-left font-semibold text-blue-700 w-36">内部单号</th>
+                                      <th className="px-3 py-2 text-right font-semibold text-slate-600 w-28">金额</th>
+                                      <th className="px-3 py-2 text-left font-semibold text-slate-600">描述</th>
+                                      <th className="px-3 py-2 text-center font-semibold text-slate-600 w-16">付款</th>
+                                      <th className="px-3 py-2 text-left font-semibold text-slate-600 w-24">日期</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {details.map((d, di) => (
+                                      <tr key={di} className="border-t border-slate-100 hover:bg-white">
+                                        <td className="pl-10 pr-3 py-1.5 text-muted-foreground">{d.cost_type}</td>
+                                        <td className="px-3 py-1.5 font-mono font-semibold text-blue-700">{d.order_no || <span className="text-muted-foreground">—</span>}</td>
+                                        <td className="px-3 py-1.5 text-right tabular-nums">¥{d.amount.toLocaleString()}</td>
+                                        <td className="px-3 py-1.5 text-muted-foreground">{d.description}</td>
+                                        <td className="px-3 py-1.5 text-center">
+                                          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${d.is_paid ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                                            {d.is_paid ? '已付' : '未付'}
+                                          </span>
+                                        </td>
+                                        <td className="px-3 py-1.5 text-muted-foreground">{new Date(d.created_at).toLocaleDateString('zh-CN')}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                              <div className="flex justify-end px-4 py-1.5 border-t border-slate-200 bg-slate-50">
+                                <Button size="sm" variant="ghost" className="text-xs h-6" onClick={(e) => {
+                                  e.stopPropagation()
+                                  const period = dateStart && dateEnd ? `${dateStart}~${dateEnd}` : '全部'
+                                  const csv = ['供应商,费用类型,内部单号,金额,币种,描述,付款状态,日期']
+                                  details.forEach(d => csv.push(`${d.supplier},${d.cost_type},${d.order_no},${d.amount},${d.currency},${d.description},${d.is_paid ? '已付' : '未付'},${new Date(d.created_at).toLocaleDateString('zh-CN')}`))
+                                  const blob = new Blob(['\uFEFF' + csv.join('\n')], { type: 'text/csv;charset=utf-8' })
+                                  const url = URL.createObjectURL(blob)
+                                  const a = document.createElement('a')
+                                  a.href = url; a.download = `${s.supplier}_费用明细_${period}.csv`; a.click()
+                                  URL.revokeObjectURL(url)
+                                  toast.success(`已导出 ${s.supplier} 共 ${details.length} 条`)
+                                }}>
+                                  <Download className="h-3 w-3 mr-1" />导出明细 CSV
+                                </Button>
+                              </div>
                             </TableCell>
                           </TableRow>
                         )}
