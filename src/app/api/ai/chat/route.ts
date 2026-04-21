@@ -6,9 +6,12 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
+import Anthropic from '@anthropic-ai/sdk'
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || ''
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' })
 
+// 固定系统提示 — 标记缓存，节省 ~90% 输入 token 费用
+// 最短缓存前缀 2048 tokens (Sonnet 4.6)，系统提示+上下文合并后超过此阈值时生效
 const SYSTEM_PROMPT = `你是绮陌服饰(QIMO Clothing)的AI财务分析助手。你可以帮财务总监Su和财务方圆：
 
 ## 你的能力
@@ -57,33 +60,41 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: '请输入问题' }, { status: 400 })
     }
 
-    // 构建丰富的上下文数据
+    // 构建丰富的上下文数据（每次请求不同，不缓存）
     const contextData = await buildContext(message)
 
     // 如果有 Anthropic API Key，调用 Claude
-    if (ANTHROPIC_API_KEY && !ANTHROPIC_API_KEY.includes('your_')) {
+    if (process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_API_KEY.includes('your_')) {
       try {
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 4000,
-            system: SYSTEM_PROMPT + contextData,
-            messages: [{ role: 'user', content: message }],
-          }),
+        const response = await client.messages.create({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4000,
+          // 两段 system：静态提示缓存，动态上下文不缓存
+          system: [
+            {
+              type: 'text',
+              text: SYSTEM_PROMPT,
+              cache_control: { type: 'ephemeral' }, // 5分钟缓存，节省重复 token 费用
+            },
+            {
+              type: 'text',
+              text: contextData, // 每次请求变化，不标缓存
+            },
+          ],
+          messages: [{ role: 'user', content: message }],
         })
 
-        if (response.ok) {
-          const data = await response.json()
-          const content = data.content?.[0]?.text || '抱歉，无法生成回答。'
-          return NextResponse.json({ response: content, source: 'claude' })
+        const textBlock = response.content.find(b => b.type === 'text')
+        const content = textBlock?.type === 'text' ? textBlock.text : '抱歉，无法生成回答。'
+
+        // 调试：记录缓存命中情况（生产可去掉）
+        if ((response.usage.cache_read_input_tokens ?? 0) > 0) {
+          console.log(`[AI Chat] 缓存命中: ${response.usage.cache_read_input_tokens} tokens saved`)
         }
-      } catch {
+
+        return NextResponse.json({ response: content, source: 'claude' })
+      } catch (err) {
+        console.error('[AI Chat] Claude API error:', err)
         // Claude API 失败，降级
       }
     }
@@ -311,7 +322,6 @@ ${findings.map((f: Record<string, unknown>) => `- [${f.severity}] ${f.title}: ${
 
 // --- 基于真实数据的模板回答 ---
 async function generateDataDrivenResponse(message: string, context: string): Promise<string> {
-  // 提取上下文中的关键数据
   const hasData = !context.includes('暂无数据')
 
   if (message.includes('利润') || message.includes('profit')) {
