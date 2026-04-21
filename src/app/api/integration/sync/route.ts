@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server'
 import { createClient as createMetronomeClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
+import { escapeIlike } from '@/lib/utils'
 
 const METRONOME_URL = process.env.METRONOME_SUPABASE_URL || ''
 const METRONOME_KEY = process.env.METRONOME_SUPABASE_SERVICE_KEY || ''
@@ -103,7 +104,7 @@ export async function POST() {
         const { data: existing } = await finance
           .from('customers')
           .select('id')
-          .ilike('company', `%${o.customer_name}%`)
+          .ilike('company', `%${escapeIlike(o.customer_name)}%`)
           .limit(1)
 
         if (existing?.length) {
@@ -118,7 +119,7 @@ export async function POST() {
           if (newCust) customerId = newCust.id
           // upsert 未返回数据时（已存在），再 select 一次
           if (!customerId) {
-            const { data: fallback } = await finance.from('customers').select('id').ilike('company', o.customer_name).limit(1)
+            const { data: fallback } = await finance.from('customers').select('id').ilike('company', escapeIlike(o.customer_name)).limit(1)
             customerId = fallback?.[0]?.id ?? null
           }
         }
@@ -128,7 +129,7 @@ export async function POST() {
       const { data: existingBO } = await finance
         .from('budget_orders')
         .select('id')
-        .ilike('notes', `%${o.order_no}%`)
+        .ilike('notes', `%${escapeIlike(o.order_no)}%`)
         .limit(1)
 
       if (existingBO?.length) {

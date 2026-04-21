@@ -8,7 +8,10 @@ import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
 import { extractWithVision, extractFromExcelHeaders } from '@/lib/document-engine/extractor'
 import { autoMatch, calculateDuplicateProbability, generateSuggestedActions } from '@/lib/document-engine/matcher'
+import { escapeIlike } from '@/lib/utils'
 import type { FileType, ExtractionResult } from '@/lib/types/document'
+
+const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50 MB
 
 export async function POST(request: Request) {
   const auth = await requireAuth()
@@ -21,6 +24,11 @@ export async function POST(request: Request) {
 
     const fileName = file.name
     const fileSize = file.size
+
+    if (fileSize > MAX_FILE_SIZE) {
+      return NextResponse.json({ error: `文件过大，最多支持 ${MAX_FILE_SIZE / 1024 / 1024}MB` }, { status: 413 })
+    }
+
     const ext = fileName.split('.').pop()?.toLowerCase() || ''
 
     let fileType: FileType = 'image'
@@ -64,7 +72,7 @@ export async function POST(request: Request) {
       const { data: template } = await supabase
         .from('extraction_templates')
         .select('column_mapping, doc_category, entity_name')
-        .ilike('entity_name', `%${possibleEntity}%`)
+        .ilike('entity_name', `%${escapeIlike(possibleEntity)}%`)
         .order('usage_count', { ascending: false })
         .limit(1)
 

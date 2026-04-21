@@ -8,24 +8,28 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
 import { executeDocumentActions } from '@/lib/document-engine/executor'
+import { z } from 'zod'
 import type { DocCategory } from '@/lib/types/document'
+
+const ExecuteSchema = z.object({
+  document_id: z.string().min(1, 'document_id 不能为空'),
+  confirmed_fields: z.record(z.string(), z.unknown()).optional().default({}),
+  confirmed_by: z.string().optional(),
+  approved_actions: z.array(z.string()).optional().default([]),
+  rejected_actions: z.array(z.string()).optional().default([]),
+})
 
 export async function POST(request: Request) {
   const auth = await requireAuth()
   if (!auth.authenticated) return auth.error!
 
   try {
-    const {
-      document_id,
-      confirmed_fields,
-      confirmed_by,
-      approved_actions,   // string[] — 只执行这些action_type
-      rejected_actions,   // string[] — 被reject的action_type(记录反馈)
-    } = await request.json()
-
-    if (!document_id) {
-      return NextResponse.json({ error: 'Missing document_id' }, { status: 400 })
+    const raw = await request.json()
+    const parsed = ExecuteSchema.safeParse(raw)
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.issues.map(i => i.message).join('; ') }, { status: 400 })
     }
+    const { document_id, confirmed_fields, confirmed_by, approved_actions, rejected_actions } = parsed.data
 
     const supabase = await createClient()
 

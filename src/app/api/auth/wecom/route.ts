@@ -50,14 +50,25 @@ export async function GET(request: NextRequest) {
         .from('profiles')
         .update({
           name,
-          avatar_url: avatar,
-          department: position || department?.toString(),
+          avatar_url: avatar || null,
+          department: position || department?.toString() || null,
         })
         .eq('id', existingProfile.id)
-
-      // 用Supabase Auth登录
-      // 注：实际生产环境需要用Supabase的admin API或自定义token
-      // 这里简化为重定向到dashboard
+    } else {
+      // 首次企业微信登录 — 创建 profile（role 默认 finance_staff，管理员可后续调整）
+      const { error: insertErr } = await supabase
+        .from('profiles')
+        .insert({
+          email,
+          name,
+          role: 'finance_staff',
+          avatar_url: avatar || null,
+          department: position || department?.toString() || null,
+        })
+      if (insertErr) {
+        console.error('[WeChat Auth] Profile insert failed:', insertErr.message)
+        return NextResponse.redirect(new URL('/login?error=profile_create_failed', request.url))
+      }
     }
 
     // 4. 重定向到系统

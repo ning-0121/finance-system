@@ -1,6 +1,14 @@
 // 会计通用工具函数
 import Decimal from 'decimal.js'
 
+/**
+ * 转义 SQL ILIKE 模式中的特殊字符（%, _, \），防止通配符扩大查询范围。
+ * 使用方式: .ilike('col', `%${escapeIlike(userInput)}%`)
+ */
+export function escapeIlike(s: string): string {
+  return s.replace(/[\\%_]/g, '\\$&')
+}
+
 // decimal.js 全局配置：28位有效数字，ROUND_HALF_UP
 Decimal.set({ precision: 28, rounding: Decimal.ROUND_HALF_UP })
 
@@ -25,11 +33,12 @@ export function safeRate(
 }
 
 /**
- * 安全除法：分母为 0 时返回 0，避免 Infinity/NaN 污染报表。
+ * 安全除法：分母为 0、NaN、Infinity 时返回 0，避免 NaN/Infinity 污染报表。
  */
 export function safeDivide(numerator: number, denominator: number): number {
-  if (!denominator) return 0
-  return numerator / denominator
+  if (!denominator || !isFinite(denominator)) return 0
+  const result = numerator / denominator
+  return isFinite(result) ? result : 0
 }
 
 /**

@@ -4,6 +4,7 @@
 // ============================================================
 
 import { createClient } from '@/lib/supabase/client'
+import { escapeIlike } from '@/lib/utils'
 import type { DocCategory, MatchResult, DocumentActionType } from '@/lib/types/document'
 
 function toLevel(confidence: number): 'high' | 'medium' | 'low' {
@@ -25,7 +26,7 @@ export async function autoMatch(
   // 1. 客户匹配
   const customerName = (fields.customer_name || fields.payer_name) as string | undefined
   if (customerName) {
-    const { data } = await supabase.from('customers').select('id, company').ilike('company', `%${customerName}%`).limit(3)
+    const { data } = await supabase.from('customers').select('id, company').ilike('company', `%${escapeIlike(customerName)}%`).limit(3)
     if (data?.length) {
       const exact = data[0].company.toLowerCase() === customerName.toLowerCase()
       const conf = exact ? 95 : 70
@@ -36,7 +37,7 @@ export async function autoMatch(
   // 2. 供应商匹配
   const supplierName = (fields.supplier_name || fields.factory_name || fields.logistics_company) as string | undefined
   if (supplierName) {
-    const { data } = await supabase.from('supplier_financial_profiles').select('id, supplier_name').ilike('supplier_name', `%${supplierName}%`).limit(3)
+    const { data } = await supabase.from('supplier_financial_profiles').select('id, supplier_name').ilike('supplier_name', `%${escapeIlike(supplierName)}%`).limit(3)
     if (data?.length) {
       const conf = data[0].supplier_name.includes(supplierName) ? 85 : 60
       results.push({ type: 'supplier', confidence: conf, confidence_level: toLevel(conf), matched_id: data[0].id, matched_name: data[0].supplier_name, detail: `匹配供应商: ${data[0].supplier_name}` })
@@ -46,7 +47,8 @@ export async function autoMatch(
   // 3. 订单/PO匹配
   const poNumber = (fields.po_number || fields.order_no || fields.pi_no) as string | undefined
   if (poNumber) {
-    const { data } = await supabase.from('budget_orders').select('id, order_no').or(`order_no.ilike.%${poNumber}%,notes.ilike.%${poNumber}%`).limit(3)
+    const ep = escapeIlike(poNumber)
+    const { data } = await supabase.from('budget_orders').select('id, order_no').or(`order_no.ilike.%${ep}%,notes.ilike.%${ep}%`).limit(3)
     if (data?.length) {
       results.push({ type: 'order', confidence: 90, confidence_level: 'high', matched_id: data[0].id, matched_name: data[0].order_no, detail: `匹配订单: ${data[0].order_no}` })
     }
@@ -76,7 +78,7 @@ export async function autoMatch(
   const amount = fields.total_amount as number | undefined
   if (amount && (supplierName || customerName)) {
     const searchName = supplierName || customerName || ''
-    const { data } = await supabase.from('cost_items').select('id, description, amount').eq('amount', amount).ilike('description', `%${searchName}%`).limit(1)
+    const { data } = await supabase.from('cost_items').select('id, description, amount').eq('amount', amount).ilike('description', `%${escapeIlike(searchName)}%`).limit(1)
     if (data?.length) {
       results.push({ type: 'duplicate', confidence: 70, confidence_level: 'medium', matched_id: data[0].id, matched_name: `${data[0].description}: $${data[0].amount}`, detail: `⚠️ 疑似重复: 相同金额+名称已存在` })
     }

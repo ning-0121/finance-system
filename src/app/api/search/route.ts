@@ -6,20 +6,36 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
+import { escapeIlike } from '@/lib/utils'
+
+// 简单内存限流：每用户每分钟最多 60 次搜索
+const searchRateMap = new Map<string, { count: number; resetAt: number }>()
+function checkSearchRate(userId: string): boolean {
+  const now = Date.now()
+  const e = searchRateMap.get(userId)
+  if (!e || now > e.resetAt) { searchRateMap.set(userId, { count: 1, resetAt: now + 60_000 }); return true }
+  if (e.count >= 60) return false
+  e.count++
+  return true
+}
 
 export async function GET(request: NextRequest) {
   const auth = await requireAuth()
   if (!auth.authenticated) return auth.error!
 
-  const q = request.nextUrl.searchParams.get('q')?.trim()
-  if (!q || q.length < 2) {
-    return NextResponse.json({ results: [] })
+  if (!checkSearchRate(auth.userId!)) {
+    return NextResponse.json({ error: '搜索过于频繁，请稍后再试' }, { status: 429 })
   }
+
+  const q = request.nextUrl.searchParams.get('q')?.trim()
+  if (!q || q.length < 2) return NextResponse.json({ results: [] })
+  if (q.length > 200) return NextResponse.json({ error: '搜索词过长' }, { status: 400 })
 
   try {
     const supabase = await createClient()
     const results: { type: string; title: string; subtitle: string; href: string }[] = []
-    const pattern = `%${q}%`
+    const safe = escapeIlike(q)
+    const pattern = `%${safe}%`
 
     // 1. 搜索订单
     const { data: orders } = await supabase
