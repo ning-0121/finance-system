@@ -42,6 +42,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
   const [returns, setReturns] = useState<InventoryReturn[]>([])
   const [settlement, setSettlement] = useState<OrderSettlement | null>(null)
   const [generating, setGenerating] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const [showAddReturn, setShowAddReturn] = useState(false)
 
   // 入库表单
@@ -79,6 +80,25 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
       toast.success('订单决算单已生成')
     }
     setGenerating(false)
+  }
+
+  const handleConfirmSettlement = async () => {
+    if (!settlement) return
+    setConfirming(true)
+    try {
+      const res = await fetch(`/api/orders/${id}/settlement`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error)
+      const data = await getOrderSettlement(id)
+      setSettlement(data)
+      toast.success(d.message || '决算已确认，应付记录已生成')
+    } catch (e) {
+      toast.error(`确认失败: ${e instanceof Error ? e.message : '未知'}`)
+    }
+    setConfirming(false)
   }
 
   const handleAddReturn = async () => {
@@ -120,10 +140,24 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
           <Link href={`/orders/${id}`}><Button variant="ghost" size="sm"><ArrowLeft className="h-4 w-4 mr-1" />返回订单</Button></Link>
           <div className="flex gap-2">
             <Link href={`/orders/${id}/shipping`}><Button variant="outline" size="sm">出货单据</Button></Link>
-            <Button size="sm" onClick={handleGenerateSettlement} disabled={generating}>
+            <Button size="sm" onClick={handleGenerateSettlement} disabled={generating || settlement?.status === 'confirmed' || settlement?.status === 'locked'}>
               {generating ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}
               {settlement ? '重新生成决算' : '生成决算单'}
             </Button>
+            {settlement && (settlement.status === 'draft' || !settlement.status) && (
+              <Button
+                size="sm"
+                className="bg-green-600 hover:bg-green-700 text-white"
+                onClick={handleConfirmSettlement}
+                disabled={confirming}
+              >
+                {confirming ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}
+                确认决算
+              </Button>
+            )}
+            {settlement && (settlement.status === 'confirmed' || settlement.status === 'locked') && (
+              <Badge className="bg-green-100 text-green-700 border-green-200">✅ 已确认</Badge>
+            )}
           </div>
         </div>
 

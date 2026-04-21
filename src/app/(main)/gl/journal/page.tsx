@@ -8,9 +8,10 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Loader2, FileText, Eye } from 'lucide-react'
+import { Loader2, FileText, Eye, Download } from 'lucide-react'
 import { Separator } from '@/components/ui/separator'
 import { createClient } from '@/lib/supabase/client'
+import { toast } from 'sonner'
 
 type JournalEntry = {
   id: string
@@ -44,6 +45,27 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 
 const TYPE_MAP: Record<string, string> = { auto: '自动', manual: '手工', closing: '结转' }
 const SOURCE_MAP: Record<string, string> = { budget_order: '订单审批', settlement: '订单决算', receipt: '收款', payment: '付款' }
+
+function exportJournalCSV(period: string, entries: JournalEntry[]) {
+  const headers = ['凭证号', '日期', '类型', '摘要', '来源', '借方合计', '贷方合计', '状态']
+  const rows = entries.map(e => [
+    e.voucher_no, e.voucher_date,
+    TYPE_MAP[e.voucher_type] || e.voucher_type,
+    `"${e.description.replace(/"/g, '""')}"`,
+    SOURCE_MAP[e.source_type || ''] || e.source_type || '',
+    e.total_debit, e.total_credit,
+    STATUS_MAP[e.status]?.label || e.status,
+  ].join(','))
+  const csv = [headers.join(','), ...rows].join('\n')
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `记账凭证_${period}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+  toast.success('凭证列表已导出')
+}
 
 export default function JournalPage() {
   const [period, setPeriod] = useState('')
@@ -104,7 +126,14 @@ export default function JournalPage() {
               {periods.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
             </SelectContent>
           </Select>
-          <p className="text-sm text-muted-foreground">共 {entries.length} 张凭证</p>
+          <div className="flex items-center gap-3">
+            <p className="text-sm text-muted-foreground">共 {entries.length} 张凭证</p>
+            {entries.length > 0 && (
+              <Button variant="outline" size="sm" onClick={() => exportJournalCSV(period, entries)}>
+                <Download className="h-4 w-4 mr-1" />导出CSV
+              </Button>
+            )}
+          </div>
         </div>
 
         <Card>

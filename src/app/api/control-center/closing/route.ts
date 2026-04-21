@@ -11,6 +11,7 @@ import {
   overrideCheck,
   finalizePeriodClose,
 } from '@/lib/engines/closing-engine'
+import { notifyRiskAlert } from '@/lib/wecom/notifications'
 
 export async function GET(request: NextRequest) {
   try {
@@ -85,6 +86,15 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: '缺少 period' }, { status: 400 })
         }
         const result = await finalizePeriodClose(period, auth.userId!)
+
+        // 关账成功后发送企业微信通知（非阻塞）
+        notifyRiskAlert({
+          title: `${period} 期间已关账`,
+          riskLevel: 'green',
+          description: `${period} 期间所有检查通过，已完成关账操作`,
+          suggestion: '请完成期间报表归档',
+        }).catch(err => console.error('[WeChat] 关账通知失败:', err))
+
         return NextResponse.json({ data: result })
       }
 

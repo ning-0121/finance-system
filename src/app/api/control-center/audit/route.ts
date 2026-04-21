@@ -8,6 +8,7 @@ import {
   runFullAudit,
   resolveAuditFinding,
 } from '@/lib/engines/audit-engine'
+import { notifyRiskAlert, notifyCircuitBreaker } from '@/lib/wecom/notifications'
 
 export async function GET(request: NextRequest) {
   try {
@@ -47,6 +48,31 @@ export async function POST(request: NextRequest) {
     switch (action) {
       case 'run_full': {
         const findings = await runFullAudit()
+
+        // 审计完成后，按严重程度发送通知（非阻塞）
+        if (findings?.length) {
+          const critical = findings.filter((f: { severity: string; status: string }) => f.severity === 'critical' && f.status === 'open')
+          const high = findings.filter((f: { severity: string; status: string }) => f.severity === 'high' && f.status === 'open')
+
+          if (critical.length > 0) {
+            // L4 熔断级通知
+            notifyCircuitBreaker({
+              customer: '财务系统',
+              trigger: `发现 ${critical.length} 项严重审计异常`,
+              description: critical.slice(0, 3).map((f: { title: string }) => f.title).join('；'),
+              actions: ['立即查看审计报告', '暂停相关业务操作', '联系财务总监确认'],
+            }).catch(err => console.error('[WeChat] 审计熔断通知失败:', err))
+          } else if (high.length > 0) {
+            // L2-L3 风险预警
+            notifyRiskAlert({
+              title: `审计发现 ${high.length} 项高风险问题`,
+              riskLevel: 'yellow',
+              description: high.slice(0, 3).map((f: { title: string }) => f.title).join('；'),
+              suggestion: '请及时处理高风险审计发现',
+            }).catch(err => console.error('[WeChat] 审计风险通知失败:', err))
+          }
+        }
+
         return NextResponse.json({ data: findings })
       }
 

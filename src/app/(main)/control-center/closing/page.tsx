@@ -185,7 +185,7 @@ export default function ClosingPage() {
 
         {/* 控制栏 */}
         <div className="flex flex-wrap items-center gap-3">
-          <Select value={period} onValueChange={setPeriod}>
+          <Select value={period} onValueChange={v => setPeriod(v ?? period)}>
             <SelectTrigger className="w-[180px]"><SelectValue /></SelectTrigger>
             <SelectContent>{periods.map(p => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}</SelectContent>
           </Select>
