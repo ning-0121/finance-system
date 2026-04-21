@@ -100,17 +100,17 @@ export async function calculateDuplicateProbability(
   const { data: sameFile } = await supabase.from('uploaded_documents').select('id').eq('file_name', fileName).limit(1)
   if (sameFile?.length) score += 40
 
-  // 同名+同大小
-  if (fileSize && sameFile?.length) {
+  // 同名+同大小（fileSize必须为正数才比对，避免size=0时误判）
+  if (fileSize != null && fileSize > 0 && sameFile?.length) {
     const { data: exact } = await supabase.from('uploaded_documents').select('id').eq('file_name', fileName).eq('file_size', fileSize).limit(1)
     if (exact?.length) score += 40
   }
 
-  // 同发票号
-  const invoiceNo = fields.invoice_no as string
-  if (invoiceNo) {
-    const { data } = await supabase.from('uploaded_documents').select('id').contains('extracted_fields', { invoice_no: invoiceNo }).limit(1)
-    if (data?.length) score += 30
+  // 同发票号（最强去重信号，优先加分）
+  const invoiceNo = fields.invoice_no as string | undefined
+  if (invoiceNo && invoiceNo.trim().length > 0) {
+    const { data: byInvoice } = await supabase.from('uploaded_documents').select('id').contains('extracted_fields', { invoice_no: invoiceNo }).limit(1)
+    if (byInvoice?.length) score += 50  // 发票号重复权重最高，超过文件名匹配
   }
 
   return Math.min(score, 100)

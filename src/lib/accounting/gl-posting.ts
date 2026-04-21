@@ -115,7 +115,7 @@ async function createJournal(params: {
  * 贷: 主营业务收入 (收入CNY)
  */
 export async function postRevenueRecognition(order: BudgetOrder) {
-  const rate = order.currency === 'CNY' ? 1 : (order.exchange_rate || 7)
+  const rate = order.currency === 'CNY' ? 1 : (order.exchange_rate ?? 7)
   const revenueCny = Math.round(order.total_revenue * rate * 100) / 100
   const revenueAccount = order.currency === 'CNY' ? '500102' : '500101'
 

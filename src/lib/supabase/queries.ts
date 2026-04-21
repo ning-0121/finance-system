@@ -43,6 +43,7 @@ export async function getBudgetOrders(statusFilter?: string): Promise<BudgetOrde
       .from('budget_orders')
       .select('*, customers(*)')
       .order('created_at', { ascending: false })
+      .limit(500)
 
     if (statusFilter && statusFilter !== 'all') {
       query = query.eq('status', statusFilter)
@@ -349,7 +350,7 @@ export async function getProfitSummary(): Promise<ProfitSummary> {
 
     // 全部转CNY口径
     const totalRevenueCny = data.reduce((s, o) => {
-      const rate = (o.currency as string) === 'CNY' ? 1 : ((o.exchange_rate as number) || 7)
+      const rate = (o.currency as string) === 'CNY' ? 1 : ((o.exchange_rate as number) ?? 7)
       return s + (o.total_revenue || 0) * rate
     }, 0)
     const totalCost = data.reduce((s, o) => s + (o.total_cost || 0), 0) // 已经是CNY
@@ -378,13 +379,14 @@ export async function getMonthlyProfitData() {
       .select('order_date, total_revenue, total_cost, estimated_profit, estimated_margin, currency, exchange_rate')
       .not('order_date', 'is', null)
       .order('order_date')
+      .limit(1000)
     if (!orders || orders.length === 0) return demoMonthlyProfit
 
     // 按月聚合（全部转CNY）
     const monthMap = new Map<string, { revenue: number; cost: number; profit: number; count: number }>()
     for (const o of orders) {
       const month = (o.order_date as string).substring(0, 7)
-      const rate = (o.currency as string) === 'CNY' ? 1 : ((o.exchange_rate as number) || 7)
+      const rate = (o.currency as string) === 'CNY' ? 1 : ((o.exchange_rate as number) ?? 7)
       const revCny = (o.total_revenue as number) * rate
       const costCny = o.total_cost as number
       const existing = monthMap.get(month) || { revenue: 0, cost: 0, profit: 0, count: 0 }

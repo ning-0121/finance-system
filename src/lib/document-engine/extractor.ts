@@ -7,10 +7,13 @@ import {
   FIELD_TEMPLATES, DOC_CATEGORY_LABELS, FORCED_CONFIRM_FIELDS,
   type DocCategory, type ExtractionResult,
 } from '@/lib/types/document'
+import Anthropic from '@anthropic-ai/sdk'
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || ''
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' })
 
-function buildExtractionPrompt(templateHint?: string): string {
+// 提取指令的稳定基础部分 — 标记缓存，每次提取省去重复 token
+// templateHint 是可选的，变化时放在独立 system block 里（不缓存）
+function buildBaseExtractionPrompt(): string {
   return `你是绮陌服饰(QIMO Clothing)的财务文档智能分析引擎。
 
 你的任务是分析上传的财务文档，完成以下工作：
@@ -25,8 +28,6 @@ ${Object.entries(DOC_CATEGORY_LABELS).map(([k, v]) => `   - ${k}: ${v}`).join('\
 4. **高风险字段**：标出金额、币种、数量、客户名、供应商名等必须人工确认的字段。
 
 5. **金额处理**：所有金额精确到2位小数，移除千分位。
-
-${templateHint ? `\n6. **参考模板**：该实体的历史文件格式如下，请优先按此格式提取：\n${templateHint}\n` : ''}
 
 请严格按以下JSON格式返回（不要返回其他内容）：
 
@@ -56,44 +57,48 @@ export async function extractWithVision(
   fileName: string,
   templateHint?: string
 ): Promise<ExtractionResult> {
-  if (!ANTHROPIC_API_KEY || ANTHROPIC_API_KEY.includes('your_')) {
+  if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY.includes('your_')) {
     return makeFailResult('ANTHROPIC_API_KEY not configured')
   }
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
+    // system: 稳定提取指令（缓存）+ 可选模板提示（不缓存，因实体而异）
+    const systemBlocks: Anthropic.TextBlockParam[] = [
+      {
+        type: 'text',
+        text: buildBaseExtractionPrompt(),
+        cache_control: { type: 'ephemeral' }, // 5分钟缓存，连续处理多个文档时生效
       },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 4000,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: mediaType === 'application/pdf' ? 'image/png' : mediaType,
-                data: base64Content,
-              },
-            },
-            { type: 'text', text: `${buildExtractionPrompt(templateHint)}\n\n文件名: ${fileName}` },
-          ],
-        }],
-      }),
-    })
-
-    if (!response.ok) {
-      return makeFailResult(`Claude API error: ${response.status}`)
+    ]
+    if (templateHint) {
+      systemBlocks.push({
+        type: 'text',
+        text: `参考模板（该实体历史文件格式，优先按此提取）：\n${templateHint}`,
+      })
     }
 
-    const data = await response.json()
-    const text = data.content?.[0]?.text || ''
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4000,
+      system: systemBlocks,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: mediaType === 'application/pdf' ? 'image/png' : mediaType,
+              data: base64Content,
+            },
+          },
+          { type: 'text', text: `请分析此文档。文件名: ${fileName}` },
+        ],
+      }],
+    })
+
+    const textBlock = response.content.find(b => b.type === 'text')
+    const text = textBlock?.type === 'text' ? textBlock.text : ''
     const jsonMatch = text.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return makeFailResult('Claude did not return valid JSON')
 
@@ -119,7 +124,7 @@ export async function extractWithVision(
       field_confidence: fieldConf,
       missing_fields: missingFields,
       high_risk_fields: highRisk,
-      duplicate_probability: 0, // 由matcher计算
+      duplicate_probability: 0,
       raw_text_summary: parsed.raw_text_summary || '',
       template_match_result: templateHint ? 'template_guided' : null,
       extraction_method: 'vision',

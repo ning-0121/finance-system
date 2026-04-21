@@ -68,7 +68,7 @@ async function loadCustomerMap(): Promise<Map<string, string>> {
 
 function computeBaseMetrics(orders: OrderRow[]) {
   const baseRevenue = orders.reduce((s, o) => {
-    const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate || 7)
+    const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate ?? 7)
     return s + o.total_revenue * rate
   }, 0)
 
@@ -105,7 +105,7 @@ export async function simulateFxChange(newRate: number): Promise<SimulationResul
   const simulatedMargin = simulatedRevenue > 0 ? (simulatedProfit / simulatedRevenue) * 100 : 0
 
   const affectedOrders = usdOrders.map((o) => {
-    const currentRevenueCny = o.total_revenue * (o.exchange_rate || 7)
+    const currentRevenueCny = o.total_revenue * (o.exchange_rate ?? 7)
     const simRevenueCny = o.total_revenue * newRate
     const currentProfit = currentRevenueCny - o.total_cost
     const simulatedOrderProfit = simRevenueCny - o.total_cost
@@ -164,7 +164,7 @@ export async function simulateCostIncrease(
   const multiplier = 1 + increasePercent / 100
 
   const affectedOrders = orders.map((o) => {
-    const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate || 7)
+    const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate ?? 7)
     const revenueCny = o.total_revenue * rate
 
     let costDelta = 0
@@ -269,7 +269,7 @@ export async function simulateCustomerLoss(customerId: string): Promise<Simulati
   }
 
   const lostRevenue = lostOrders.reduce((s, o) => {
-    const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate || 7)
+    const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate ?? 7)
     return s + o.total_revenue * rate
   }, 0)
   const lostCost = lostOrders.reduce((s, o) => s + o.total_cost, 0)
@@ -282,7 +282,7 @@ export async function simulateCustomerLoss(customerId: string): Promise<Simulati
   const customerName = customerMap.get(customerId) || '未知客户'
 
   const affectedOrders = lostOrders.map((o) => {
-    const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate || 7)
+    const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate ?? 7)
     const revenueCny = o.total_revenue * rate
     const profit = revenueCny - o.total_cost
     return {
@@ -354,7 +354,7 @@ export async function simulateSupplyDisruption(supplierName: string): Promise<Si
   const affectedOrders = orders
     .filter((o) => affectedBudgetIds.has(o.id))
     .map((o) => {
-      const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate || 7)
+      const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate ?? 7)
       const revenueCny = o.total_revenue * rate
       const profit = revenueCny - o.total_cost
 
@@ -370,7 +370,7 @@ export async function simulateSupplyDisruption(supplierName: string): Promise<Si
   const atRiskRevenue = orders
     .filter((o) => affectedBudgetIds.has(o.id))
     .reduce((s, o) => {
-      const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate || 7)
+      const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate ?? 7)
       return s + o.total_revenue * rate
     }, 0)
 

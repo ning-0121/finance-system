@@ -47,7 +47,7 @@ export async function calculateAllFxGains(actualRate: number): Promise<FxGainRes
   if (!orders?.length) return []
 
   return orders.map(o => {
-    const budgetRate = (o.exchange_rate as number) || 7
+    const budgetRate = (o.exchange_rate as number) ?? 7
     const revenueUsd = (o.total_revenue as number) || 0
     const { gainLoss, isGain } = calculateFxGainLoss(revenueUsd, budgetRate, actualRate)
 

@@ -13,8 +13,9 @@ export function useCurrentUser() {
   const [isDemo, setIsDemo] = useState(false)
 
   useEffect(() => {
+    let mounted = true
+
     async function init() {
-      // 先尝试 Supabase 认证
       try {
         const supabase = createClient()
         const { data: { user: authUser } } = await supabase.auth.getUser()
@@ -26,7 +27,7 @@ export function useCurrentUser() {
             .eq('id', authUser.id)
             .single()
 
-          if (profile) {
+          if (profile && mounted) {
             setUser(profile as User)
             setIsDemo(false)
             setLoading(false)
@@ -37,6 +38,8 @@ export function useCurrentUser() {
         // Supabase 不可用
       }
 
+      if (!mounted) return
+
       // 降级到演示模式
       const saved = typeof window !== 'undefined' ? localStorage.getItem(DEMO_USER_KEY) : null
       const key = (saved === 'su' || saved === 'fiona') ? saved : 'fiona'
@@ -46,6 +49,7 @@ export function useCurrentUser() {
     }
 
     init()
+    return () => { mounted = false }
   }, [])
 
   const switchDemoUser = useCallback((key: 'su' | 'fiona') => {
