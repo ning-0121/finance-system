@@ -1,6 +1,7 @@
 // 外汇损益核算模块
 // 外贸服装公司核心场景：USD收入 → 结汇CNY → 与预算汇率比较 → 产生汇兑损益
 import { createClient } from '@/lib/supabase/client'
+import { safeRate, sumAmounts, mulAmount } from './utils'
 
 interface FxGainResult {
   orderId: string
@@ -26,9 +27,9 @@ export function calculateFxGainLoss(
   if (revenueUsd <= 0 || budgetRate <= 0 || actualRate <= 0) {
     return { gainLoss: 0, isGain: true }
   }
-  const budgetCny = revenueUsd * budgetRate
-  const actualCny = revenueUsd * actualRate
-  const gainLoss = Math.round((actualCny - budgetCny) * 100) / 100
+  const budgetCny = mulAmount(revenueUsd, budgetRate)
+  const actualCny = mulAmount(revenueUsd, actualRate)
+  const gainLoss = mulAmount(actualCny - budgetCny, 1)
   return { gainLoss, isGain: gainLoss >= 0 }
 }
 
@@ -47,7 +48,7 @@ export async function calculateAllFxGains(actualRate: number): Promise<FxGainRes
   if (!orders?.length) return []
 
   return orders.map(o => {
-    const budgetRate = (o.exchange_rate as number) ?? 7
+    const budgetRate = safeRate(o.exchange_rate as number, 'USD', `fx-gains order ${o.id}`)
     const revenueUsd = (o.total_revenue as number) || 0
     const { gainLoss, isGain } = calculateFxGainLoss(revenueUsd, budgetRate, actualRate)
 
@@ -57,8 +58,8 @@ export async function calculateAllFxGains(actualRate: number): Promise<FxGainRes
       budgetRate,
       actualRate,
       revenueUsd,
-      budgetRevenueCny: Math.round(revenueUsd * budgetRate * 100) / 100,
-      actualRevenueCny: Math.round(revenueUsd * actualRate * 100) / 100,
+      budgetRevenueCny: mulAmount(revenueUsd, budgetRate),
+      actualRevenueCny: mulAmount(revenueUsd, actualRate),
       fxGainLoss: gainLoss,
       isGain,
     }
@@ -78,9 +79,9 @@ export async function postFxGainLossJournal(
   const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
   const createdBy = profiles?.[0]?.id
 
-  const totalGain = gains.filter(g => g.isGain).reduce((s, g) => s + g.fxGainLoss, 0)
-  const totalLoss = gains.filter(g => !g.isGain).reduce((s, g) => s + Math.abs(g.fxGainLoss), 0)
-  const netGainLoss = totalGain - totalLoss
+  const totalGain = sumAmounts(gains.filter(g => g.isGain).map(g => g.fxGainLoss))
+  const totalLoss = sumAmounts(gains.filter(g => !g.isGain).map(g => Math.abs(g.fxGainLoss)))
+  const netGainLoss = mulAmount(totalGain - totalLoss, 1)
 
   if (Math.abs(netGainLoss) < 0.01) {
     return { voucherNo: '', totalGain: 0, totalLoss: 0 }
@@ -98,8 +99,8 @@ export async function postFxGainLossJournal(
     lines.push({ account_code: '100201', description: '结汇损失-银行', debit: 0, credit: Math.abs(netGainLoss) })
   }
 
-  const totalDebit = lines.reduce((s, l) => s + l.debit, 0)
-  const totalCredit = lines.reduce((s, l) => s + l.credit, 0)
+  const totalDebit = sumAmounts(lines.map(l => l.debit))
+  const totalCredit = sumAmounts(lines.map(l => l.credit))
 
   const { data: journal, error } = await supabase
     .from('journal_entries')

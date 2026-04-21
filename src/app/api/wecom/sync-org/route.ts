@@ -6,8 +6,14 @@
 import { NextResponse } from 'next/server'
 import { getDepartmentList, getDepartmentUsers, isWecomConfigured } from '@/lib/wecom/client'
 import { createClient } from '@/lib/supabase/server'
+import { requireAuth, requireRole } from '@/lib/auth/api-guard'
 
 export async function POST() {
+  const auth = await requireAuth()
+  if (!auth.authenticated) return auth.error!
+  const roleErr = requireRole(auth, ['admin'])
+  if (roleErr) return roleErr
+
   if (!isWecomConfigured()) {
     return NextResponse.json({ error: '企业微信未配置' }, { status: 400 })
   }

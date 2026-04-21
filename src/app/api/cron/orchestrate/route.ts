@@ -16,13 +16,14 @@ export async function GET(request: Request) {
   const startTime = Date.now()
 
   try {
-    // Verify cron secret if configured (Vercel Cron sends this header)
+    // Verify cron secret — must be configured, no fallback open access
     const cronSecret = process.env.CRON_SECRET
-    if (cronSecret) {
-      const authHeader = request.headers.get('authorization')
-      if (authHeader !== `Bearer ${cronSecret}`) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      }
+    if (!cronSecret) {
+      return NextResponse.json({ error: 'CRON_SECRET 未配置，拒绝执行' }, { status: 500 })
+    }
+    const authHeader = request.headers.get('authorization')
+    if (authHeader !== `Bearer ${cronSecret}`) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     // 支持dry-run模式

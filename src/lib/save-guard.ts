@@ -106,6 +106,53 @@ export async function safeUpdate<T extends Record<string, unknown>>(
 }
 
 /**
+ * 财务记录软删除表 — 这些表只标记 deleted_at，不物理删除。
+ * 需配合 DB 迁移：ALTER TABLE <table> ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ * 并在 RLS 中过滤: WHERE deleted_at IS NULL
+ *
+ * journal_entries 改用 status='voided'（已有该字段），无需 deleted_at。
+ */
+const SOFT_DELETE_TABLES = new Set([
+  'actual_invoices', 'cost_items', 'receivable_records', 'payment_records',
+])
+
+/**
+ * 软删除：为财务凭证表设置 deleted_at，其余表硬删除。
+ * 作为财务级操作的首选删除方式。
+ */
+export async function softDelete(
+  table: string,
+  id: string,
+  options?: { showToast?: boolean; deletedBy?: string }
+): Promise<SaveResult> {
+  const supabase = createClient()
+
+  if (SOFT_DELETE_TABLES.has(table)) {
+    // 标记删除时间而非物理删除
+    const { error } = await supabase
+      .from(table)
+      .update({
+        deleted_at: new Date().toISOString(),
+        ...(options?.deletedBy ? { deleted_by: options.deletedBy } : {}),
+      })
+      .eq('id', id)
+      .is('deleted_at', null) // 幂等：已软删除的不重复标记
+
+    if (error) {
+      // 若列不存在则降级硬删除并记录警告
+      console.warn(`[SaveGuard] softDelete ${table} id=${id}: deleted_at update failed (${error.message}), 降级硬删除`)
+      return safeDelete(table, id, options)
+    }
+
+    if (options?.showToast !== false) toast.success('已删除')
+    return { success: true, verified: true }
+  }
+
+  // 非财务表正常硬删除
+  return safeDelete(table, id, options)
+}
+
+/**
  * 安全删除：删除后验证确实不存在
  */
 export async function safeDelete(

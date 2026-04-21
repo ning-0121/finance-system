@@ -6,6 +6,7 @@
 // persisted to audit_findings and can be resolved with notes.
 
 import { createClient } from '@/lib/supabase/client'
+import { safeRate } from '@/lib/accounting/utils'
 
 // --------------- Types ---------------
 
@@ -359,8 +360,8 @@ export async function auditMarginOutliers(): Promise<AuditFinding[]> {
   const findings: Omit<AuditFinding, 'id' | 'resolvedBy' | 'resolvedAt' | 'resolutionNote' | 'createdAt'>[] = []
 
   for (const order of orders) {
-    const revenue = order.total_revenue as number
-    const cost = order.total_cost as number
+    const revenue = Number(order.total_revenue) || 0
+    const cost = Number(order.total_cost) || 0
     if (revenue <= 0) continue
 
     const margin = ((revenue - cost) / revenue) * 100
@@ -479,7 +480,7 @@ export async function auditOverdueCollections(): Promise<AuditFinding[]> {
     )
 
     if (daysOutstanding > 60) {
-      const rate = (order.currency as string) === 'CNY' ? 1 : ((order.exchange_rate as number) || 7)
+      const rate = safeRate(order.exchange_rate as number, order.currency as string, `audit overdue order ${order.id}`)
       const amountCny = (order.total_revenue as number) * rate
       findings.push({
         findingType: 'overdue_collection',

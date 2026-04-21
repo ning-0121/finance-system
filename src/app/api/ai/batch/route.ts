@@ -33,6 +33,12 @@ export async function POST(request: Request) {
     const { order_ids } = await request.json() as { order_ids?: string[] }
     const supabase = await createClient()
 
+    // 单次批量上限：防止一次提交数千个请求烧掉大量 AI 费用
+    const MAX_BATCH = 100
+    if (order_ids && order_ids.length > MAX_BATCH) {
+      return NextResponse.json({ error: `单次批量最多 ${MAX_BATCH} 笔订单，当前 ${order_ids.length} 笔，请分批提交` }, { status: 400 })
+    }
+
     // 拉取要分析的订单
     let query = supabase
       .from('budget_orders')
@@ -42,7 +48,7 @@ export async function POST(request: Request) {
     if (order_ids?.length) {
       query = query.in('id', order_ids)
     } else {
-      query = query.limit(100) // 默认分析最近100笔
+      query = query.limit(50).order('created_at', { ascending: false }) // 默认分析最近50笔
     }
 
     const { data: orders, error: dbErr } = await query

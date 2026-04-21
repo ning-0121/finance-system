@@ -19,15 +19,6 @@ export async function requireAuth(): Promise<AuthResult> {
     const { data: { user } } = await supabase.auth.getUser()
 
     if (!user) {
-      // 检查是否demo模式（仅开发环境）
-      const isDev = process.env.NODE_ENV === 'development'
-      if (isDev) {
-        // 开发环境下允许使用profiles中的第一个用户
-        const { data: profiles } = await supabase.from('profiles').select('id, role').limit(1)
-        if (profiles?.length) {
-          return { authenticated: true, userId: profiles[0].id, role: profiles[0].role as string || 'finance_staff' }
-        }
-      }
       return {
         authenticated: false,
         error: NextResponse.json({ error: '未登录，请先登录' }, { status: 401 }),

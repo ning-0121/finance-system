@@ -10,6 +10,20 @@ import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' })
 
+// 简单内存限流：每用户每分钟最多 20 次（Lambda 实例内有效，已足够防滥用）
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
+function checkRateLimit(userId: string): boolean {
+  const now = Date.now()
+  const entry = rateLimitMap.get(userId)
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(userId, { count: 1, resetAt: now + 60_000 })
+    return true
+  }
+  if (entry.count >= 20) return false
+  entry.count++
+  return true
+}
+
 // 固定系统提示 — 标记缓存，节省 ~90% 输入 token 费用
 // 最短缓存前缀 2048 tokens (Sonnet 4.6)，系统提示+上下文合并后超过此阈值时生效
 const SYSTEM_PROMPT = `你是绮陌服饰(QIMO Clothing)的AI财务分析助手。你可以帮财务总监Su和财务方圆：
@@ -58,6 +72,10 @@ export async function POST(request: Request) {
     const { message } = await request.json()
     if (!message?.trim()) {
       return NextResponse.json({ error: '请输入问题' }, { status: 400 })
+    }
+
+    if (!checkRateLimit(auth.userId!)) {
+      return NextResponse.json({ error: '请求过于频繁，请稍后再试（每分钟限20次）' }, { status: 429 })
     }
 
     // 构建丰富的上下文数据（每次请求不同，不缓存）
@@ -221,6 +239,7 @@ ${risks.map((r: Record<string, unknown>) => `- [${r.risk_level}] ${r.title}: ${r
         .from('customer_financial_profiles')
         .select('customer_name, risk_level, avg_payment_days, overdue_rate, total_outstanding, credit_limit, bad_debt_score, dependency_score, average_order_profit_rate')
         .order('risk_level')
+        .limit(30)
 
       if (profiles?.length) {
         sections.push(`### 客户财务画像
@@ -234,6 +253,7 @@ ${profiles.map((p: Record<string, unknown>) => `- ${p.customer_name} [${p.risk_l
         .from('supplier_financial_profiles')
         .select('supplier_name, risk_level, avg_payment_term_days, historical_stop_supply_count, urgency_score, current_outstanding, next_due_date')
         .order('urgency_score', { ascending: false })
+        .limit(30)
 
       if (suppliers?.length) {
         sections.push(`### 供应商画像
@@ -317,7 +337,12 @@ ${findings.map((f: Record<string, unknown>) => `- [${f.severity}] ${f.title}: ${
     sections.push('（数据库查询失败，使用有限数据回答）')
   }
 
-  return sections.length > 0 ? '\n' + sections.join('\n\n') : '\n（暂无数据）'
+  const result = sections.length > 0 ? '\n' + sections.join('\n\n') : '\n（暂无数据）'
+  // 上下文总长度上限 15000 字符，避免超出 token 预算或请求超时
+  if (result.length > 15000) {
+    return result.slice(0, 15000) + '\n\n（数据已截断，仅展示最新部分）'
+  }
+  return result
 }
 
 // --- 基于真实数据的模板回答 ---

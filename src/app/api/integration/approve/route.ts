@@ -18,29 +18,22 @@ export async function POST(request: Request) {
     const isIntegrationCall = apiKey && verifyApiKey(apiKey)
 
     if (!isIntegrationCall) {
-      // 前端调用：验证用户登录状态和权限
+      // 前端调用：必须验证登录状态和角色，无演示模式绕过
       const supabase = await createClient()
       const { data: { user } } = await supabase.auth.getUser()
 
       if (!user) {
-        // 演示模式放行
-        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-        if (!supabaseUrl || supabaseUrl === 'your_supabase_url_here') {
-          // demo mode - continue
-        } else {
-          return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-        }
-      } else {
-        // 验证角色权限
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', user.id)
-          .single()
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
 
-        if (profile && !['admin', 'finance_manager'].includes(profile.role)) {
-          return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 })
-        }
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single()
+
+      if (!profile || !['admin', 'finance_manager'].includes(profile.role)) {
+        return NextResponse.json({ error: '需要 admin 或 finance_manager 权限' }, { status: 403 })
       }
     }
 
@@ -60,8 +53,8 @@ export async function POST(request: Request) {
 
     const supabase = await createClient()
 
-    // 更新本地审批状态
-    const { error: updateError } = await supabase
+    // 更新本地审批状态（乐观锁：只更新 status=pending 的记录，防止并发双重审批）
+    const { data: updated, error: updateError } = await supabase
       .from('pending_approvals')
       .update({
         status: decision,
@@ -71,9 +64,14 @@ export async function POST(request: Request) {
         decided_at: new Date().toISOString(),
       })
       .eq('id', approval_id)
+      .eq('status', 'pending') // 乐观锁：已审批则不更新
+      .select('id')
 
     if (updateError) {
       return NextResponse.json({ error: `Update failed: ${updateError.message}` }, { status: 500 })
+    }
+    if (!updated?.length) {
+      return NextResponse.json({ error: '该审批单已被处理，请勿重复操作' }, { status: 409 })
     }
 
     // 回调节拍器

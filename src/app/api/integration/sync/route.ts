@@ -82,9 +82,10 @@ export async function POST() {
         synced_at: new Date().toISOString(),
       }))
 
+      // upsert 替代 insert：并发调用时按主键 id 去重，避免 TOCTOU 重复键错误
       const { error: syncErr } = await finance
         .from('synced_orders')
-        .insert(syncedInserts)
+        .upsert(syncedInserts, { onConflict: 'id', ignoreDuplicates: false })
 
       if (syncErr) throw new Error(`写入synced_orders失败: ${syncErr.message}`)
     }
@@ -108,12 +109,18 @@ export async function POST() {
         if (existing?.length) {
           customerId = existing[0].id
         } else {
+          // upsert 防止并发重复插入同名客户
           const { data: newCust } = await finance
             .from('customers')
-            .insert({ name: o.customer_name, company: o.customer_name, currency: o.currency || 'USD' })
+            .upsert({ name: o.customer_name, company: o.customer_name, currency: o.currency || 'USD' }, { onConflict: 'company', ignoreDuplicates: false })
             .select('id')
             .single()
           if (newCust) customerId = newCust.id
+          // upsert 未返回数据时（已存在），再 select 一次
+          if (!customerId) {
+            const { data: fallback } = await finance.from('customers').select('id').ilike('company', o.customer_name).limit(1)
+            customerId = fallback?.[0]?.id ?? null
+          }
         }
       }
 
@@ -143,7 +150,7 @@ export async function POST() {
         customer_id: customerId,
         total_revenue: totalAmount,
         currency: o.currency || 'USD',
-        exchange_rate: 6.9,
+        exchange_rate: null, // 同步时不知道实际汇率，需财务人员手动补填
         status: 'draft',
         order_date: new Date().toISOString().substring(0, 10),
         created_by: createdBy,

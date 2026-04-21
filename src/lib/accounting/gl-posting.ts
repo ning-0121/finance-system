@@ -2,6 +2,7 @@
 // 对标金蝶/用友的自动凭证生成
 import { createClient } from '@/lib/supabase/client'
 import type { BudgetOrder } from '@/lib/types'
+import { safeRate, sumAmounts, mulAmount } from './utils'
 
 interface JournalLine {
   account_code: string
@@ -45,11 +46,12 @@ async function createJournal(params: {
     createdBy = profiles?.[0]?.id
   }
 
-  const totalDebit = params.lines.reduce((s, l) => s + l.debit, 0)
-  const totalCredit = params.lines.reduce((s, l) => s + l.credit, 0)
+  // 精确累加（Decimal.js 避免浮点误差导致借贷不平衡误判）
+  const totalDebit = sumAmounts(params.lines.map(l => l.debit))
+  const totalCredit = sumAmounts(params.lines.map(l => l.credit))
 
-  // 借贷必须平衡
-  if (Math.abs(totalDebit - totalCredit) > 0.01) {
+  // 借贷必须平衡（容差收紧到 0.001，Decimal 确保精度）
+  if (Math.abs(totalDebit - totalCredit) > 0.001) {
     throw new Error(`凭证借贷不平衡: 借方${totalDebit} ≠ 贷方${totalCredit}`)
   }
 
@@ -75,8 +77,8 @@ async function createJournal(params: {
       description: params.description,
       source_type: params.sourceType,
       source_id: params.sourceId,
-      total_debit: Math.round(totalDebit * 100) / 100,
-      total_credit: Math.round(totalCredit * 100) / 100,
+      total_debit: totalDebit,
+      total_credit: totalCredit,
       status: 'posted', // 自动凭证直接过账
       created_by: createdBy,
       posted_by: createdBy,
@@ -93,8 +95,8 @@ async function createJournal(params: {
     line_no: idx + 1,
     account_code: line.account_code,
     description: line.description,
-    debit: Math.round(line.debit * 100) / 100,
-    credit: Math.round(line.credit * 100) / 100,
+    debit: mulAmount(line.debit, 1),
+    credit: mulAmount(line.credit, 1),
     currency: line.currency || 'CNY',
     exchange_rate: line.exchange_rate || 1,
     original_amount: line.original_amount,
@@ -115,8 +117,8 @@ async function createJournal(params: {
  * 贷: 主营业务收入 (收入CNY)
  */
 export async function postRevenueRecognition(order: BudgetOrder) {
-  const rate = order.currency === 'CNY' ? 1 : (order.exchange_rate ?? 7)
-  const revenueCny = Math.round(order.total_revenue * rate * 100) / 100
+  const rate = safeRate(order.exchange_rate, order.currency, `gl-posting revenue ${order.id}`)
+  const revenueCny = mulAmount(order.total_revenue, rate)
   const revenueAccount = order.currency === 'CNY' ? '500102' : '500101'
 
   return createJournal({

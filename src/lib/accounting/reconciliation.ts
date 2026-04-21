@@ -1,5 +1,6 @@
 // 定时对账引擎 — 自动检测数据异常
 import { createClient } from '@/lib/supabase/client'
+import { safeRate, sumAmounts, mulAmount } from './utils'
 
 export interface CheckResult {
   type: string
@@ -80,17 +81,17 @@ export async function checkARConsistency(): Promise<CheckResult> {
 
   if (!orders?.length) return { type: 'ar_consistency', status: 'passed', details: { message: '无已审批订单' } }
 
-  const totalRevenueCny = orders.reduce((s, o) => {
-    const rate = (o.currency as string) === 'CNY' ? 1 : ((o.exchange_rate as number) || 7)
-    return s + (o.total_revenue as number) * rate
-  }, 0)
+  const totalRevenueCny = sumAmounts(orders.map(o => {
+    const rate = safeRate(o.exchange_rate as number, o.currency as string, `reconciliation order ${(o as Record<string, unknown>).id ?? ''}`)
+    return mulAmount(o.total_revenue as number, rate)
+  }))
 
-  const closedRevenueCny = orders.filter(o => o.status === 'closed').reduce((s, o) => {
-    const rate = (o.currency as string) === 'CNY' ? 1 : ((o.exchange_rate as number) || 7)
-    return s + (o.total_revenue as number) * rate
-  }, 0)
+  const closedRevenueCny = sumAmounts(orders.filter(o => o.status === 'closed').map(o => {
+    const rate = safeRate(o.exchange_rate as number, o.currency as string, `reconciliation order ${(o as Record<string, unknown>).id ?? ''}`)
+    return mulAmount(o.total_revenue as number, rate)
+  }))
 
-  const arBalance = totalRevenueCny - closedRevenueCny
+  const arBalance = mulAmount(totalRevenueCny - closedRevenueCny, 1)
 
   return {
     type: 'ar_consistency',

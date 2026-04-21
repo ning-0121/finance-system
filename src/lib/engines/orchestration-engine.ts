@@ -5,6 +5,7 @@
 // ============================================================
 
 import { createClient } from '@/lib/supabase/client'
+import { safeRate } from '@/lib/accounting/utils'
 import { recordTimelineEvent } from './timeline-engine'
 import { freezeEntity, isEntityFrozen } from './freeze-engine'
 import { downgradeTrust, getTrustDashboard } from './trust-engine'
@@ -420,7 +421,7 @@ async function evaluateOverdueAR(config: Record<string, unknown>): Promise<Condi
     const overdueDays = Math.floor((now - dueDate.getTime()) / (1000 * 60 * 60 * 24))
 
     if (overdueDays >= thresholdDays) {
-      const rate = (o.currency as string) === 'CNY' ? 1 : ((o.exchange_rate as number) || 7)
+      const rate = safeRate(o.exchange_rate as number, o.currency as string, `orchestration order ${o.id}`)
       const amountCny = (o.total_revenue as number) * rate
 
       entities.push({

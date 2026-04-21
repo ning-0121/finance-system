@@ -7,6 +7,11 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
 
+// 财务凭证类表：回滚时软删除（标记 deleted_at）而非物理删除
+const SOFT_DELETE_ROLLBACK_TABLES = new Set([
+  'actual_invoices', 'cost_items', 'receivable_records', 'payment_records',
+])
+
 export async function POST(request: Request) {
   const auth = await requireAuth()
   if (!auth.authenticated) return auth.error!
@@ -39,6 +44,13 @@ export async function POST(request: Request) {
     const executionDetail = agentActions[0].detail as Record<string, unknown>
     const results = (executionDetail?.results || []) as { action_type: string; status: string; record_id: string | null; target_table: string }[]
 
+    // 允许回滚操作的表白名单，防止 target_table 被污染后删除任意表
+    const ROLLBACK_ALLOWED_TABLES = new Set([
+      'actual_invoices', 'cost_items', 'pending_approvals',
+      'receivable_records', 'payment_records', 'shipping_documents',
+      'financial_agent_actions', 'document_actions',
+    ])
+
     // 逆序回滚已成功的动作
     const rollbackResults: { action_type: string; status: string; error: string | null }[] = []
     const successResults = results.filter(r => r.status === 'success' && r.record_id).reverse()
@@ -46,16 +58,31 @@ export async function POST(request: Request) {
     for (const action of successResults) {
       try {
         if (action.record_id) {
-          // 通用回滚：删除创建的记录
-          const { error } = await supabase
-            .from(action.target_table)
-            .delete()
-            .eq('id', action.record_id)
+          if (!ROLLBACK_ALLOWED_TABLES.has(action.target_table)) {
+            rollbackResults.push({ action_type: action.action_type, status: 'skipped', error: `表 ${action.target_table} 不在回滚白名单` })
+            continue
+          }
+          // 财务凭证表软删除（标记 deleted_at）；其余表物理删除
+          let rollbackError: string | null = null
+          if (SOFT_DELETE_ROLLBACK_TABLES.has(action.target_table)) {
+            const { error } = await supabase
+              .from(action.target_table)
+              .update({ deleted_at: new Date().toISOString(), deleted_by: auth.userId })
+              .eq('id', action.record_id)
+              .is('deleted_at', null)
+            if (error) rollbackError = error.message
+          } else {
+            const { error } = await supabase
+              .from(action.target_table)
+              .delete()
+              .eq('id', action.record_id)
+            if (error) rollbackError = error.message
+          }
 
           rollbackResults.push({
             action_type: action.action_type,
-            status: error ? 'failed' : 'rolled_back',
-            error: error?.message || null,
+            status: rollbackError ? 'failed' : 'rolled_back',
+            error: rollbackError,
           })
         }
       } catch (e) {
