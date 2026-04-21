@@ -9,7 +9,7 @@ import { requireAuth } from '@/lib/auth/api-guard'
 
 // 财务凭证类表：回滚时软删除（标记 deleted_at）而非物理删除
 const SOFT_DELETE_ROLLBACK_TABLES = new Set([
-  'actual_invoices', 'cost_items', 'receivable_records', 'payment_records',
+  'actual_invoices', 'cost_items', 'payable_records',
 ])
 
 export async function POST(request: Request) {

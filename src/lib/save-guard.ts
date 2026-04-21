@@ -113,7 +113,7 @@ export async function safeUpdate<T extends Record<string, unknown>>(
  * journal_entries 改用 status='voided'（已有该字段），无需 deleted_at。
  */
 const SOFT_DELETE_TABLES = new Set([
-  'actual_invoices', 'cost_items', 'receivable_records', 'payment_records',
+  'actual_invoices', 'cost_items', 'payable_records',
 ])
 
 /**
