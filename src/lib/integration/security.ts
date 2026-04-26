@@ -7,10 +7,24 @@ import { createHmac, timingSafeEqual } from 'crypto'
 const WEBHOOK_SECRET = process.env.INTEGRATION_WEBHOOK_SECRET || ''
 const API_KEY = process.env.INTEGRATION_API_KEY || ''
 
-// 允许的来源IP/域名（Vercel部署不固定IP，用域名+签名双重验证）
-const ALLOWED_ORIGINS = [
-  process.env.ORDER_METRONOME_URL || 'https://order-metronome.vercel.app',
+// 允许的来源域名（Vercel 部署不固定 IP，用域名 + 签名双重验证）
+// 支持环境变量 INTEGRATION_ALLOWED_ORIGINS 逗号分隔多个域名；
+// 老变量 ORDER_METRONOME_URL 仍向后兼容。
+// 注意：当前 validateRequest() 并未强制调用 verifyOrigin，
+// 真正的鉴权依赖 API Key + HMAC 签名 + 时间戳。此白名单仅供未来启用。
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://order.qimoactivewear.com',     // 订单节拍器自定义域名
+  'https://order-metronome.vercel.app',   // 订单节拍器 Vercel 默认域名
 ]
+
+const ALLOWED_ORIGINS: string[] = (() => {
+  const fromEnv = process.env.INTEGRATION_ALLOWED_ORIGINS
+  if (fromEnv) {
+    return fromEnv.split(',').map(s => s.trim()).filter(Boolean)
+  }
+  const legacy = process.env.ORDER_METRONOME_URL
+  return legacy ? [...new Set([legacy, ...DEFAULT_ALLOWED_ORIGINS])] : DEFAULT_ALLOWED_ORIGINS
+})()
 
 // --- HMAC-SHA256 签名生成 ---
 export function generateSignature(payload: string, secret?: string): string {
