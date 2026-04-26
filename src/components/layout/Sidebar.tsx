@@ -16,6 +16,7 @@ import {
   Bot,
   Menu,
   X,
+  TrendingUp,
 } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -36,6 +37,7 @@ const baseNavigation = [
   { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
   { name: '客户画像', href: '/profiles/customers', icon: Users },
   { name: '供应商画像', href: '/profiles/suppliers', icon: FileText },
+  { name: '利润控制中心', href: '/profit-control', icon: TrendingUp },
   { name: '财务驾驶舱', href: '/analytics', icon: BarChart3 },
   { name: '风险地图', href: '/risks', icon: BarChart3 },
   { name: '现金流预测', href: '/cashflow', icon: BarChart3 },
