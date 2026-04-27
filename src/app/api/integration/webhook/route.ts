@@ -28,6 +28,25 @@ export async function POST(request: Request) {
   const validation = await validateRequest(request)
   if (!validation.valid) {
     console.error(`[Webhook] Security validation failed: ${validation.error}`)
+    // 记录鉴权失败（用于联调诊断 — API Key 不一致 / 签名错 / 时间戳过期）
+    try {
+      const supabase = await createClient()
+      const apiKey = request.headers.get('x-api-key') || ''
+      const apiKeyMasked = apiKey.length > 8
+        ? `${apiKey.slice(0, 4)}...${apiKey.slice(-4)} (len=${apiKey.length})`
+        : `(len=${apiKey.length})`
+      await supabase.from('integration_logs').insert({
+        event_type: 'auth.failed',
+        direction: 'inbound',
+        request_id: `auth-fail-${Date.now()}`,
+        source: clientIp,
+        status: 'failed',
+        payload_summary: `apiKey=${apiKeyMasked} hasSignature=${!!request.headers.get('x-webhook-signature')}`,
+        error_message: validation.error || 'unknown',
+      })
+    } catch (e) {
+      console.error('[Webhook] Failed to log auth failure:', e)
+    }
     return NextResponse.json(
       { error: 'Unauthorized' },
       { status: 401 }
