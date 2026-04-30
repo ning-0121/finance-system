@@ -45,6 +45,10 @@ create table if not exists profit_order_styles (
 create index if not exists idx_profit_order_styles_order on profit_order_styles(budget_order_id);
 create index if not exists idx_profit_order_styles_category on profit_order_styles(product_category);
 
+-- 唯一约束：同一订单下款号不重复（CSV导入upsert依赖此约束）
+create unique index if not exists uq_profit_order_styles_order_style
+  on profit_order_styles(budget_order_id, style_no);
+
 -- 2. profit_cost_benchmarks: 各品类目标成本基准
 create table if not exists profit_cost_benchmarks (
   id uuid default gen_random_uuid() primary key,

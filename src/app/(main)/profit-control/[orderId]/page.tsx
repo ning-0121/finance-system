@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Separator } from '@/components/ui/separator'
 import {
   ArrowLeft, Plus, Loader2, AlertTriangle, CheckCircle, Info,
-  TrendingDown, TrendingUp, RefreshCw, Trash2,
+  TrendingDown, TrendingUp, RefreshCw, Trash2, Wand2,
 } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -128,6 +128,27 @@ export default function OrderProfitDetailPage({ params }: { params: Promise<{ or
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [customRate, setCustomRate] = useState('')
 
+  // ── Recompute budget from styles ──────────────────────────
+  const [showRecompute, setShowRecompute] = useState(false)
+  const [recomputeLoading, setRecomputeLoading] = useState(false)
+  const [recomputeApplying, setRecomputeApplying] = useState(false)
+  const [recomputePreview, setRecomputePreview] = useState<{
+    before: { total_revenue: number; total_cost: number; estimated_profit: number; estimated_margin: number }
+    after:  { total_revenue: number; total_cost: number; estimated_profit: number; estimated_margin: number }
+    summary: {
+      style_count: number
+      total_qty: number
+      currency: string
+      exchange_rate: number
+      total_revenue_usd: number
+      total_cost_rmb: number
+      gross_profit_usd: number
+      gross_margin: number
+    }
+    status: string
+    warnings?: string[]
+  } | null>(null)
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -217,6 +238,53 @@ export default function OrderProfitDetailPage({ params }: { params: Promise<{ or
     }
   }
 
+  // ── Open recompute dialog (dry-run preview) ──────────────
+  const handleOpenRecompute = async () => {
+    if (styles.length === 0) {
+      toast.error('当前订单还没有款式数据，请先添加或导入款式')
+      return
+    }
+    setShowRecompute(true)
+    setRecomputeLoading(true)
+    setRecomputePreview(null)
+    try {
+      const res = await fetch(`/api/profit/orders/${orderId}/recompute-budget?dry_run=true`, {
+        method: 'POST',
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error)
+      setRecomputePreview(d)
+    } catch (e) {
+      toast.error(`预览失败: ${e instanceof Error ? e.message : '未知'}`)
+      setShowRecompute(false)
+    } finally {
+      setRecomputeLoading(false)
+    }
+  }
+
+  // ── Apply recompute (write to budget_orders) ─────────────
+  const handleApplyRecompute = async () => {
+    setRecomputeApplying(true)
+    try {
+      const res = await fetch(`/api/profit/orders/${orderId}/recompute-budget`, {
+        method: 'POST',
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error)
+      toast.success('预算单成本已更新')
+      if (Array.isArray(d.warnings) && d.warnings.length > 0) {
+        for (const w of d.warnings) toast.warning(w)
+      }
+      setShowRecompute(false)
+      setRecomputePreview(null)
+      load()
+    } catch (e) {
+      toast.error(`应用失败: ${e instanceof Error ? e.message : '未知'}`)
+    } finally {
+      setRecomputeApplying(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex flex-col h-full">
@@ -268,6 +336,15 @@ export default function OrderProfitDetailPage({ params }: { params: Promise<{ or
           </Link>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={load}><RefreshCw className="h-4 w-4" /></Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleOpenRecompute}
+              disabled={styles.length === 0}
+              title={styles.length === 0 ? '请先添加款式后再重算' : '用款式数据重算预算成本'}
+            >
+              <Wand2 className="h-4 w-4 mr-1" />重算预算
+            </Button>
             <Button size="sm" onClick={() => setShowAddStyle(true)}>
               <Plus className="h-4 w-4 mr-1" />添加款式
             </Button>
@@ -596,6 +673,102 @@ export default function OrderProfitDetailPage({ params }: { params: Promise<{ or
             <Button onClick={handleSaveStyle} disabled={saving}>
               {saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}
               保存款式
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Recompute Budget Dialog ── */}
+      <Dialog open={showRecompute} onOpenChange={o => { if (!o) { setShowRecompute(false); setRecomputePreview(null) } }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Wand2 className="h-5 w-5 text-primary" />
+              用款式数据重算预算成本
+            </DialogTitle>
+          </DialogHeader>
+
+          {recomputeLoading && (
+            <div className="py-12 flex flex-col items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <span className="text-sm">正在计算…</span>
+            </div>
+          )}
+
+          {!recomputeLoading && recomputePreview && (
+            <div className="space-y-4">
+              {/* Summary */}
+              <div className="rounded-lg bg-muted/50 px-4 py-3 text-sm">
+                <p className="font-medium mb-1">汇总数据</p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <span>款式数：<span className="text-foreground font-medium">{recomputePreview.summary.style_count}</span></span>
+                  <span>总件数：<span className="text-foreground font-medium">{recomputePreview.summary.total_qty.toLocaleString()}</span></span>
+                  <span>币种：<span className="text-foreground font-medium">{recomputePreview.summary.currency}</span></span>
+                  <span>汇率：<span className="text-foreground font-medium">{recomputePreview.summary.exchange_rate.toFixed(4)}</span></span>
+                </div>
+              </div>
+
+              {/* Diff Table */}
+              <div className="border rounded-lg overflow-hidden">
+                <Table>
+                  <TableHeader className="bg-muted/50">
+                    <TableRow>
+                      <TableHead className="w-[140px]">字段</TableHead>
+                      <TableHead className="text-right">当前值</TableHead>
+                      <TableHead className="text-right">重算后</TableHead>
+                      <TableHead className="text-right">变化</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {[
+                      { label: '总收入', before: recomputePreview.before.total_revenue, after: recomputePreview.after.total_revenue, suffix: ` ${recomputePreview.summary.currency}`, fmt: 0 },
+                      { label: '总成本', before: recomputePreview.before.total_cost, after: recomputePreview.after.total_cost, suffix: ' ¥', fmt: 0 },
+                      { label: '预估利润', before: recomputePreview.before.estimated_profit, after: recomputePreview.after.estimated_profit, suffix: ' USD', fmt: 0 },
+                      { label: '预估毛利率', before: recomputePreview.before.estimated_margin, after: recomputePreview.after.estimated_margin, suffix: '%', fmt: 2 },
+                    ].map(row => {
+                      const diff = row.after - row.before
+                      const diffSign = diff > 0 ? '+' : ''
+                      const diffColor = Math.abs(diff) < 0.01 ? 'text-muted-foreground' : (diff > 0 ? 'text-green-600' : 'text-red-600')
+                      return (
+                        <TableRow key={row.label}>
+                          <TableCell className="font-medium">{row.label}</TableCell>
+                          <TableCell className="text-right text-muted-foreground">
+                            {row.before.toLocaleString('en', { maximumFractionDigits: row.fmt, minimumFractionDigits: row.fmt })}{row.suffix}
+                          </TableCell>
+                          <TableCell className="text-right font-semibold">
+                            {row.after.toLocaleString('en', { maximumFractionDigits: row.fmt, minimumFractionDigits: row.fmt })}{row.suffix}
+                          </TableCell>
+                          <TableCell className={`text-right font-medium ${diffColor}`}>
+                            {Math.abs(diff) < 0.01 ? '—' : `${diffSign}${diff.toLocaleString('en', { maximumFractionDigits: row.fmt, minimumFractionDigits: row.fmt })}${row.suffix}`}
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {/* Warnings */}
+              {recomputePreview.status === 'approved' && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                  <span>此订单已审批通过，应用重算将覆盖已审批的预算成本。请确认这是预期操作。</span>
+                </div>
+              )}
+
+              <p className="text-xs text-muted-foreground">
+                💡 该操作会把利润中心录入的所有款式成本聚合后写入预算单的 total_cost / revenue / profit / margin 字段。原有数值会保留在订单备注中作为审计记录。
+              </p>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRecompute(false)} disabled={recomputeApplying}>
+              取消
+            </Button>
+            <Button onClick={handleApplyRecompute} disabled={recomputeLoading || !recomputePreview || recomputeApplying}>
+              {recomputeApplying ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Wand2 className="h-4 w-4 mr-1" />}
+              确认应用
             </Button>
           </DialogFooter>
         </DialogContent>
