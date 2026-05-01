@@ -15,10 +15,22 @@
 
 | 阶段 | 状态 | 内容 | 部署日期 |
 |---|---|---|---|
-| **A-0** | 🟢 准备就绪 | Safe Foundation：11 个新 schema + tenant 表 + qimo 默认租户 | — |
-| A-1 | ⏸ 待 A-0 验收后启动 | SoT Overlay：field_lineage + audit.events + sotWriteShadow | — |
+| **A-0** | ✅ 已部署 | Safe Foundation：11 个新 schema + tenant 表 + qimo 默认租户 | 2026-04-27 |
+| **A-1** | 🟢 准备就绪 | SoT Overlay：field_lineage + audit.events + sotWriteShadow + 字段来源 UI | — |
 | A-2 | ⏸ 待 A-1 验收 | 异常中心 + 8 个简易扫描器 | — |
 | A-3 | ⏸ 待 A-2 跑出真实异常 | Reconciliation Matrix（4 条核心规则） | — |
+
+## A-1 部署前提条件
+
+**重要**：A-1 涉及通过 PostgREST 调用新 schema 中的 RPC 与表，必须先把 `sot` 与 `audit` 暴露给 API：
+
+```
+Supabase Dashboard → Project Settings → API
+→ Exposed schemas: 在原有 'public' 基础上追加 'sot' 和 'audit'
+→ Save
+```
+
+如果忘了这一步，shadow write 会失败（被 try/catch 静默吞掉，不影响主业务）但 lineage 不会落库。验证方式：跑 `A-1-verify.sql` 第 4-8 项。
 
 ## 部署步骤（标准流程）
 

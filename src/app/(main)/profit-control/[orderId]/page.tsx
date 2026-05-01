@@ -23,6 +23,7 @@ import Link from 'next/link'
 import { toast } from 'sonner'
 import { RISK_CONFIG, type MarginRisk, type FXScenario } from '@/lib/profit-calculator'
 import type { RecommendationSeverity } from '@/lib/profit-recommendation-engine'
+import { FieldSourceBadge } from '@/components/sot/FieldSourceBadge'
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -355,19 +356,28 @@ export default function OrderProfitDetailPage({ params }: { params: Promise<{ or
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Card>
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">销售额 (USD)</p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-xs text-muted-foreground">销售额 (USD)</p>
+                <FieldSourceBadge table="budget_orders" rowId={order.id} field="total_revenue" />
+              </div>
               <p className="text-xl font-bold">${order.computed_profit.sales_amount_usd.toLocaleString('en', { maximumFractionDigits: 0 })}</p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">成本 (USD)</p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-xs text-muted-foreground">成本 (USD)</p>
+                <FieldSourceBadge table="budget_orders" rowId={order.id} field="total_cost" />
+              </div>
               <p className="text-xl font-bold">${order.computed_profit.total_cost_usd.toLocaleString('en', { maximumFractionDigits: 0 })}</p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">毛利 (USD)</p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-xs text-muted-foreground">毛利 (USD)</p>
+                <FieldSourceBadge table="budget_orders" rowId={order.id} field="estimated_profit" />
+              </div>
               <p className={`text-xl font-bold ${order.computed_profit.gross_profit_usd >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 {order.computed_profit.gross_profit_usd >= 0 ? '+' : ''}
                 ${order.computed_profit.gross_profit_usd.toLocaleString('en', { maximumFractionDigits: 0 })}
@@ -376,7 +386,10 @@ export default function OrderProfitDetailPage({ params }: { params: Promise<{ or
           </Card>
           <Card className={rc.bg + ' ' + rc.border}>
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">毛利率</p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-xs text-muted-foreground">毛利率</p>
+                <FieldSourceBadge table="budget_orders" rowId={order.id} field="estimated_margin" />
+              </div>
               <p className={`text-xl font-bold ${rc.color}`}>
                 {order.computed_profit.gross_margin.toFixed(1)}%
               </p>

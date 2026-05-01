@@ -6,6 +6,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
+import { sotWriteShadow } from '@/lib/sot/lineage'
 import { z } from 'zod'
 
 const StyleSchema = z.object({
@@ -72,6 +73,33 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+    // SoT shadow write —— qty + 单价（人工录入字段）
+    if (data?.id) {
+      const sotCommon = {
+        table: 'profit_order_styles',
+        rowId: data.id as string,
+        sourceType: 'manual_entry' as const,
+        sourceEntity: 'profit_styles_form',
+        confidence: 0.9, // 人工录入默认 0.9（OCR 提取后会升至 0.95）
+        actorId: auth.userId ?? null,
+        actorRole: auth.role ?? null,
+        action: 'create_style',
+        context: {
+          budget_order_id: parsed.data.budget_order_id,
+          style_no: parsed.data.style_no,
+        },
+      }
+      await Promise.all([
+        sotWriteShadow({ ...sotCommon, field: 'qty', value: parsed.data.qty }),
+        sotWriteShadow({
+          ...sotCommon,
+          field: 'selling_price_per_piece_usd',
+          value: parsed.data.selling_price_per_piece_usd,
+        }),
+      ])
+    }
+
     return NextResponse.json({ style: data }, { status: 201 })
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Server error' }, { status: 500 })

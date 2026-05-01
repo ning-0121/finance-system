@@ -19,6 +19,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
+import { sotWriteShadow } from '@/lib/sot/lineage'
 import Decimal from 'decimal.js'
 
 Decimal.set({ precision: 28, rounding: Decimal.ROUND_HALF_UP })
@@ -199,6 +200,35 @@ export async function POST(
     if (updateErr) {
       return NextResponse.json({ error: `写入失败: ${updateErr.message}` }, { status: 500 })
     }
+
+    // 6. SoT shadow write —— 4 个派生字段的血缘记录（失败不影响主流程）
+    // ============================================================
+    const sotContext = {
+      style_count: styles.length,
+      total_qty: totalQty,
+      exchange_rate: orderRate,
+      currency: order.currency || 'USD',
+      derivation: 'sum(qty × per_piece_cost) from profit_order_styles',
+    }
+    const sotCommon = {
+      table: 'budget_orders',
+      rowId: id,
+      sourceType: 'derived' as const,
+      sourceEntity: 'profit_order_styles_aggregation',
+      confidence: 1.0,
+      actorId: auth.userId ?? null,
+      actorRole: auth.role ?? null,
+      action: 'recompute_budget_from_styles',
+      context: sotContext,
+    }
+
+    // 故意 await，但失败时只 log（sotWriteShadow 已 try/catch，不抛错）
+    await Promise.all([
+      sotWriteShadow({ ...sotCommon, field: 'total_revenue',     value: targetRevenue }),
+      sotWriteShadow({ ...sotCommon, field: 'total_cost',        value: costRmb }),
+      sotWriteShadow({ ...sotCommon, field: 'estimated_profit',  value: profitUsd }),
+      sotWriteShadow({ ...sotCommon, field: 'estimated_margin',  value: margin }),
+    ])
 
     return NextResponse.json({
       success: true,

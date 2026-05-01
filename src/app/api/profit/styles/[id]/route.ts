@@ -6,6 +6,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
+import { sotWriteShadow } from '@/lib/sot/lineage'
 import { z } from 'zod'
 
 const UpdateSchema = z.object({
@@ -53,6 +54,34 @@ export async function PUT(
       .single()
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+    // SoT shadow write —— 仅记录被修改的关键字段（qty + 单价）
+    if (data?.id) {
+      const sotCommon = {
+        table: 'profit_order_styles',
+        rowId: id,
+        sourceType: 'manual_entry' as const,
+        sourceEntity: 'profit_styles_form',
+        confidence: 0.9,
+        actorId: auth.userId ?? null,
+        actorRole: auth.role ?? null,
+        action: 'update_style',
+        context: { updated_fields: Object.keys(parsed.data) },
+      }
+      const writes: Promise<unknown>[] = []
+      if (parsed.data.qty !== undefined) {
+        writes.push(sotWriteShadow({ ...sotCommon, field: 'qty', value: parsed.data.qty }))
+      }
+      if (parsed.data.selling_price_per_piece_usd !== undefined) {
+        writes.push(sotWriteShadow({
+          ...sotCommon,
+          field: 'selling_price_per_piece_usd',
+          value: parsed.data.selling_price_per_piece_usd,
+        }))
+      }
+      if (writes.length > 0) await Promise.all(writes)
+    }
+
     return NextResponse.json({ style: data })
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Server error' }, { status: 500 })
