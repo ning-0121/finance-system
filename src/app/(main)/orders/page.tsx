@@ -28,6 +28,13 @@ export default function OrdersPage() {
   const [syncedMap, setSyncedMap] = useState<Record<string, { qmNo: string; internalNo: string; lifecycle?: string; customer?: string; qty?: number; unit?: string }>>({})
   const [syncing, setSyncing] = useState(false)
 
+  // F3: 已确认决算的实际利润 / 实际毛利率（按 budget_order_id 索引）
+  const [settlementMap, setSettlementMap] = useState<Record<string, { final_profit: number; final_margin: number; status: string }>>({})
+
+  // F3: 排序状态
+  const [sortBy, setSortBy] = useState<'created' | 'margin' | 'profit'>('created')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
   const loadOrders = async () => {
     setLoading(true)
     try {
@@ -49,6 +56,27 @@ export default function OrdersPage() {
           }
         })
         setSyncedMap(map)
+      }
+
+      // F3: 加载所有已生成的 order_settlements，建立 budget_order_id → 实际数据 映射
+      // 这样订单完结后能看到实际利润而不是预估
+      try {
+        const { data: settlements } = await supabase
+          .from('order_settlements')
+          .select('budget_order_id, final_profit, final_margin, status')
+        if (settlements) {
+          const sMap: Record<string, { final_profit: number; final_margin: number; status: string }> = {}
+          settlements.forEach((s: Record<string, unknown>) => {
+            if (s.budget_order_id) sMap[s.budget_order_id as string] = {
+              final_profit: Number(s.final_profit) || 0,
+              final_margin: Number(s.final_margin) || 0,
+              status: (s.status as string) || 'draft',
+            }
+          })
+          setSettlementMap(sMap)
+        }
+      } catch {
+        // 决算表查询失败不阻塞列表渲染
       }
     } catch {
       toast.error('加载订单失败')
@@ -78,15 +106,45 @@ export default function OrdersPage() {
     setSyncing(false)
   }
 
-  const filteredOrders = orders.filter((order) => {
-    const matchesStatus = statusFilter === 'all' || order.status === statusFilter
-    const matchesSearch = search === '' ||
-      order.order_no.toLowerCase().includes(search.toLowerCase()) ||
-      order.customer?.company?.toLowerCase().includes(search.toLowerCase()) ||
-      (syncedMap[order.id]?.internalNo || '').toLowerCase().includes(search.toLowerCase()) ||
-      (syncedMap[order.id]?.qmNo || '').toLowerCase().includes(search.toLowerCase())
-    return matchesStatus && matchesSearch
-  })
+  // F3: 取一笔订单的"有效"利润 / 毛利率（已确认决算 → 用实际，否则用预估）
+  const getEffectiveProfit = (orderId: string, fallback: number) => {
+    const s = settlementMap[orderId]
+    return s && (s.status === 'confirmed' || s.status === 'locked') ? s.final_profit : fallback
+  }
+  const getEffectiveMargin = (orderId: string, fallback: number) => {
+    const s = settlementMap[orderId]
+    return s && (s.status === 'confirmed' || s.status === 'locked') ? s.final_margin : fallback
+  }
+
+  const filteredOrders = orders
+    .filter((order) => {
+      const matchesStatus = statusFilter === 'all' || order.status === statusFilter
+      const matchesSearch = search === '' ||
+        order.order_no.toLowerCase().includes(search.toLowerCase()) ||
+        order.customer?.company?.toLowerCase().includes(search.toLowerCase()) ||
+        (syncedMap[order.id]?.internalNo || '').toLowerCase().includes(search.toLowerCase()) ||
+        (syncedMap[order.id]?.qmNo || '').toLowerCase().includes(search.toLowerCase())
+      return matchesStatus && matchesSearch
+    })
+    .sort((a, b) => {
+      // 默认按创建时间降序（保持原有行为）
+      if (sortBy === 'created') return 0
+      const dir = sortDir === 'asc' ? 1 : -1
+      if (sortBy === 'margin') {
+        return (getEffectiveMargin(a.id, a.estimated_margin) - getEffectiveMargin(b.id, b.estimated_margin)) * dir
+      }
+      // sortBy === 'profit'
+      return (getEffectiveProfit(a.id, a.estimated_profit) - getEffectiveProfit(b.id, b.estimated_profit)) * dir
+    })
+
+  const toggleSort = (col: 'margin' | 'profit') => {
+    if (sortBy !== col) {
+      setSortBy(col)
+      setSortDir('desc')
+    } else {
+      setSortDir(sortDir === 'desc' ? 'asc' : 'desc')
+    }
+  }
 
   const statusCounts = {
     all: orders.length,
@@ -157,8 +215,20 @@ export default function OrdersPage() {
                     <TableHead>客户</TableHead>
                     <TableHead className="text-right">合同金额</TableHead>
                     <TableHead className="text-right">成本(¥)</TableHead>
-                    <TableHead className="text-right">利润(¥)</TableHead>
-                    <TableHead className="text-right">毛利率</TableHead>
+                    <TableHead
+                      className="text-right cursor-pointer select-none hover:text-primary"
+                      onClick={() => toggleSort('profit')}
+                      title="点击按利润排序"
+                    >
+                      利润(¥) {sortBy === 'profit' && (sortDir === 'desc' ? '↓' : '↑')}
+                    </TableHead>
+                    <TableHead
+                      className="text-right cursor-pointer select-none hover:text-primary"
+                      onClick={() => toggleSort('margin')}
+                      title="点击按毛利率排序"
+                    >
+                      毛利率 {sortBy === 'margin' && (sortDir === 'desc' ? '↓' : '↑')}
+                    </TableHead>
                     <TableHead>财务状态</TableHead>
                     <TableHead>订单进度</TableHead>
                     <TableHead>下单日期</TableHead>
@@ -182,14 +252,35 @@ export default function OrdersPage() {
                       </TableCell>
                       <TableCell className="text-right font-medium">{order.currency === 'CNY' ? '¥' : '$'} {order.total_revenue.toLocaleString()}</TableCell>
                       <TableCell className="text-right">¥ {order.total_cost.toLocaleString()}</TableCell>
-                      <TableCell className={`text-right font-semibold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        ¥ {order.estimated_profit.toLocaleString()}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                          order.estimated_margin < 0 ? 'bg-red-100 text-red-700' : order.estimated_margin < 15 ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'
-                        }`}>{order.estimated_margin}%</span>
-                      </TableCell>
+                      {/* F3: 利润 — 已确认决算时显示实际，否则显示预估，带"实"角标 */}
+                      {(() => {
+                        const sett = settlementMap[order.id]
+                        const isActual = sett && (sett.status === 'confirmed' || sett.status === 'locked')
+                        const profit = isActual ? sett.final_profit : order.estimated_profit
+                        const margin = isActual ? sett.final_margin : order.estimated_margin
+                        return (
+                          <>
+                            <TableCell className={`text-right font-semibold ${profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                              <div className="inline-flex items-center gap-1 justify-end">
+                                {isActual && (
+                                  <span className="text-[9px] font-bold bg-green-100 text-green-700 px-1 rounded" title="实际利润（决算已确认）">实</span>
+                                )}
+                                ¥ {profit.toLocaleString()}
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                                margin < 0 ? 'bg-red-100 text-red-700' : margin < 15 ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'
+                              }`}>
+                                {isActual && (
+                                  <span className="text-[9px] font-bold opacity-80" title="来自决算">实</span>
+                                )}
+                                {margin}%
+                              </span>
+                            </TableCell>
+                          </>
+                        )
+                      })()}
                       <TableCell><BudgetStatusBadge status={order.status as BudgetOrderStatus} /></TableCell>
                       <TableCell>
                         {syncedMap[order.id]?.lifecycle && (

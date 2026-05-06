@@ -33,7 +33,7 @@ import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBud
 import { validateBudgetEdit } from '@/lib/engines/validation-engine'
 import { runOrderSubmitGate, type GateResult } from '@/lib/engines/submit-gate-engine'
 import { getSubDocuments, getActualInvoices, getShippingDocuments, getOrderSettlement } from '@/lib/supabase/queries-v2'
-import type { BudgetOrder, BudgetOrderStatus, ApprovalLog } from '@/lib/types'
+import type { BudgetOrder, BudgetOrderStatus, ApprovalLog, OrderSettlement } from '@/lib/types'
 import {
   ArrowLeft,
   CheckCircle,
@@ -48,6 +48,8 @@ import {
   Ship,
   Calculator,
   Receipt,
+  LineChart,
+  Download,
 } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
@@ -68,6 +70,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
   const [order, setOrder] = useState<BudgetOrder | null>(null)
   const [settlement, setSettlement] = useState<ReturnType<typeof useState<import('@/lib/types').SettlementOrder | null>>[0]>(null)
+  const [orderSettlement, setOrderSettlementState] = useState<OrderSettlement | null>(null)  // 新版决算（order_settlements 表）
   const [logs, setLogs] = useState<ApprovalLog[]>([])
   const [loading, setLoading] = useState(true)
   const [workflowCtx, setWorkflowCtx] = useState({
@@ -117,6 +120,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           getOrderSettlement(id).catch(() => null),
         ])
         setSettlement(settlementData)
+        setOrderSettlementState(orderSettlement as OrderSettlement | null)
         setLogs(logsData as ApprovalLog[])
         setWorkflowCtx({
           hasSubDocs: (subDocs as unknown[])?.length > 0,
@@ -563,47 +567,111 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               </Card>
 
               <Card>
-                <CardHeader className="pb-3"><CardTitle className="text-sm">利润概览</CardTitle></CardHeader>
+                <CardHeader className="pb-3 flex-row items-center justify-between space-y-0">
+                  <CardTitle className="text-sm">利润概览</CardTitle>
+                  {orderSettlement && (orderSettlement.status === 'confirmed' || orderSettlement.status === 'locked') && (
+                    <Badge className="bg-green-100 text-green-700 border-green-200 text-[10px]">
+                      ✓ 决算已确认
+                    </Badge>
+                  )}
+                </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="text-center p-4 rounded-lg bg-muted">
-                    <p className="text-sm text-muted-foreground mb-1">预计利润 (CNY)</p>
-                    <p className={`text-3xl font-bold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      ¥ {order.estimated_profit.toLocaleString()}
-                    </p>
-                  </div>
+                  {/* 主要数字：决算已确认时显示实际利润，否则显示预计利润 */}
+                  {orderSettlement && (orderSettlement.status === 'confirmed' || orderSettlement.status === 'locked') ? (
+                    <div className="text-center p-4 rounded-lg bg-green-50/60 border border-green-200">
+                      <p className="text-sm text-muted-foreground mb-1">实际利润 (CNY) · 来自决算</p>
+                      <p className={`text-3xl font-bold ${orderSettlement.final_profit < 0 ? 'text-red-600' : 'text-green-700'}`}>
+                        ¥ {orderSettlement.final_profit.toLocaleString()}
+                      </p>
+                      {/* 与预算对比 */}
+                      {(() => {
+                        const diff = orderSettlement.final_profit - order.estimated_profit
+                        const diffPct = order.estimated_profit !== 0
+                          ? (diff / Math.abs(order.estimated_profit)) * 100
+                          : 0
+                        if (Math.abs(diff) < 1) return <p className="text-xs text-muted-foreground mt-1">与预算一致</p>
+                        return (
+                          <p className={`text-xs mt-1 ${diff > 0 ? 'text-green-700' : 'text-red-700'}`}>
+                            vs 预算 ¥{order.estimated_profit.toLocaleString()} · {diff > 0 ? '+' : ''}¥{diff.toLocaleString()} ({diff > 0 ? '+' : ''}{diffPct.toFixed(1)}%)
+                          </p>
+                        )
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="text-center p-4 rounded-lg bg-muted">
+                      <p className="text-sm text-muted-foreground mb-1">预计利润 (CNY)</p>
+                      <p className={`text-3xl font-bold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        ¥ {order.estimated_profit.toLocaleString()}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* 合同金额 + 毛利率 */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="text-center p-3 rounded-lg bg-blue-50">
                       <p className="text-xs text-muted-foreground">合同金额</p>
                       <p className="text-sm font-semibold text-blue-700">{order.currency === 'CNY' ? '¥' : '$'} {order.total_revenue.toLocaleString()}</p>
                     </div>
-                    <div className="text-center p-3 rounded-lg bg-amber-50">
-                      <p className="text-xs text-muted-foreground">毛利率</p>
-                      <p className={`text-sm font-semibold ${order.estimated_margin < 0 ? 'text-red-700' : order.estimated_margin < 15 ? 'text-amber-700' : 'text-green-700'}`}>
-                        {order.estimated_margin}%
-                      </p>
-                    </div>
+                    {orderSettlement && (orderSettlement.status === 'confirmed' || orderSettlement.status === 'locked') ? (
+                      <div className="text-center p-3 rounded-lg bg-green-50/60 border border-green-100">
+                        <p className="text-xs text-muted-foreground">实际毛利率</p>
+                        <p className={`text-sm font-semibold ${orderSettlement.final_margin < 0 ? 'text-red-700' : orderSettlement.final_margin < 15 ? 'text-amber-700' : 'text-green-700'}`}>
+                          {orderSettlement.final_margin}%
+                        </p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">预算 {order.estimated_margin}%</p>
+                      </div>
+                    ) : (
+                      <div className="text-center p-3 rounded-lg bg-amber-50">
+                        <p className="text-xs text-muted-foreground">预计毛利率</p>
+                        <p className={`text-sm font-semibold ${order.estimated_margin < 0 ? 'text-red-700' : order.estimated_margin < 15 ? 'text-amber-700' : 'text-green-700'}`}>
+                          {order.estimated_margin}%
+                        </p>
+                      </div>
+                    )}
                   </div>
-                  {order.estimated_margin < 15 && order.estimated_margin >= 0 && (
-                    <div className="flex items-center gap-2 p-2 rounded-lg bg-amber-50 text-amber-700 text-xs" role="alert">
-                      <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span>毛利率低于15%警戒线</span>
-                    </div>
-                  )}
-                  {order.estimated_margin < 0 && (
-                    <div className="flex items-center gap-2 p-2 rounded-lg bg-red-50 text-red-700 text-xs" role="alert">
-                      <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span>预计亏损，请谨慎评估</span>
-                    </div>
+
+                  {/* 警告（基于显示中的有效毛利率） */}
+                  {(() => {
+                    const effectiveMargin = orderSettlement && (orderSettlement.status === 'confirmed' || orderSettlement.status === 'locked')
+                      ? orderSettlement.final_margin
+                      : order.estimated_margin
+                    if (effectiveMargin < 0) {
+                      return (
+                        <div className="flex items-center gap-2 p-2 rounded-lg bg-red-50 text-red-700 text-xs" role="alert">
+                          <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>{orderSettlement && orderSettlement.status !== 'draft' ? '实际亏损' : '预计亏损，请谨慎评估'}</span>
+                        </div>
+                      )
+                    }
+                    if (effectiveMargin < 15) {
+                      return (
+                        <div className="flex items-center gap-2 p-2 rounded-lg bg-amber-50 text-amber-700 text-xs" role="alert">
+                          <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>毛利率低于15%警戒线</span>
+                        </div>
+                      )
+                    }
+                    return null
+                  })()}
+
+                  {/* 提示：决算未生成时引导 */}
+                  {!orderSettlement && (order.status === 'approved' || order.status === 'closed') && (
+                    <Link href={`/orders/${order.id}/settlement`} className="block">
+                      <div className="flex items-center justify-center gap-1.5 p-2 rounded-lg bg-blue-50 text-blue-700 text-xs hover:bg-blue-100 transition-colors">
+                        <Calculator className="h-3.5 w-3.5" />
+                        <span>订单已批准，可去决算页生成决算单查看实际毛利</span>
+                      </div>
+                    </Link>
                   )}
                 </CardContent>
               </Card>
             </div>
 
-            {/* 快捷操作入口 */}
-            {order.status === 'approved' && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* 快捷操作入口（approved + closed 都展示，方便已完结订单回看） */}
+            {(order.status === 'approved' || order.status === 'closed') && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <Link href={`/orders/${order.id}/shipping`}>
-                  <Card className="hover:shadow-md transition-shadow cursor-pointer border-blue-200 hover:border-blue-400">
+                  <Card className="hover:shadow-md transition-shadow cursor-pointer border-blue-200 hover:border-blue-400 h-full">
                     <CardContent className="p-4 flex items-center gap-3">
                       <div className="p-2 rounded-lg bg-blue-50"><Ship className="h-5 w-5 text-blue-600" /></div>
                       <div><p className="text-sm font-medium">出货管理</p><p className="text-xs text-muted-foreground">PI/CI/装箱单/报关</p></div>
@@ -611,15 +679,23 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   </Card>
                 </Link>
                 <Link href={`/orders/${order.id}/settlement`}>
-                  <Card className="hover:shadow-md transition-shadow cursor-pointer border-green-200 hover:border-green-400">
+                  <Card className="hover:shadow-md transition-shadow cursor-pointer border-green-200 hover:border-green-400 h-full">
                     <CardContent className="p-4 flex items-center gap-3">
                       <div className="p-2 rounded-lg bg-green-50"><Calculator className="h-5 w-5 text-green-600" /></div>
                       <div><p className="text-sm font-medium">订单决算</p><p className="text-xs text-muted-foreground">实际成本 vs 预算</p></div>
                     </CardContent>
                   </Card>
                 </Link>
+                <Link href={`/profit-control/${order.id}`}>
+                  <Card className="hover:shadow-md transition-shadow cursor-pointer border-purple-200 hover:border-purple-400 h-full">
+                    <CardContent className="p-4 flex items-center gap-3">
+                      <div className="p-2 rounded-lg bg-purple-50"><LineChart className="h-5 w-5 text-purple-600" /></div>
+                      <div><p className="text-sm font-medium">利润详情</p><p className="text-xs text-muted-foreground">按款式拆解 · 优化建议</p></div>
+                    </CardContent>
+                  </Card>
+                </Link>
                 <Link href="/payments">
-                  <Card className="hover:shadow-md transition-shadow cursor-pointer border-amber-200 hover:border-amber-400">
+                  <Card className="hover:shadow-md transition-shadow cursor-pointer border-amber-200 hover:border-amber-400 h-full">
                     <CardContent className="p-4 flex items-center gap-3">
                       <div className="p-2 rounded-lg bg-amber-50"><Receipt className="h-5 w-5 text-amber-600" /></div>
                       <div><p className="text-sm font-medium">应付管理</p><p className="text-xs text-muted-foreground">付款审批与执行</p></div>

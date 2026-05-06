@@ -18,13 +18,14 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { ArrowLeft, Plus, Loader2, Package, TrendingUp, TrendingDown, CheckCircle, Warehouse } from 'lucide-react'
+import { ArrowLeft, Plus, Loader2, Package, TrendingUp, TrendingDown, CheckCircle, Warehouse, Download } from 'lucide-react'
 import { toast } from 'sonner'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { getBudgetOrderById, getSettlementByBudgetId } from '@/lib/supabase/queries'
 import { generateOrderSettlement, getOrderSettlement, getSubDocuments, getInventoryReturns } from '@/lib/supabase/queries-v2'
 import { toChineseUppercase } from '@/lib/excel/chinese-amount'
+import { exportSettlementSheetToExcel } from '@/lib/excel/export-settlement-sheet'
 import type { SubDocument, InventoryReturn, OrderSettlement } from '@/lib/types'
 
 const returnTypeLabels: Record<string, string> = {
@@ -138,7 +139,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
         <div className="flex items-center justify-between">
           <Link href={`/orders/${id}`}><Button variant="ghost" size="sm"><ArrowLeft className="h-4 w-4 mr-1" />返回订单</Button></Link>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <Link href={`/orders/${id}/shipping`}><Button variant="outline" size="sm">出货单据</Button></Link>
             <Button size="sm" onClick={handleGenerateSettlement} disabled={generating || settlement?.status === 'confirmed' || settlement?.status === 'locked'}>
               {generating ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}
@@ -157,6 +158,24 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
             )}
             {settlement && (settlement.status === 'confirmed' || settlement.status === 'locked') && (
               <Badge className="bg-green-100 text-green-700 border-green-200">✅ 已确认</Badge>
+            )}
+            {/* F4: 导出决算单（任何已生成的决算都可以导出，draft 也行） */}
+            {settlement && order && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  try {
+                    exportSettlementSheetToExcel(order, settlement, returns)
+                    toast.success(`决算单 ${order.order_no} 已导出`)
+                  } catch (e) {
+                    toast.error(`导出失败: ${e instanceof Error ? e.message : '未知错误'}`)
+                  }
+                }}
+              >
+                <Download className="h-4 w-4 mr-1" />
+                导出决算单
+              </Button>
             )}
           </div>
         </div>
