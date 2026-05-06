@@ -17,6 +17,7 @@ import { Plus, Search, Download, Loader2, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { exportBudgetOrdersToExcel } from '@/lib/excel'
 import { exportProfitAnalysisReport } from '@/lib/excel/export-professional'
+import { exportOrdersComprehensiveToExcel } from '@/lib/excel/export-orders-comprehensive'
 import type { BudgetOrder, BudgetOrderStatus } from '@/lib/types'
 
 export default function OrdersPage() {
@@ -171,11 +172,27 @@ export default function OrdersPage() {
               <RefreshCw className={`h-4 w-4 mr-1 ${syncing ? 'animate-spin' : ''}`} />
               {syncing ? '同步中...' : '从节拍器同步'}
             </Button>
+            {/* F6: 完整导出 — 含节拍器 + 决算实际数据，财务一份 Excel 看清所有订单 */}
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => {
+                if (filteredOrders.length === 0) {
+                  toast.error('当前条件下没有订单可导出')
+                  return
+                }
+                exportOrdersComprehensiveToExcel(filteredOrders, syncedMap, settlementMap)
+                toast.success(`已导出 ${filteredOrders.length} 条订单（含节拍器 + 决算）`)
+              }}
+              disabled={filteredOrders.length === 0}
+            >
+              <Download className="h-4 w-4 mr-1" />导出 Excel
+            </Button>
             <Button variant="outline" size="sm" onClick={() => {
               exportBudgetOrdersToExcel(filteredOrders)
-              toast.success(`已导出 ${filteredOrders.length} 条订单`)
+              toast.success(`已导出 ${filteredOrders.length} 条订单（仅财务字段）`)
             }}>
-              <Download className="h-4 w-4 mr-1" />简易导出
+              <Download className="h-4 w-4 mr-1" />仅财务字段
             </Button>
             <Button variant="outline" size="sm" onClick={() => {
               exportProfitAnalysisReport(filteredOrders)

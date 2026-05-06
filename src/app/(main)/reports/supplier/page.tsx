@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -42,6 +42,7 @@ const STATUS_CONFIG: Record<ReportStatus, { label: string; color: string }> = {
 export default function SupplierReportPage() {
   const [lines, setLines] = useState<SupplierLine[]>([])
   const [allCostDetails, setAllCostDetails] = useState<{ supplier: string; description: string; amount: number; currency: string; cost_type: string; order_no: string; created_at: string; is_paid: boolean }[]>([])
+  const [paidMapState, setPaidMapState] = useState<Record<string, number>>({})
   const [expandedSupplier, setExpandedSupplier] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -102,6 +103,8 @@ export default function SupplierReportPage() {
           paidMap.set(name, (paidMap.get(name) || 0) + (c.amount as number || 0))
         }
       })
+      // 保存到 state 供 useMemo 重算用
+      setPaidMapState(Object.fromEntries(paidMap))
 
       if (costItems?.length) {
         // 保存明细（用于导出）
@@ -151,7 +154,42 @@ export default function SupplierReportPage() {
     load()
   }, [])
 
-  const filtered = lines.filter(s => !search || s.supplier.toLowerCase().includes(search.toLowerCase()))
+  // 已确认/锁定的快照保持冻结数据；草稿模式按日期实时聚合（与展开明细口径一致）
+  const periodAwareLines = useMemo<SupplierLine[]>(() => {
+    if (status !== 'draft' || allCostDetails.length === 0) {
+      return lines  // 快照模式或还没加载完 → 用原始 lines
+    }
+    // 用日期范围过滤明细，再按供应商重聚合
+    const inRange = allCostDetails.filter(d => {
+      if (dateStart && d.created_at < dateStart) return false
+      if (dateEnd && d.created_at > dateEnd + 'T23:59:59') return false
+      return true
+    })
+    const map = new Map<string, { count: number; total: number; currency: string; orders: Set<string> }>()
+    for (const d of inRange) {
+      const existing = map.get(d.supplier) || { count: 0, total: 0, currency: d.currency, orders: new Set<string>() }
+      existing.count++
+      existing.total += d.amount
+      if (d.order_no) existing.orders.add(d.order_no)
+      map.set(d.supplier, existing)
+    }
+    return Array.from(map.entries())
+      .map(([supplier, data]) => {
+        const paid = paidMapState[supplier] || 0
+        return {
+          supplier,
+          count: data.count,
+          total: Math.round(data.total * 100) / 100,
+          paid: Math.round(paid * 100) / 100,
+          unpaid: Math.round((data.total - paid) * 100) / 100,
+          currency: data.currency,
+          orders: Array.from(data.orders),
+        }
+      })
+      .sort((a, b) => b.total - a.total)
+  }, [allCostDetails, dateStart, dateEnd, paidMapState, status, lines])
+
+  const filtered = periodAwareLines.filter(s => !search || s.supplier.toLowerCase().includes(search.toLowerCase()))
   const totalAll = filtered.reduce((s, d) => s + d.total, 0)
   const unpaidAll = filtered.reduce((s, d) => s + d.unpaid, 0)
   const isLocked = status === 'locked' || status === 'confirmed'
@@ -275,17 +313,25 @@ export default function SupplierReportPage() {
                   <Lock className="h-4 w-4 mr-1" />锁定
                 </Button>
               )}
-              {(status === 'confirmed' || status === 'locked') && (
-                <Button size="sm" variant="outline" onClick={() => {
+              {/* F5: 导出按钮去掉状态门槛 — draft 也能导，方便财务随时打印对账单 */}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (filtered.length === 0) {
+                    toast.error('当前条件下没有数据可导出')
+                    return
+                  }
                   exportCostSummaryReport(
                     filtered.map(s => ({ category: s.supplier, count: s.count, amount: s.total, currency: s.currency })),
-                    { start: '2026-01-01', end: new Date().toISOString().split('T')[0] }
+                    { start: dateStart || '全部', end: dateEnd || '全部' }
                   )
-                  toast.success('已导出')
-                }}>
-                  <Download className="h-4 w-4 mr-1" />导出
-                </Button>
-              )}
+                  toast.success(`已导出 ${filtered.length} 个供应商的对账单`)
+                }}
+                disabled={filtered.length === 0}
+              >
+                <Download className="h-4 w-4 mr-1" />导出对账单
+              </Button>
               {status !== 'draft' && status !== 'locked' && (
                 <Button size="sm" variant="ghost" onClick={() => { setStatus('draft'); setSnapshotId(null); toast.info('已退回草稿') }}>
                   退回草稿
