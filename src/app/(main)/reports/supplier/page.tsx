@@ -46,8 +46,10 @@ export default function SupplierReportPage() {
   const [expandedSupplier, setExpandedSupplier] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [dateStart, setDateStart] = useState('2026-02-01')
-  const [dateEnd, setDateEnd] = useState('2026-03-31')
+  // 默认显示"全部时间"，避免写死的日期把当期数据挡在外面（之前导致 5 月数据看不到）
+  // 用户可手动设置日期范围或点"近 90 天"快捷按钮缩小
+  const [dateStart, setDateStart] = useState('')
+  const [dateEnd, setDateEnd] = useState('')
   const [status, setStatus] = useState<ReportStatus>('draft')
   const [snapshotId, setSnapshotId] = useState<string | null>(null)
   const [corrections, setCorrections] = useState<Record<string, unknown>[]>([])
@@ -365,13 +367,37 @@ export default function SupplierReportPage() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input placeholder="搜索供应商..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-center gap-2 text-sm flex-wrap">
             <span className="text-muted-foreground">明细日期</span>
             <Input type="date" value={dateStart} onChange={e => setDateStart(e.target.value)} className="w-36 h-9" />
             <span className="text-muted-foreground">~</span>
             <Input type="date" value={dateEnd} onChange={e => setDateEnd(e.target.value)} className="w-36 h-9" />
+            {/* 快捷按钮：避免每次手动选日期 */}
+            <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => {
+              const end = new Date()
+              const start = new Date(); start.setDate(start.getDate() - 30)
+              setDateStart(start.toISOString().slice(0, 10))
+              setDateEnd(end.toISOString().slice(0, 10))
+            }}>近30天</Button>
+            <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => {
+              const end = new Date()
+              const start = new Date(); start.setDate(start.getDate() - 90)
+              setDateStart(start.toISOString().slice(0, 10))
+              setDateEnd(end.toISOString().slice(0, 10))
+            }}>近90天</Button>
+            <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => {
+              setDateStart(''); setDateEnd('')
+            }}>全部</Button>
           </div>
         </div>
+
+        {/* 数据缺失提示：明明加载完但表格空 */}
+        {!loading && filtered.length === 0 && allCostDetails.length > 0 && (
+          <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-sm">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>当前日期范围内没有费用记录（共 {allCostDetails.length} 条费用，跨多个时段）。点"全部"或调整日期看完整数据。</span>
+          </div>
+        )}
 
         {/* 表格 */}
         <Card>
