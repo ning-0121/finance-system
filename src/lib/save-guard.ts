@@ -74,11 +74,12 @@ export async function safeUpdate<T extends Record<string, unknown>>(
 
   // 1. 构建查询（带乐观锁）
   let query = supabase.from(table).update(updates).eq('id', id)
-  if (options?.version) {
+  if (options?.version !== undefined) {
     query = query.eq('version', options.version)
   }
 
-  const { data, error } = await query.select().single()
+  // 使用 maybeSingle() 区分"0行匹配（锁冲突）"和"真实DB错误"
+  const { data, error } = await query.select().maybeSingle()
 
   if (error) {
     const msg = translateError(error.message)
@@ -88,8 +89,12 @@ export async function safeUpdate<T extends Record<string, unknown>>(
   }
 
   if (!data) {
-    // 乐观锁冲突：version不匹配
-    if (options?.showToast !== false) toast.error('保存冲突：该记录已被其他用户修改，请刷新后重试')
+    // 乐观锁冲突：version 不匹配，Supabase 返回 0 行
+    const conflictMsg = options?.version !== undefined
+      ? '保存冲突：该记录已被其他用户修改，请刷新后重试'
+      : '记录不存在或已被删除'
+    if (options?.showToast !== false) toast.error(conflictMsg)
+    console.warn(`[SaveGuard] UPDATE ${table} id=${id}: 0 rows matched (version=${options?.version ?? 'N/A'})`)
     return { success: false, error: '乐观锁冲突', verified: false }
   }
 
@@ -181,24 +186,60 @@ export async function safeDelete(
 }
 
 /**
- * 诊断日志：记录保存链路每一步的状态
+ * 诊断日志：记录保存链路每一步的状态（持久化到 save_diagnostic_logs 表）
+ * 支持追踪"前端看到成功但数据没了"、"哪一步把数据覆盖了"等场景。
  */
-export function logSaveDiagnostic(context: {
+export async function logSaveDiagnostic(context: {
   action: string
   table: string
   recordId?: string
+  actorId?: string
+  sourcePage?: string
+  apiRoute?: string
+  payloadHash?: string
+  dbHash?: string
   input?: Record<string, unknown>
   dbResult?: unknown
   error?: string
   rlsBlocked?: boolean
-}) {
+}): Promise<void> {
   const timestamp = new Date().toISOString()
+
+  // 确定状态
+  let status: 'ok' | 'mismatch' | 'rls_blocked' | 'not_found' | 'error' = 'ok'
+  if (context.rlsBlocked) status = 'rls_blocked'
+  else if (context.error?.includes('not_found') || context.error?.includes('0 rows')) status = 'not_found'
+  else if (context.payloadHash && context.dbHash && context.payloadHash !== context.dbHash) status = 'mismatch'
+  else if (context.error) status = 'error'
+
+  // console 仍保留（方便本地调试）
   console.log(`[SaveDiag ${timestamp}] ${context.action} ${context.table}`, {
     id: context.recordId,
+    status,
     error: context.error,
     rlsBlocked: context.rlsBlocked,
     inputKeys: context.input ? Object.keys(context.input) : undefined,
   })
+
+  // 持久化写入（fire-and-forget，不阻塞主流程）
+  try {
+    const supabase = createClient()
+    await supabase.from('save_diagnostic_logs').insert({
+      action:       context.action,
+      table_name:   context.table,
+      record_id:    context.recordId ?? null,
+      actor_id:     context.actorId ?? null,
+      source_page:  context.sourcePage ?? null,
+      api_route:    context.apiRoute ?? null,
+      payload_hash: context.payloadHash ?? null,
+      db_hash:      context.dbHash ?? null,
+      status,
+      error_detail: context.error ?? null,
+    })
+  } catch (diagErr) {
+    // 诊断写入失败不能影响主业务流程
+    console.error('[SaveDiag] 持久化写入失败:', diagErr)
+  }
 }
 
 /**
