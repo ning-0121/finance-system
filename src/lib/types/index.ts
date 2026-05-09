@@ -87,6 +87,10 @@ export interface BudgetOrder {
   approved_at: string | null
   notes: string | null
   attachments: string[] | null
+  /** 实际收款金额（订单币种）；若填写则优先于「订单已关闭」推断已收 */
+  ar_received_amount?: number | null
+  /** 实际收款时间 */
+  ar_received_at?: string | null
   created_at: string
   updated_at: string
 }

@@ -529,7 +529,36 @@ function mapDbBudgetOrder(row: Record<string, unknown>): BudgetOrder {
     approved_at: (row.approved_at as string) || null,
     notes: (row.notes as string) || null,
     attachments: (row.attachments as string[]) || null,
+    ar_received_amount: row.ar_received_amount != null ? Number(row.ar_received_amount) : null,
+    ar_received_at: (row.ar_received_at as string) || null,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
+  }
+}
+
+/** 登记应收账款实际收款（不改变订单审批金额字段） */
+export async function updateBudgetOrderReceivable(
+  id: string,
+  payload: { ar_received_amount: number | null; ar_received_at: string | null }
+): Promise<{ error: string | null }> {
+  if (!isSupabaseConfigured()) {
+    return { error: '当前为演示模式或未连接数据库，无法保存' }
+  }
+
+  try {
+    const supabase = createClient()
+    const { error } = await supabase
+      .from('budget_orders')
+      .update({
+        ar_received_amount: payload.ar_received_amount,
+        ar_received_at: payload.ar_received_at,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+
+    if (error) return { error: error.message }
+    return { error: null }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Unknown error' }
   }
 }

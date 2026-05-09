@@ -17,6 +17,7 @@ import { Search, Download, DollarSign, FileText, Clock, CheckCircle, Lock, Loade
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import { exportCostSummaryReport } from '@/lib/excel/export-professional'
+import { exportSupplierStatementToExcel } from '@/lib/excel/export-supplier-statement'
 
 interface SupplierLine {
   supplier: string
@@ -41,7 +42,7 @@ const STATUS_CONFIG: Record<ReportStatus, { label: string; color: string }> = {
 
 export default function SupplierReportPage() {
   const [lines, setLines] = useState<SupplierLine[]>([])
-  const [allCostDetails, setAllCostDetails] = useState<{ supplier: string; description: string; amount: number; currency: string; cost_type: string; order_no: string; created_at: string; is_paid: boolean }[]>([])
+  const [allCostDetails, setAllCostDetails] = useState<{ supplier: string; description: string; amount: number; currency: string; cost_type: string; order_no: string; internal_no: string; metronome_no: string; created_at: string; is_paid: boolean }[]>([])
   const [paidMapState, setPaidMapState] = useState<Record<string, number>>({})
   const [expandedSupplier, setExpandedSupplier] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -84,13 +85,27 @@ export default function SupplierReportPage() {
       }
 
       // 没有快照或是草稿 → 从实时数据自动汇总
-      // 加载费用和已付款数据
-      const [costRes, payRes] = await Promise.all([
-        supabase.from('cost_items').select('id, description, amount, currency, cost_type, supplier, source_module, budget_order_id, created_at, budget_orders(order_no)').order('created_at', { ascending: false }),
+      // 加载费用、已付款 + 同步订单（获取内部订单号）
+      const [costRes, payRes, syncedRes] = await Promise.all([
+        supabase.from('cost_items').select('id, description, amount, currency, cost_type, supplier, source_module, budget_order_id, created_at, budget_orders(order_no, quote_no)').order('created_at', { ascending: false }),
         supabase.from('payable_records').select('supplier_name, amount, payment_status').eq('payment_status', 'paid'),
+        // F7: 节拍器同步订单 — 用于把 cost_items 关联到内部订单号 (style_no)
+        supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null),
       ])
       const costItems = costRes.data
       const paidRecords = payRes.data
+      const syncedOrders = syncedRes.data || []
+
+      // budget_order_id → { internal_no (style_no), metronome_no (order_no) }
+      const syncMap = new Map<string, { internal_no: string; metronome_no: string }>()
+      syncedOrders.forEach(s => {
+        if (s.budget_order_id) {
+          syncMap.set(s.budget_order_id as string, {
+            internal_no: (s.style_no as string) || '',
+            metronome_no: (s.order_no as string) || '',
+          })
+        }
+      })
 
       // 按供应商汇总已付金额（来源1：payable_records + 来源2：cost_items标记为paid）
       const paidMap = new Map<string, number>()
@@ -110,23 +125,32 @@ export default function SupplierReportPage() {
 
       if (costItems?.length) {
         // 保存明细（用于导出）
-        setAllCostDetails(costItems.map(item => ({
-          supplier: (item.supplier as string) || '未指定',
-          description: item.description as string,
-          amount: item.amount as number,
-          currency: (item.currency as string) || 'CNY',
-          cost_type: item.cost_type as string,
-          order_no: (item.budget_orders as unknown as Record<string, unknown>)?.order_no as string || '',
-          created_at: item.created_at as string,
-          is_paid: (item.source_module as string) === 'paid',
-        })))
+        setAllCostDetails(costItems.map(item => {
+          const budgetOrderId = item.budget_order_id as string
+          const sync = budgetOrderId ? syncMap.get(budgetOrderId) : null
+          const bo = item.budget_orders as unknown as { order_no?: string; quote_no?: string } | null
+          const quoteFallback = bo?.quote_no ? String(bo.quote_no).trim() : ''
+          return {
+            supplier: (item.supplier as string) || '未指定',
+            description: item.description as string,
+            amount: item.amount as number,
+            currency: (item.currency as string) || 'CNY',
+            cost_type: item.cost_type as string,
+            order_no: bo?.order_no || '',
+            internal_no: sync?.internal_no || quoteFallback,
+            metronome_no: sync?.metronome_no || '',
+            created_at: item.created_at as string,
+            is_paid: (item.source_module as string) === 'paid',
+          }
+        }))
 
         // 按供应商汇总
         const supplierMap = new Map<string, { count: number; total: number; paid: number; currency: string; orders: Set<string> }>()
 
         for (const item of costItems) {
           const supplier = (item.supplier as string) || (item.description as string || '').split(' - ')[0] || '未指定供应商'
-          const orderNo = (item.budget_orders as unknown as Record<string, unknown>)?.order_no as string || ''
+          const boRow = item.budget_orders as unknown as { order_no?: string } | null
+          const orderNo = boRow?.order_no || ''
 
           const existing = supplierMap.get(supplier) || { count: 0, total: 0, paid: 0, currency: (item.currency as string) || 'CNY', orders: new Set<string>() }
           existing.count++
@@ -315,7 +339,34 @@ export default function SupplierReportPage() {
                   <Lock className="h-4 w-4 mr-1" />锁定
                 </Button>
               )}
-              {/* F5: 导出按钮去掉状态门槛 — draft 也能导，方便财务随时打印对账单 */}
+              {/* F5: 导出按钮去掉状态门槛 — draft 也能导 */}
+              {/* F7: 主按钮 = 详单对账（按内部订单号），财务核对依赖 */}
+              <Button
+                size="sm"
+                variant="default"
+                onClick={() => {
+                  // 仅导出 已选搜索/日期范围内 + filtered 供应商的明细
+                  const supplierSet = new Set(filtered.map(f => f.supplier))
+                  const detailsToExport = allCostDetails.filter(d => {
+                    if (!supplierSet.has(d.supplier)) return false
+                    if (dateStart && d.created_at < dateStart) return false
+                    if (dateEnd && d.created_at > dateEnd + 'T23:59:59') return false
+                    return true
+                  })
+                  if (detailsToExport.length === 0) {
+                    toast.error('当前条件下没有明细可导出')
+                    return
+                  }
+                  exportSupplierStatementToExcel(
+                    detailsToExport,
+                    { start: dateStart || '', end: dateEnd || '' }
+                  )
+                  toast.success(`已导出 ${supplierSet.size} 个供应商共 ${detailsToExport.length} 笔明细（按内部订单号）`)
+                }}
+                disabled={filtered.length === 0}
+              >
+                <Download className="h-4 w-4 mr-1" />导出明细对账单
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -328,11 +379,11 @@ export default function SupplierReportPage() {
                     filtered.map(s => ({ category: s.supplier, count: s.count, amount: s.total, currency: s.currency })),
                     { start: dateStart || '全部', end: dateEnd || '全部' }
                   )
-                  toast.success(`已导出 ${filtered.length} 个供应商的对账单`)
+                  toast.success(`已导出 ${filtered.length} 个供应商的汇总表`)
                 }}
                 disabled={filtered.length === 0}
               >
-                <Download className="h-4 w-4 mr-1" />导出对账单
+                <Download className="h-4 w-4 mr-1" />导出汇总表
               </Button>
               {status !== 'draft' && status !== 'locked' && (
                 <Button size="sm" variant="ghost" onClick={() => { setStatus('draft'); setSnapshotId(null); toast.info('已退回草稿') }}>
@@ -458,19 +509,21 @@ export default function SupplierReportPage() {
                                 <table className="w-full text-xs border-t border-slate-200">
                                   <thead className="bg-slate-100 border-b border-slate-200">
                                     <tr>
-                                      <th className="pl-10 pr-3 py-2 text-left font-semibold text-slate-600 w-28">费用类型</th>
-                                      <th className="px-3 py-2 text-left font-semibold text-blue-700 w-36">内部单号</th>
-                                      <th className="px-3 py-2 text-right font-semibold text-slate-600 w-28">金额</th>
+                                      <th className="pl-10 pr-3 py-2 text-left font-semibold text-blue-700 w-32">内部订单号</th>
+                                      <th className="px-3 py-2 text-left font-semibold text-slate-500 w-32">财务订单号</th>
+                                      <th className="px-3 py-2 text-left font-semibold text-slate-600 w-24">费用类型</th>
+                                      <th className="px-3 py-2 text-right font-semibold text-slate-600 w-24">金额</th>
                                       <th className="px-3 py-2 text-left font-semibold text-slate-600">描述</th>
-                                      <th className="px-3 py-2 text-center font-semibold text-slate-600 w-16">付款</th>
-                                      <th className="px-3 py-2 text-left font-semibold text-slate-600 w-24">日期</th>
+                                      <th className="px-3 py-2 text-center font-semibold text-slate-600 w-14">付款</th>
+                                      <th className="px-3 py-2 text-left font-semibold text-slate-600 w-22">日期</th>
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {details.map((d, di) => (
                                       <tr key={di} className="border-t border-slate-100 hover:bg-white">
-                                        <td className="pl-10 pr-3 py-1.5 text-muted-foreground">{d.cost_type}</td>
-                                        <td className="px-3 py-1.5 font-mono font-semibold text-blue-700">{d.order_no || <span className="text-muted-foreground">—</span>}</td>
+                                        <td className="pl-10 pr-3 py-1.5 font-mono font-semibold text-blue-700">{d.internal_no || <span className="text-muted-foreground font-normal">—</span>}</td>
+                                        <td className="px-3 py-1.5 font-mono text-xs text-slate-500">{d.order_no || <span className="text-muted-foreground">—</span>}</td>
+                                        <td className="px-3 py-1.5 text-muted-foreground">{d.cost_type}</td>
                                         <td className="px-3 py-1.5 text-right tabular-nums">¥{d.amount.toLocaleString()}</td>
                                         <td className="px-3 py-1.5 text-muted-foreground">{d.description}</td>
                                         <td className="px-3 py-1.5 text-center">
@@ -488,8 +541,8 @@ export default function SupplierReportPage() {
                                 <Button size="sm" variant="ghost" className="text-xs h-6" onClick={(e) => {
                                   e.stopPropagation()
                                   const period = dateStart && dateEnd ? `${dateStart}~${dateEnd}` : '全部'
-                                  const csv = ['供应商,费用类型,内部单号,金额,币种,描述,付款状态,日期']
-                                  details.forEach(d => csv.push(`${d.supplier},${d.cost_type},${d.order_no},${d.amount},${d.currency},${d.description},${d.is_paid ? '已付' : '未付'},${new Date(d.created_at).toLocaleDateString('zh-CN')}`))
+                                  const csv = ['供应商,内部订单号,节拍器订单号,财务订单号,费用类型,金额,币种,描述,付款状态,日期']
+                                  details.forEach(d => csv.push(`${d.supplier},${d.internal_no || ''},${d.metronome_no || ''},${d.order_no || ''},${d.cost_type},${d.amount},${d.currency},"${(d.description || '').replace(/"/g, '""')}",${d.is_paid ? '已付' : '未付'},${new Date(d.created_at).toLocaleDateString('zh-CN')}`))
                                   const blob = new Blob(['\uFEFF' + csv.join('\n')], { type: 'text/csv;charset=utf-8' })
                                   const url = URL.createObjectURL(blob)
                                   const a = document.createElement('a')

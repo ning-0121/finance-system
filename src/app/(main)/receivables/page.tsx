@@ -10,14 +10,20 @@ import {
 } from '@/components/ui/table'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
-  DollarSign, AlertTriangle, Clock, CheckCircle, Search, TrendingDown, Loader2,
+  DollarSign, AlertTriangle, Clock, Search, TrendingDown, Loader2,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
-import { getBudgetOrders } from '@/lib/supabase/queries'
+import { getBudgetOrders, updateBudgetOrderReceivable } from '@/lib/supabase/queries'
 import Link from 'next/link'
 import type { BudgetOrder } from '@/lib/types'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog'
+import { Label } from '@/components/ui/label'
+import { toast } from 'sonner'
 
 type ReceivableRow = {
   id: string
@@ -32,6 +38,7 @@ type ReceivableRow = {
   dueDate: string
   status: 'paid' | 'partial' | 'unpaid' | 'overdue'
   agingDays: number
+  receivedAt: string | null
 }
 
 const agingBuckets = [
@@ -60,8 +67,10 @@ function buildReceivables(orders: BudgetOrder[]): ReceivableRow[] {
       const isPastDue = now > dueDate
       const agingDays = isPastDue ? Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24)) : 0
 
-      // 已关闭的订单视为已收款
-      const paid = o.status === 'closed' ? o.total_revenue : 0
+      const explicit = o.ar_received_amount != null && !Number.isNaN(Number(o.ar_received_amount))
+      const paid = explicit
+        ? Math.min(Math.max(0, Number(o.ar_received_amount)), o.total_revenue)
+        : (o.status === 'closed' ? o.total_revenue : 0)
       const balance = o.total_revenue - paid
       let status: ReceivableRow['status'] = 'unpaid'
       if (paid >= o.total_revenue) status = 'paid'
@@ -81,6 +90,7 @@ function buildReceivables(orders: BudgetOrder[]): ReceivableRow[] {
         dueDate: dueDate.toISOString().substring(0, 10),
         status,
         agingDays,
+        receivedAt: o.ar_received_at || null,
       }
     })
 }
@@ -94,6 +104,11 @@ export default function ReceivablesPage() {
   const [allOrderCount, setAllOrderCount] = useState(0)
   const [draftCount, setDraftCount] = useState(0)
 
+  const [receiptDialog, setReceiptDialog] = useState<ReceivableRow | null>(null)
+  const [receiptAmount, setReceiptAmount] = useState('')
+  const [receiptDate, setReceiptDate] = useState('')
+  const [receiptSaving, setReceiptSaving] = useState(false)
+
   useEffect(() => {
     async function load() {
       try {
@@ -106,6 +121,36 @@ export default function ReceivablesPage() {
     }
     load()
   }, [])
+
+  async function saveReceipt() {
+    if (!receiptDialog) return
+    const amt = Number(receiptAmount)
+    if (receiptAmount === '' || Number.isNaN(amt) || amt < 0) {
+      toast.error('请输入有效的收款金额')
+      return
+    }
+    setReceiptSaving(true)
+    const at = receiptDate
+      ? new Date(receiptDate + 'T12:00:00').toISOString()
+      : null
+    const { error } = await updateBudgetOrderReceivable(receiptDialog.id, {
+      ar_received_amount: amt,
+      ar_received_at: at,
+    })
+    setReceiptSaving(false)
+    if (error) {
+      toast.error(error)
+      return
+    }
+    toast.success('收款信息已保存')
+    setReceiptDialog(null)
+    setReceiptAmount('')
+    setReceiptDate('')
+    try {
+      const orders = await getBudgetOrders()
+      setReceivables(buildReceivables(orders))
+    } catch { /* empty */ }
+  }
 
   const unpaid = receivables.filter(r => r.status !== 'paid')
   const overdue = receivables.filter(r => r.status === 'overdue')
@@ -236,7 +281,9 @@ export default function ReceivablesPage() {
                   <TableHead className="text-right">余额</TableHead>
                   <TableHead>到期日</TableHead>
                   <TableHead>账龄</TableHead>
+                  <TableHead>实际收款日</TableHead>
                   <TableHead>状态</TableHead>
+                  <TableHead className="text-right w-[100px]">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -263,13 +310,30 @@ export default function ReceivablesPage() {
                           </span>
                         ) : '-'}
                       </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {r.receivedAt ? new Date(r.receivedAt).toLocaleDateString('zh-CN') : '—'}
+                      </TableCell>
                       <TableCell><Badge variant={sc.variant}>{sc.label}</Badge></TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={() => {
+                            setReceiptDialog(r)
+                            setReceiptAmount(String(r.paid))
+                            setReceiptDate(r.receivedAt ? r.receivedAt.slice(0, 10) : new Date().toISOString().slice(0, 10))
+                          }}
+                        >
+                          登记收款
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   )
                 })}
                 {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                    <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">
                       {receivables.length === 0 ? '暂无已审批订单，应收数据将在订单审批通过后自动生成' : '没有匹配的记录'}
                     </TableCell>
                   </TableRow>
@@ -279,6 +343,44 @@ export default function ReceivablesPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={!!receiptDialog} onOpenChange={(open) => { if (!open) setReceiptDialog(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>登记实际收款</DialogTitle>
+          </DialogHeader>
+          {receiptDialog && (
+            <div className="space-y-3 py-2">
+              <p className="text-sm text-muted-foreground">
+                订单 {receiptDialog.orderNo} · 应收 {receiptDialog.currency} {receiptDialog.amount.toLocaleString()}
+              </p>
+              <div className="space-y-2">
+                <Label>实际收款金额（{receiptDialog.currency}）</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  value={receiptAmount}
+                  onChange={e => setReceiptAmount(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>实际收款日期</Label>
+                <Input type="date" value={receiptDate} onChange={e => setReceiptDate(e.target.value)} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                未手动登记时，「已关闭」订单仍按原逻辑视为全额已收。登记后以此金额与日期为准。
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReceiptDialog(null)}>取消</Button>
+            <Button onClick={saveReceipt} disabled={receiptSaving}>
+              {receiptSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : '保存'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

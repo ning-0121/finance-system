@@ -25,6 +25,7 @@ import { getBudgetOrders } from '@/lib/supabase/queries'
 import { createClient } from '@/lib/supabase/client'
 import type { BudgetOrder, CostType } from '@/lib/types'
 import { validateCostEntry, type ValidationWarning } from '@/lib/engines/validation-engine'
+import { allocateAmountByOrderQty, orderTotalQty } from '@/lib/engines/cost-allocation'
 
 const costTypeConfig: Record<CostType, { label: string; icon: typeof Ship; color: string }> = {
   fabric: { label: '面料', icon: Package, color: 'bg-rose-100 text-rose-700' },
@@ -81,6 +82,9 @@ export default function CostsPage() {
   const [formRate, setFormRate] = useState('1')
   const [formPaid, setFormPaid] = useState(false)
   const [editItem, setEditItem] = useState<CostRecord | null>(null)
+  /** 单订单录入 | 多订单按件数比例分摊 */
+  const [entryMode, setEntryMode] = useState<'single' | 'shared'>('single')
+  const [sharedOrderIds, setSharedOrderIds] = useState<string[]>([])
   // 多行明细（同一供应商多个品目）
   const [extraLines, setExtraLines] = useState<{ desc: string; qty: string; unit: string; unitPrice: string; amount: string }[]>([])
   // 防错校验
@@ -178,7 +182,16 @@ export default function CostsPage() {
   // 防错校验 → 有error阻止，有warning弹确认
   const runValidation = useCallback(() => {
     const amt = Number(formAmount) || 0
-    const order = orders.find(o => o.id === formOrderId)
+    let orderRevenue: number | undefined
+    if (entryMode === 'shared' && sharedOrderIds.length > 0) {
+      orderRevenue = sharedOrderIds.reduce((s, id) => {
+        const o = orders.find(x => x.id === id)
+        return s + (o ? o.total_revenue * (o.exchange_rate || 1) : 0)
+      }, 0)
+    } else {
+      const order = orders.find(o => o.id === formOrderId)
+      orderRevenue = order ? order.total_revenue * (order.exchange_rate || 1) : undefined
+    }
     const warnings = validateCostEntry({
       amount: amt,
       description: formDesc,
@@ -186,15 +199,19 @@ export default function CostsPage() {
       costType: formType,
       currency: formCurrency,
       exchangeRate: Number(formRate) || 1,
-      orderRevenue: order ? order.total_revenue * (order.exchange_rate || 1) : undefined,
+      orderRevenue,
       existingCosts: costItems.map(c => ({ supplier: c.supplier || '', description: c.description, amount: c.amount })),
     })
     return warnings
-  }, [formAmount, formDesc, formSupplier, formType, formCurrency, formRate, formOrderId, orders, costItems])
+  }, [formAmount, formDesc, formSupplier, formType, formCurrency, formRate, formOrderId, orders, costItems, entryMode, sharedOrderIds])
 
   const handleSaveWithValidation = () => {
     if (!formDesc.trim()) { toast.error('请输入费用描述'); return }
     if (!formAmount || Number(formAmount) <= 0) { toast.error('请输入有效金额'); return }
+    if (!editItem && entryMode === 'shared' && sharedOrderIds.length < 2) {
+      toast.error('多订单分摊请至少选择 2 个订单')
+      return
+    }
 
     // 自动trim供应商名称
     if (formSupplier !== formSupplier.trim()) setFormSupplier(formSupplier.trim())
@@ -225,6 +242,84 @@ export default function CostsPage() {
       const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
       const createdBy = profiles?.[0]?.id
       if (!createdBy) { toast.error('无法获取用户信息'); setSaving(false); return }
+
+      if (!editItem && entryMode === 'shared') {
+        if (sharedOrderIds.length < 2) {
+          toast.error('请至少选择 2 个订单')
+          setSaving(false)
+          return
+        }
+        const totalAmt = Number(formAmount)
+        if (!totalAmt || totalAmt <= 0) {
+          toast.error('请输入有效总金额')
+          setSaving(false)
+          return
+        }
+        const splits = allocateAmountByOrderQty(totalAmt, sharedOrderIds, orders)
+        const newRows: CostRecord[] = []
+        for (const sp of splits) {
+          const pctLabel = totalAmt > 0 ? ((sp.amount / totalAmt) * 100).toFixed(1) : '0'
+          const desc = `${formDesc.trim()}（多订单按件数分摊 · ${pctLabel}% · 权重件数 ${sp.qty}）`
+          const metaObj: Record<string, unknown> = {
+            shared_split: true,
+            shared_qty_weight: sp.qty,
+            shared_total_orders: sharedOrderIds.length,
+          }
+          if (formQty || formUnitPrice) {
+            metaObj.qty = Number(formQty) || 0
+            metaObj.unit = formUnit
+            metaObj.unit_price = Number(formUnitPrice) || 0
+          }
+          const record = {
+            budget_order_id: sp.orderId,
+            cost_type: formType,
+            description: desc,
+            amount: sp.amount,
+            currency: formCurrency,
+            exchange_rate: Number(formRate),
+            supplier: formSupplier || null,
+            source_module: formPaid ? 'paid' : null,
+            source_id: JSON.stringify(metaObj),
+          }
+          const res = await supabase.from('cost_items').insert({ ...record, created_by: createdBy }).select('*, budget_orders(order_no)').single()
+          if (res.error) throw res.error
+          const data = res.data as Record<string, unknown>
+          let savedMeta: CostRecord['detail_meta']
+          try {
+            if (data.source_id) savedMeta = JSON.parse(data.source_id as string)
+          } catch { /* */ }
+          newRows.push({
+            id: data.id as string,
+            budget_order_id: data.budget_order_id as string | null,
+            order_no: (data.budget_orders as Record<string, unknown>)?.order_no as string | undefined,
+            supplier: data.supplier as string | undefined,
+            cost_type: data.cost_type as CostType,
+            description: data.description as string,
+            amount: data.amount as number,
+            currency: data.currency as string,
+            exchange_rate: data.exchange_rate as number,
+            is_paid: data.source_module === 'paid',
+            detail_meta: savedMeta,
+            created_at: data.created_at as string,
+          })
+        }
+        setCostItems([...newRows, ...costItems])
+        toast.success(`已按订单件数比例分摊录入 ${newRows.length} 笔`)
+        setSaving(false)
+        setShowAdd(false)
+        setEntryMode('single')
+        setSharedOrderIds([])
+        setFormSupplier('')
+        setFormDesc('')
+        setFormQty('')
+        setFormUnitPrice('')
+        setFormUnit('件')
+        setFormAmount('')
+        setFormOrderId('')
+        setFormPaid(false)
+        setExtraLines([])
+        return
+      }
 
       // 把数量/单价/单位存入source_id字段（JSON格式，因为表没有独立列）
       const detailMeta = (formQty || formUnitPrice) ? JSON.stringify({ qty: Number(formQty) || 0, unit: formUnit, unit_price: Number(formUnitPrice) || 0 }) : null
@@ -453,7 +548,13 @@ export default function CostsPage() {
             <Button size="sm" variant="outline" onClick={() => setShowImport(true)}>
               <Upload className="h-4 w-4 mr-1" />批量导入
             </Button>
-            <Button size="sm" onClick={() => setShowAdd(true)}>
+            <Button size="sm" onClick={() => {
+              setEditItem(null)
+              setEntryMode('single')
+              setSharedOrderIds([])
+              setShowAdd(true)
+            }}
+            >
               <Plus className="h-4 w-4 mr-1" />录入费用
             </Button>
           </div>
@@ -514,6 +615,8 @@ export default function CostsPage() {
                         <TableCell className="text-center space-x-1">
                           <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => {
                             setEditItem(item)
+                            setEntryMode('single')
+                            setSharedOrderIds([])
                             setFormType(item.cost_type)
                             setFormSupplier(item.supplier || '')
                             setFormDesc(item.description)
@@ -561,10 +664,83 @@ export default function CostsPage() {
       />
 
       {/* 录入费用弹窗 */}
-      <Dialog open={showAdd} onOpenChange={(open) => { setShowAdd(open); if (!open) setEditItem(null) }}>
+      <Dialog open={showAdd} onOpenChange={(open) => {
+        setShowAdd(open)
+        if (!open) {
+          setEditItem(null)
+          setEntryMode('single')
+          setSharedOrderIds([])
+        }
+      }}
+      >
         <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editItem ? '编辑费用' : '录入费用'}</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
+            {!editItem && (
+              <div className="flex rounded-lg border p-1 bg-muted/40 gap-1">
+                <button
+                  type="button"
+                  className={`flex-1 text-sm py-2 rounded-md transition-colors ${entryMode === 'single' ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+                  onClick={() => setEntryMode('single')}
+                >
+                  单订单
+                </button>
+                <button
+                  type="button"
+                  className={`flex-1 text-sm py-2 rounded-md transition-colors ${entryMode === 'shared' ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+                  onClick={() => {
+                    setEntryMode('shared')
+                    setExtraLines([])
+                    setFormOrderId('')
+                  }}
+                >
+                  多订单分摊
+                </button>
+              </div>
+            )}
+            {entryMode === 'shared' && !editItem && (
+              <div className="rounded-lg border p-3 space-y-2 max-h-[220px] overflow-y-auto">
+                <Label className="text-xs text-muted-foreground">勾选多个订单，总金额将按各订单明细「件数」合计占比分配（件数均为 0 时平均分配）</Label>
+                <div className="space-y-1">
+                  {orders.filter(o => o.status === 'approved' || o.status === 'closed').map(o => {
+                    const checked = sharedOrderIds.includes(o.id)
+                    const label = syncedOrderMap[o.id] || o.order_no
+                    const q = orderTotalQty(o)
+                    return (
+                      <label key={o.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 rounded px-1 py-0.5">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setSharedOrderIds(prev =>
+                              checked ? prev.filter(id => id !== o.id) : [...prev, o.id],
+                            )
+                          }}
+                          className="rounded border-muted-foreground"
+                        />
+                        <span className="flex-1 truncate">{label}</span>
+                        <span className="text-xs text-muted-foreground tabular-nums">{q} 件</span>
+                      </label>
+                    )
+                  })}
+                </div>
+                {sharedOrderIds.length >= 2 && formAmount && Number(formAmount) > 0 && (
+                  <div className="text-xs border-t pt-2 mt-2 space-y-1 text-muted-foreground">
+                    <p className="font-medium text-foreground">预览分摊（¥{Number(formAmount).toLocaleString()}）</p>
+                    {allocateAmountByOrderQty(Number(formAmount), sharedOrderIds, orders).map(s => {
+                      const o = orders.find(x => x.id === s.orderId)
+                      const lab = o ? (syncedOrderMap[o.id] || o.order_no) : s.orderId
+                      return (
+                        <div key={s.orderId} className="flex justify-between gap-2">
+                          <span className="truncate">{lab}</span>
+                          <span>¥{s.amount.toLocaleString()}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>费用类型</Label>
@@ -582,11 +758,12 @@ export default function CostsPage() {
                 <div className="relative">
                   <Input
                     placeholder="输入内部单号/订单号/客户名搜索..."
+                    disabled={entryMode === 'shared' && !editItem}
                     value={formOrderId ? (syncedOrderMap[formOrderId] || orders.find(o => o.id === formOrderId)?.order_no || formOrderId) : orderSearch}
                     onChange={(e) => { setOrderSearch(e.target.value); setFormOrderId('') }}
                     onFocus={() => setShowOrderList(true)}
                   />
-                  {showOrderList && (
+                  {showOrderList && !(entryMode === 'shared' && !editItem) && (
                     <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-white border rounded-lg shadow-lg max-h-[200px] overflow-y-auto">
                       {orders
                         .filter(o => {
@@ -608,6 +785,9 @@ export default function CostsPage() {
                   )}
                 </div>
                 {formOrderId && <button className="text-xs text-muted-foreground hover:text-red-500" onClick={() => setFormOrderId('')}>清除关联</button>}
+                {entryMode === 'shared' && !editItem && (
+                  <p className="text-xs text-muted-foreground">多订单模式请在上方勾选订单，此处无需选择。</p>
+                )}
               </div>
             </div>
             <div className="space-y-2">
@@ -663,8 +843,8 @@ export default function CostsPage() {
                 <Input type="number" step="0.01" value={formRate} onChange={e => setFormRate(e.target.value)} disabled={formCurrency === 'CNY'} />
               </div>
             </div>
-            {/* 额外明细行（同一供应商多个品目） */}
-            {extraLines.map((line, idx) => (
+            {/* 额外明细行（同一供应商多个品目）；多订单分摊不支持品目拆行 */}
+            {!(entryMode === 'shared' && !editItem) && extraLines.map((line, idx) => (
               <div key={idx} className="bg-muted/30 p-3 rounded space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-muted-foreground font-medium">品目 {idx + 2}</span>
@@ -703,9 +883,11 @@ export default function CostsPage() {
                 </div>
               </div>
             ))}
+            {!(entryMode === 'shared' && !editItem) && (
             <Button type="button" size="sm" variant="outline" className="w-full text-xs h-7" onClick={() => setExtraLines([...extraLines, { desc: '', qty: '', unit: '件', unitPrice: '', amount: '' }])}>
               + 添加更多品目（同一供应商）
             </Button>
+            )}
             <div className="flex items-center gap-2">
               <input type="checkbox" id="formPaid" checked={formPaid} onChange={e => setFormPaid(e.target.checked)} className="rounded" />
               <Label htmlFor="formPaid" className="text-sm cursor-pointer">已付款</Label>

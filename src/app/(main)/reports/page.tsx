@@ -3,9 +3,16 @@
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent } from '@/components/ui/card'
 import Link from 'next/link'
-import { Factory, Users, UserCheck, FileText, ArrowRight } from 'lucide-react'
+import { Factory, Users, UserCheck, FileText, ArrowRight, TrendingUp } from 'lucide-react'
 
 const reports = [
+  {
+    title: '订单实际毛利表',
+    description: '按实际收款与费用归集计算单笔订单毛利（区别于预算订单成本核算）',
+    href: '/reports/actual-gross',
+    icon: TrendingUp,
+    color: 'bg-emerald-50 text-emerald-600',
+  },
   {
     title: '供应商对账单',
     description: '按供应商自动汇总所有订单的采购/加工费用，支持按时间/供应商筛选',

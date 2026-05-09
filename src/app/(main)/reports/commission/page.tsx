@@ -27,9 +27,13 @@ export default function CommissionReportPage() {
             </div>
           </div>
           <Button variant="outline" size="sm" onClick={() => {
+            // 默认导出当月（动态），避免写死 4 月把后续月份数据排除
+            const now = new Date()
+            const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10)
+            const end = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10)
             exportCostSummaryReport(
               demoCommissions.map(c => ({ category: `${c.name}(${c.role})`, count: c.orders, amount: c.commission, currency: c.currency })),
-              { start: '2026-04-01', end: '2026-04-30' }
+              { start, end }
             )
             toast.success('提成单已导出')
           }}>
