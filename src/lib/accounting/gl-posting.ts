@@ -1,6 +1,6 @@
 // 总账自动记账模块 — 业务单据→记账凭证
 // 对标金蝶/用友的自动凭证生成
-import { createClient } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/server'
 import type { BudgetOrder } from '@/lib/types'
 import { safeRate, sumAmounts, mulAmount } from './utils'
 
@@ -26,7 +26,8 @@ function getPeriodCode(date?: string): string {
 }
 
 /**
- * 创建记账凭证（含明细行）
+ * 原子创建记账凭证（header + lines 在同一 DB 事务内）
+ * 通过 RPC create_journal_atomic 消除"header 写成功但 lines 失败"的孤立凭证风险。
  */
 async function createJournal(params: {
   periodCode: string
@@ -37,7 +38,7 @@ async function createJournal(params: {
   lines: JournalLine[]
   createdBy?: string
 }) {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // 获取创建者
   let createdBy = params.createdBy
@@ -45,70 +46,50 @@ async function createJournal(params: {
     const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
     createdBy = profiles?.[0]?.id
   }
+  if (!createdBy) throw new Error('无法确定凭证创建者，请确认用户已登录')
 
   // 精确累加（Decimal.js 避免浮点误差导致借贷不平衡误判）
   const totalDebit = sumAmounts(params.lines.map(l => l.debit))
   const totalCredit = sumAmounts(params.lines.map(l => l.credit))
 
-  // 借贷必须平衡（容差收紧到 0.001，Decimal 确保精度）
+  // 预检借贷平衡（RPC 内也会检查，此处提前报错提升可读性）
   if (Math.abs(totalDebit - totalCredit) > 0.001) {
     throw new Error(`凭证借贷不平衡: 借方${totalDebit} ≠ 贷方${totalCredit}`)
   }
 
-  // 检查期间是否开放
-  const { data: period } = await supabase
-    .from('accounting_periods')
-    .select('status')
-    .eq('period_code', params.periodCode)
-    .single()
-
-  if (period?.status === 'closed') {
-    throw new Error(`会计期间 ${params.periodCode} 已关闭`)
-  }
-
-  // 创建凭证（凭证号由触发器自动生成）
-  const { data: journal, error: journalErr } = await supabase
-    .from('journal_entries')
-    .insert({
-      voucher_no: '', // 触发器自动填充
-      period_code: params.periodCode,
-      voucher_date: params.date,
-      voucher_type: 'auto',
-      description: params.description,
-      source_type: params.sourceType,
-      source_id: params.sourceId,
-      total_debit: totalDebit,
-      total_credit: totalCredit,
-      status: 'posted', // 自动凭证直接过账
-      created_by: createdBy,
-      posted_by: createdBy,
-      posted_at: new Date().toISOString(),
-    })
-    .select('id, voucher_no')
-    .single()
-
-  if (journalErr) throw new Error(`创建凭证失败: ${journalErr.message}`)
-
-  // 创建明细行
-  const lines = params.lines.map((line, idx) => ({
-    journal_id: journal.id,
+  // 构建明细行 JSON（mulAmount 确保每行精度）
+  const linesJson = params.lines.map((line, idx) => ({
     line_no: idx + 1,
     account_code: line.account_code,
-    description: line.description,
+    description: line.description ?? '',
     debit: mulAmount(line.debit, 1),
     credit: mulAmount(line.credit, 1),
-    currency: line.currency || 'CNY',
-    exchange_rate: line.exchange_rate || 1,
-    original_amount: line.original_amount,
-    customer_id: line.customer_id,
-    supplier_name: line.supplier_name,
-    order_id: line.order_id,
+    currency: line.currency ?? 'CNY',
+    exchange_rate: line.exchange_rate ?? 1,
+    original_amount: line.original_amount ?? null,
+    customer_id: line.customer_id ?? null,
+    supplier_name: line.supplier_name ?? null,
+    order_id: line.order_id ?? null,
   }))
 
-  const { error: linesErr } = await supabase.from('journal_lines').insert(lines)
-  if (linesErr) throw new Error(`创建凭证明细失败: ${linesErr.message}`)
+  // 调用原子 RPC —— header + lines 在同一事务，任何失败整体回滚
+  const { data, error } = await supabase.rpc('create_journal_atomic', {
+    p_period_code:  params.periodCode,
+    p_date:         params.date,
+    p_description:  params.description,
+    p_source_type:  params.sourceType,
+    p_source_id:    params.sourceId,
+    p_total_debit:  totalDebit,
+    p_total_credit: totalCredit,
+    p_voucher_type: 'auto',
+    p_created_by:   createdBy,
+    p_lines:        linesJson,
+  })
 
-  return { journalId: journal.id, voucherNo: journal.voucher_no }
+  if (error) throw new Error(`创建凭证失败: ${error.message}`)
+
+  const result = data as { journal_id: string; voucher_no: string }
+  return { journalId: result.journal_id, voucherNo: result.voucher_no }
 }
 
 /**

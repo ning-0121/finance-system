@@ -8,8 +8,9 @@ import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
 
 // 财务凭证类表：回滚时软删除（标记 deleted_at）而非物理删除
+// 与 save-guard.ts SOFT_DELETE_TABLES 保持一致
 const SOFT_DELETE_ROLLBACK_TABLES = new Set([
-  'actual_invoices', 'cost_items', 'payable_records',
+  'actual_invoices', 'cost_items', 'payable_records', 'cashflow_forecasts',
 ])
 
 export async function POST(request: Request) {
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
       'actual_invoices', 'cost_items', 'pending_approvals',
       'receivable_records', 'payment_records', 'shipping_documents',
       'financial_agent_actions', 'document_actions',
+      'payable_records', 'cashflow_forecasts',
     ])
 
     // 逆序回滚已成功的动作

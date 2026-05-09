@@ -35,6 +35,7 @@ export interface StyleResult {
 
 export interface OrderStyleRow {
   qty: number
+  sellingPriceUsd: number  // selling_price_per_piece_usd — 收入计算必须字段
   styleResult: StyleResult
 }
 
@@ -141,15 +142,15 @@ export function calculateOrderProfit(styles: OrderStyleRow[]): OrderProfit {
     return { total_qty: 0, sales_amount_usd: 0, total_cost_usd: 0, gross_profit_usd: 0, gross_margin: 0 }
   }
 
-  let totalQty = new Decimal(0)
+  let totalQty   = new Decimal(0)
   let totalSales = new Decimal(0)
-  let totalCost = new Decimal(0)
+  let totalCost  = new Decimal(0)
 
-  for (const { qty, styleResult } of styles) {
+  for (const { qty, sellingPriceUsd, styleResult } of styles) {
     const q = new Decimal(qty)
-    totalQty = totalQty.plus(q)
-    // Note: selling_price_per_piece_usd is not in StyleResult — caller must pass it
-    totalCost = totalCost.plus(q.mul(styleResult.total_cost_per_piece_usd))
+    totalQty   = totalQty.plus(q)
+    totalSales = totalSales.plus(q.mul(new Decimal(sellingPriceUsd)))
+    totalCost  = totalCost.plus(q.mul(new Decimal(styleResult.total_cost_per_piece_usd)))
   }
 
   const grossProfit = totalSales.minus(totalCost)

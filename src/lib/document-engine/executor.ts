@@ -224,40 +224,87 @@ async function executeSingleAction(
   switch (config.action_type) {
     case 'create_order':
     case 'create_budget': {
+      // 必须有客户信息才能创建订单
+      const customerName = String(f.customer_name || '')
+      if (!customerName) throw new Error('create_order: 文档中缺少客户名称，无法创建预算单')
+      if (!confirmedBy) throw new Error('create_order: 操作者 ID 不能为空')
+
+      // 按名称查找客户
+      const { data: customerRows } = await supabase
+        .from('customers')
+        .select('id')
+        .ilike('company', `%${customerName}%`)
+        .limit(1)
+      if (!customerRows?.length) {
+        throw new Error(`create_order: 未找到客户"${customerName}"，请先在档案中创建该客户`)
+      }
+      const customerId = customerRows[0].id
+
       // 幂等：检查是否已创建
       const poNo = (f.po_number || f.order_no || '') as string
       if (poNo) {
         const { data: existing } = await supabase.from('budget_orders').select('id').ilike('notes', `%${poNo}%`).limit(1)
-        if (existing?.length) return existing[0].id // 已存在，跳过
+        if (existing?.length) return existing[0].id
       }
       const { data, error } = await supabase.from('budget_orders').insert({
         order_no: '',
-        customer_id: '00000000-0000-0000-0000-000000000000',
+        customer_id: customerId,
         total_revenue: Number(f.total_amount) || 0,
         currency: String(f.currency || 'USD'),
         status: 'draft',
-        created_by: confirmedBy || '00000000-0000-0000-0000-000000000000',
-        notes: `来源: 文档智能导入\nPO: ${f.po_number || ''}\n客户: ${f.customer_name || ''}`,
+        created_by: confirmedBy,
+        notes: `来源: 文档智能导入\nPO: ${f.po_number || ''}\n客户: ${customerName}`,
       }).select('id').single()
       if (error) throw new Error(error.message)
       return data?.id || null
     }
 
     case 'create_payment_request': {
+      if (!confirmedBy) throw new Error('create_payment_request: 操作者 ID 不能为空')
+
+      // 必须有供应商信息
+      const supplierName = String(f.supplier_name || f.logistics_company || '')
+      if (!supplierName) throw new Error('create_payment_request: 文档中缺少供应商名称')
+
       // 幂等：检查发票号
       const invNo = (f.invoice_no || `DOC-${documentId.slice(0, 8)}`) as string
       const { data: existing } = await supabase.from('actual_invoices').select('id').eq('invoice_no', invNo).limit(1)
       if (existing?.length) return existing[0].id
 
+      // 尝试从文档中找到关联订单（有则关联，无则草稿挂起等待人工关联）
+      let budgetOrderId: string | null = null
+      const poRef = String(f.po_number || f.order_no || '')
+      if (poRef) {
+        const { data: orderRows } = await supabase
+          .from('budget_orders')
+          .select('id')
+          .ilike('notes', `%${poRef}%`)
+          .limit(1)
+        budgetOrderId = orderRows?.[0]?.id ?? null
+      }
+      if (!budgetOrderId) {
+        // 查找该供应商最近的 draft 订单作为关联
+        const { data: recentOrder } = await supabase
+          .from('budget_orders')
+          .select('id')
+          .eq('status', 'draft')
+          .order('created_at', { ascending: false })
+          .limit(1)
+        budgetOrderId = recentOrder?.[0]?.id ?? null
+      }
+      if (!budgetOrderId) {
+        throw new Error(`create_payment_request: 无法找到关联的预算单（供应商: ${supplierName}，PO: ${poRef || '未知'}）。请先创建对应预算单。`)
+      }
+
       const { data, error } = await supabase.from('actual_invoices').insert({
-        budget_order_id: '00000000-0000-0000-0000-000000000000',
+        budget_order_id: budgetOrderId,
         invoice_type: 'supplier_invoice',
         invoice_no: invNo,
-        supplier_name: String(f.supplier_name || f.logistics_company || ''),
+        supplier_name: supplierName,
         total_amount: Number(f.total_amount || f.amount || 0),
         currency: String(f.currency || 'USD'),
         status: 'pending',
-        created_by: confirmedBy || '00000000-0000-0000-0000-000000000000',
+        created_by: confirmedBy,
       }).select('id').single()
       if (error) throw new Error(error.message)
       return data?.id || null
@@ -279,17 +326,41 @@ async function executeSingleAction(
     }
 
     case 'update_receivable': {
-      // 记录回款
+      if (!confirmedBy) throw new Error('update_receivable: 操作者 ID 不能为空')
+      const payerName = String(f.payer_name || f.customer_name || '')
+      if (!payerName) throw new Error('update_receivable: 文档中缺少付款方名称')
+
+      // 尝试找到关联订单（按客户名）
+      let recvOrderId: string | null = null
+      const { data: custRows } = await supabase
+        .from('customers')
+        .select('id')
+        .ilike('company', `%${payerName}%`)
+        .limit(1)
+      if (custRows?.length) {
+        const { data: orderRows } = await supabase
+          .from('budget_orders')
+          .select('id')
+          .eq('customer_id', custRows[0].id)
+          .in('status', ['approved', 'draft'])
+          .order('created_at', { ascending: false })
+          .limit(1)
+        recvOrderId = orderRows?.[0]?.id ?? null
+      }
+      if (!recvOrderId) {
+        throw new Error(`update_receivable: 未找到客户"${payerName}"的关联订单，请先确认订单存在`)
+      }
+
       const { data, error } = await supabase.from('actual_invoices').insert({
-        budget_order_id: '00000000-0000-0000-0000-000000000000',
+        budget_order_id: recvOrderId,
         invoice_type: 'customer_statement',
         invoice_no: `RCV-${Date.now().toString(36)}`,
-        supplier_name: String(f.payer_name || f.customer_name || ''),
+        supplier_name: payerName,
         total_amount: Number(f.amount || f.total_amount || 0),
         currency: String(f.currency || 'USD'),
         status: 'paid',
         invoice_date: (f.transaction_date as string) || new Date().toISOString().split('T')[0],
-        created_by: confirmedBy || '00000000-0000-0000-0000-000000000000',
+        created_by: confirmedBy,
       }).select('id').single()
       if (error) throw new Error(error.message)
       return data?.id || null
@@ -321,8 +392,25 @@ async function executeSingleAction(
     }
 
     case 'update_shipping_status': {
-      // 简化：记录出货更新
-      return null // shipping状态更新需要具体order_id，暂跳过
+      // 需要明确的订单号才能更新出货状态
+      const shipOrderRef = String(f.po_number || f.order_no || f.bl_no || '')
+      if (!shipOrderRef) throw new Error('update_shipping_status: 文档中缺少订单号或提单号，无法更新出货状态')
+      // 查找对应出货单
+      const { data: shipRows } = await supabase
+        .from('shipping_documents')
+        .select('id, status')
+        .ilike('document_no', `%${shipOrderRef}%`)
+        .limit(1)
+      if (!shipRows?.length) {
+        throw new Error(`update_shipping_status: 未找到出货单"${shipOrderRef}"，请检查单据编号`)
+      }
+      const { error } = await supabase
+        .from('shipping_documents')
+        .update({ status: 'completed' })
+        .eq('id', shipRows[0].id)
+        .neq('status', 'completed') // 幂等
+      if (error) throw new Error(error.message)
+      return shipRows[0].id
     }
 
     case 'create_risk_check': {
