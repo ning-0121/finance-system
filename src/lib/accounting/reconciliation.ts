@@ -1,5 +1,5 @@
 // 定时对账引擎 — 自动检测数据异常
-import { createClient } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/server'
 import { safeRate, sumAmounts, mulAmount } from './utils'
 
 export interface CheckResult {
@@ -24,7 +24,7 @@ export async function runAllReconciliationChecks(periodCode: string): Promise<Ch
   results.push(await checkOrphanedRecords())
 
   // 写入对账结果
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
   for (const r of results) {
     await supabase.from('reconciliation_checks').insert({
@@ -46,7 +46,7 @@ export async function runAllReconciliationChecks(periodCode: string): Promise<Ch
  * 检查1: 总账借贷平衡
  */
 export async function checkGLBalance(periodCode: string): Promise<CheckResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data } = await supabase
     .from('gl_balances')
     .select('period_debit, period_credit')
@@ -73,7 +73,7 @@ export async function checkGLBalance(periodCode: string): Promise<CheckResult> {
  * 验证: 订单总收入(CNY) ≈ 已收款 + 应收余额
  */
 export async function checkARConsistency(): Promise<CheckResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: orders } = await supabase
     .from('budget_orders')
     .select('total_revenue, exchange_rate, currency, status')
@@ -112,7 +112,7 @@ export async function checkARConsistency(): Promise<CheckResult> {
  * 检查3: 应付账款一致性
  */
 export async function checkAPConsistency(): Promise<CheckResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: payables } = await supabase
     .from('payable_records')
     .select('amount, payment_status')
@@ -137,10 +137,10 @@ export async function checkAPConsistency(): Promise<CheckResult> {
  * 检查4: 重复订单号
  */
 export async function checkDuplicateOrders(): Promise<CheckResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data } = await supabase.from('budget_orders').select('order_no')
 
-  if (!data?.length) return { type: 'ar_consistency', status: 'passed' }
+  if (!data?.length) return { type: 'duplicate_orders', status: 'passed' }
 
   const counts = new Map<string, number>()
   data.forEach(o => {
@@ -151,7 +151,7 @@ export async function checkDuplicateOrders(): Promise<CheckResult> {
   const duplicates = Array.from(counts.entries()).filter(([, c]) => c > 1)
 
   return {
-    type: 'ar_consistency',
+    type: 'duplicate_orders',
     status: duplicates.length > 0 ? 'warning' : 'passed',
     details: {
       duplicates: duplicates.length > 0 ? duplicates.map(([no, c]) => `${no}(${c}次)`) : [],
@@ -164,17 +164,17 @@ export async function checkDuplicateOrders(): Promise<CheckResult> {
  * 检查5: 孤立记录（有synced_orders但无budget_orders）
  */
 export async function checkOrphanedRecords(): Promise<CheckResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: synced } = await supabase
     .from('synced_orders')
     .select('id, order_no, budget_order_id')
 
-  if (!synced?.length) return { type: 'ap_consistency', status: 'passed' }
+  if (!synced?.length) return { type: 'orphaned_records', status: 'passed' }
 
   const orphaned = synced.filter(s => !s.budget_order_id)
 
   return {
-    type: 'ap_consistency',
+    type: 'orphaned_records',
     status: orphaned.length > 0 ? 'warning' : 'passed',
     details: {
       orphanedCount: orphaned.length,

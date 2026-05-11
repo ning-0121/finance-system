@@ -5,7 +5,7 @@
 // orders, payments, invoices, and settlements. Findings are
 // persisted to audit_findings and can be resolved with notes.
 
-import { createClient } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/server'
 import { safeRate } from '@/lib/accounting/utils'
 
 // --------------- Types ---------------
@@ -48,9 +48,25 @@ function mapFinding(row: Record<string, unknown>): AuditFinding {
 
 async function insertFindings(findings: Omit<AuditFinding, 'id' | 'resolvedBy' | 'resolvedAt' | 'resolutionNote' | 'createdAt'>[]): Promise<AuditFinding[]> {
   if (findings.length === 0) return []
-  const supabase = createClient()
+  const supabase = await createClient()
 
-  const rows = findings.map((f) => ({
+  // Dedup: skip findings where an open record of same type+entity already exists
+  const types = [...new Set(findings.map(f => f.findingType))]
+  const { data: existing } = await supabase
+    .from('audit_findings')
+    .select('finding_type, entity_type, entity_id')
+    .in('finding_type', types)
+    .eq('status', 'open')
+
+  const existingSet = new Set(
+    (existing ?? []).map(e => `${e.finding_type}:${e.entity_type}:${e.entity_id ?? ''}`)
+  )
+  const dedupedFindings = findings.filter(f =>
+    !existingSet.has(`${f.findingType}:${f.entityType}:${f.entityId ?? ''}`)
+  )
+  if (dedupedFindings.length === 0) return []
+
+  const rows = dedupedFindings.map((f) => ({
     finding_type: f.findingType,
     severity: f.severity,
     entity_type: f.entityType,
@@ -92,7 +108,7 @@ export async function runFullAudit(): Promise<AuditFinding[]> {
  * Check 1: Duplicate payments — same supplier + same amount within 7 days.
  */
 export async function auditDuplicatePayments(): Promise<AuditFinding[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: payables } = await supabase
     .from('payable_records')
     .select('id, order_no, supplier_name, amount, currency, created_at, payment_status')
@@ -149,7 +165,7 @@ export async function auditDuplicatePayments(): Promise<AuditFinding[]> {
  * Check 2: Amount mismatches — invoice total vs budget >15% variance.
  */
 export async function auditAmountMismatches(): Promise<AuditFinding[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: invoices } = await supabase
     .from('actual_invoices')
     .select('id, budget_order_id, invoice_no, invoice_type, total_amount, currency')
@@ -217,7 +233,7 @@ export async function auditAmountMismatches(): Promise<AuditFinding[]> {
  * Check 3: Missing vouchers — confirmed settlements without journal entries.
  */
 export async function auditMissingVouchers(): Promise<AuditFinding[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: settlements } = await supabase
     .from('order_settlements')
     .select('id, budget_order_id, total_actual, status')
@@ -269,7 +285,7 @@ export async function auditMissingVouchers(): Promise<AuditFinding[]> {
  * Check 4: Timing anomalies — invoices dated before the order date.
  */
 export async function auditTimingAnomalies(): Promise<AuditFinding[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: invoices } = await supabase
     .from('actual_invoices')
     .select('id, budget_order_id, invoice_no, invoice_date, total_amount, supplier_name')
@@ -335,7 +351,7 @@ export async function auditTimingAnomalies(): Promise<AuditFinding[]> {
  * Check 5: Margin outliers — orders with margin <5% or >50%.
  */
 export async function auditMarginOutliers(): Promise<AuditFinding[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: orders } = await supabase
     .from('budget_orders')
     .select('id, order_no, customer_id, total_revenue, total_cost, estimated_margin, status')
@@ -412,7 +428,7 @@ export async function auditMarginOutliers(): Promise<AuditFinding[]> {
  * Check 6: Orphaned payments — payable_records without matching budget_orders.
  */
 export async function auditOrphanedPayments(): Promise<AuditFinding[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: payables } = await supabase
     .from('payable_records')
     .select('id, budget_order_id, order_no, supplier_name, amount, currency, payment_status')
@@ -449,7 +465,7 @@ export async function auditOrphanedPayments(): Promise<AuditFinding[]> {
  * Check 7: Overdue collections — AR outstanding >60 days.
  */
 export async function auditOverdueCollections(): Promise<AuditFinding[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: orders } = await supabase
     .from('budget_orders')
     .select('id, order_no, customer_id, total_revenue, exchange_rate, currency, order_date, status')
@@ -514,7 +530,7 @@ export async function resolveAuditFinding(
   resolution: string,
   resolvedBy: string
 ): Promise<void> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   const { error } = await supabase
     .from('audit_findings')
@@ -537,7 +553,7 @@ export async function getAuditFindings(filters?: {
   severity?: string
   entityType?: string
 }): Promise<AuditFinding[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   let query = supabase
     .from('audit_findings')

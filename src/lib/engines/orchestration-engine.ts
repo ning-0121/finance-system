@@ -4,7 +4,7 @@
 // 只调用已有引擎，不写新查询逻辑
 // ============================================================
 
-import { createClient } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/server'
 import { safeRate } from '@/lib/accounting/utils'
 import { recordTimelineEvent } from './timeline-engine'
 import { freezeEntity, isEntityFrozen } from './freeze-engine'
@@ -43,7 +43,7 @@ export async function runOrchestration(options?: {
   executionId?: string
   actor?: 'system' | 'user' | 'cron'
 }): Promise<OrchestrationResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const executionId = options?.executionId || `exec-${Date.now()}`
   const isDryRun = options?.dryRun || false
   const actor = options?.actor || 'system'
@@ -176,7 +176,7 @@ export async function runOrchestration(options?: {
 }
 
 // === 执行日志写入 ===
-async function writeExecutionLog(supabase: ReturnType<typeof createClient>, log: {
+async function writeExecutionLog(supabase: Awaited<ReturnType<typeof createClient>>, log: {
   ruleId: string; ruleName: string; executionId: string; actor: string; environment: string;
   conditionResult: Record<string, unknown>; entitiesMatched: Record<string, unknown>[];
   actionsTaken: Record<string, unknown>[]; result: string; explanation: string; durationMs: number;
@@ -222,7 +222,7 @@ export async function getAutomationHealth(): Promise<{
   riskiestRules: { ruleId: string; name: string; failRate: number }[];
   trend: 'improving' | 'stable' | 'declining'
 }> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // 最近7天的执行日志
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
@@ -310,7 +310,7 @@ async function evaluateCondition(
 
 // 1. trust_low — 信任等级低于阈值
 async function evaluateTrustLow(config: Record<string, unknown>): Promise<ConditionResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const thresholdLevel = (config.threshold_level as string) || 'T1'
 
   const levelOrder: Record<string, number> = { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5 }
@@ -340,7 +340,7 @@ async function evaluateTrustLow(config: Record<string, unknown>): Promise<Condit
 
 // 2. margin_low — 订单毛利率低于阈值
 async function evaluateMarginLow(config: Record<string, unknown>): Promise<ConditionResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const threshold = (config.threshold as number) ?? 10
 
   const { data: orders } = await supabase
@@ -384,7 +384,7 @@ async function evaluateMarginLow(config: Record<string, unknown>): Promise<Condi
 
 // 3. overdue_ar — 应收账款超期
 async function evaluateOverdueAR(config: Record<string, unknown>): Promise<ConditionResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const thresholdDays = (config.threshold_days as number) ?? 30
 
   // Approved orders not yet closed, check days since delivery_date + 30 (payment term)
@@ -445,7 +445,7 @@ async function evaluateOverdueAR(config: Record<string, unknown>): Promise<Condi
 
 // 4. blocked_timeout — 动作阻塞超时
 async function evaluateBlockedTimeout(config: Record<string, unknown>): Promise<ConditionResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const thresholdHours = (config.threshold_hours as number) ?? 48
 
   const cutoff = new Date(Date.now() - thresholdHours * 60 * 60 * 1000).toISOString()
@@ -481,7 +481,7 @@ async function evaluateBlockedTimeout(config: Record<string, unknown>): Promise<
 
 // 5. rollback_high — 高频回滚
 async function evaluateRollbackHigh(config: Record<string, unknown>): Promise<ConditionResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const thresholdCount = (config.threshold_count as number) ?? 3
   const periodDays = (config.period_days as number) ?? 30
 
@@ -590,7 +590,7 @@ async function evaluateClosingIncomplete(config: Record<string, unknown>): Promi
 
 // 8. cashflow_gap — 现金流缺口
 async function evaluateCashflowGap(config: Record<string, unknown>): Promise<ConditionResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const threshold = (config.threshold as number) ?? -50000
 
   const { data: forecasts } = await supabase
@@ -619,7 +619,7 @@ async function evaluateCashflowGap(config: Record<string, unknown>): Promise<Con
 
 // 9. task_overdue — 任务超期
 async function evaluateTaskOverdue(): Promise<ConditionResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const now = new Date().toISOString()
 
   const { data: tasks } = await supabase
@@ -653,7 +653,7 @@ async function evaluateTaskOverdue(): Promise<ConditionResult> {
 
 // 10. duplicate_payment — 重复付款 (复用 audit-engine 的模式)
 async function evaluateDuplicatePayment(): Promise<ConditionResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   const { data: payables } = await supabase
     .from('payable_records')
@@ -709,7 +709,7 @@ async function evaluateDuplicatePayment(): Promise<ConditionResult> {
 
 // 11. supplier_risk — 高风险供应商
 async function evaluateSupplierRisk(config: Record<string, unknown>): Promise<ConditionResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const thresholdLevel = (config.threshold_level as string) || 'D'
 
   const riskOrder: Record<string, number> = { A: 1, B: 2, C: 3, D: 4, E: 5 }
@@ -740,7 +740,7 @@ async function evaluateSupplierRisk(config: Record<string, unknown>): Promise<Co
 
 // 12. ocr_low_confidence — OCR低置信度
 async function evaluateOcrLowConfidence(config: Record<string, unknown>): Promise<ConditionResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const threshold = (config.threshold as number) ?? 70
 
   const { data: docs } = await supabase
@@ -877,7 +877,7 @@ export async function createTask(params: {
   actionHref?: string
   ruleId?: string
 }): Promise<string> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // Deduplication: check if similar task already exists
   if (params.sourceEntityId) {
@@ -957,7 +957,7 @@ export async function createTask(params: {
 }
 
 export async function escalateTask(taskId: string): Promise<void> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   const { data: task, error: fetchError } = await supabase
     .from('orchestration_tasks')
@@ -1018,7 +1018,7 @@ export async function resolveTask(
   resolvedBy: string,
   note: string
 ): Promise<void> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   const { data: task, error: fetchError } = await supabase
     .from('orchestration_tasks')
@@ -1060,7 +1060,7 @@ export async function resolveTask(
 }
 
 export async function getPendingTasks(role?: string): Promise<Record<string, unknown>[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   let query = supabase
     .from('orchestration_tasks')
@@ -1086,7 +1086,7 @@ export async function getPendingTasks(role?: string): Promise<Record<string, unk
 // --------------- Overdue Escalation ---------------
 
 export async function escalateOverdueTasks(): Promise<number> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const now = new Date().toISOString()
 
   const { data: overdue } = await supabase
