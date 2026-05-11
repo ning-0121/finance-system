@@ -26,6 +26,7 @@ import { getBudgetOrderById, getSettlementByBudgetId } from '@/lib/supabase/quer
 import { generateOrderSettlement, getOrderSettlement, getSubDocuments, getInventoryReturns } from '@/lib/supabase/queries-v2'
 import { toChineseUppercase } from '@/lib/excel/chinese-amount'
 import { exportSettlementSheetToExcel } from '@/lib/excel/export-settlement-sheet'
+import { exportBudgetOrSettlementToExcel, synthesizeCostItems, type CostItemRow } from '@/lib/excel/export-budget-sheet'
 import type { SubDocument, InventoryReturn, OrderSettlement } from '@/lib/types'
 
 const returnTypeLabels: Record<string, string> = {
@@ -45,6 +46,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
   const [generating, setGenerating] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [showAddReturn, setShowAddReturn] = useState(false)
+  const [costItemRows, setCostItemRows] = useState<CostItemRow[]>([])
 
   // 入库表单
   const [returnType, setReturnType] = useState('raw_material')
@@ -65,6 +67,35 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
       setSubDocs(subDocsData)
       setReturns(returnsData)
       setSettlement(settlementData)
+
+      // 加载实际成本明细（用于新格式决算单导出）
+      try {
+        const { data: dbCostItems } = await createClient()
+          .from('cost_items')
+          .select('description, supplier, amount, detail_meta, created_at')
+          .eq('budget_order_id', id)
+          .order('created_at')
+        if (dbCostItems && dbCostItems.length > 0) {
+          setCostItemRows(dbCostItems.map((c) => {
+            const meta = c.detail_meta as Record<string, unknown> | null
+            return {
+              date: c.created_at ? String(c.created_at).substring(5, 10) : undefined,
+              description: String(c.description || ''),
+              supplier: c.supplier ? String(c.supplier) : undefined,
+              unit: meta?.unit ? String(meta.unit) : undefined,
+              qty: meta?.qty != null ? Number(meta.qty) : null,
+              unitPrice: meta?.unit_price != null ? Number(meta.unit_price) : null,
+              amount: Number(c.amount || 0),
+            }
+          }))
+        } else if (orderData) {
+          // 无 cost_items 记录时，从 order._cost_breakdown 合成
+          setCostItemRows(synthesizeCostItems(orderData))
+        }
+      } catch {
+        if (orderData) setCostItemRows(synthesizeCostItems(orderData))
+      }
+
       setLoading(false)
     }
     load()
@@ -175,6 +206,24 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
               >
                 <Download className="h-4 w-4 mr-1" />
                 导出决算单
+              </Button>
+            )}
+            {/* 新格式决算单导出 */}
+            {order && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  try {
+                    exportBudgetOrSettlementToExcel(order, costItemRows, 'settlement')
+                    toast.success(`决算单(新格式) ${order.order_no} 已导出`)
+                  } catch (e) {
+                    toast.error(`导出失败: ${e instanceof Error ? e.message : '未知错误'}`)
+                  }
+                }}
+              >
+                <Download className="h-4 w-4 mr-1" />
+                导出决算单(标准格式)
               </Button>
             )}
           </div>

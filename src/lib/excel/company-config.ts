@@ -3,9 +3,9 @@
 // ============================================================
 
 export const companyInfo = {
-  name_cn: '绮陌服饰',
-  name_en: 'QIMO Clothing',
-  full_name: '绮陌服饰 QIMO Clothing',
+  name_cn: '义乌市绮陌服饰有限公司',
+  name_en: 'YIWU QIMO CLOTHING CO.,LTD',
+  full_name: '义乌市绮陌服饰有限公司',
   address: '',        // 可后续配置
   phone: '',
 

@@ -53,6 +53,7 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
+import { exportBudgetOrSettlementToExcel, synthesizeCostItems } from '@/lib/excel/export-budget-sheet'
 import {
   BarChart,
   Bar,
@@ -397,6 +398,23 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 生成结算单
               </Button>
             )}
+            {/* 导出预算表 */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                try {
+                  const costItems = synthesizeCostItems(order)
+                  exportBudgetOrSettlementToExcel(order, costItems, 'budget')
+                  toast.success(`预算表 ${order.order_no} 已导出`)
+                } catch (e) {
+                  toast.error(`导出失败: ${e instanceof Error ? e.message : '未知错误'}`)
+                }
+              }}
+            >
+              <Download className="h-4 w-4 mr-1" />
+              导出预算表
+            </Button>
           </div>
         </div>
 
