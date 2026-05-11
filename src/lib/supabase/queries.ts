@@ -562,3 +562,85 @@ export async function updateBudgetOrderReceivable(
     return { error: e instanceof Error ? e.message : 'Unknown error' }
   }
 }
+
+/**
+ * 核销应收余额 — 将 ar_received_amount 置为 total_revenue（视为全额已收），
+ * 并在 notes 中追加核销原因（格式：[核销 YYYY-MM-DD] {reason}）。
+ */
+export async function writeOffReceivable(
+  id: string,
+  totalRevenue: number,
+  reason: string
+): Promise<{ error: string | null }> {
+  if (!isSupabaseConfigured()) {
+    return { error: '当前为演示模式或未连接数据库，无法保存' }
+  }
+  try {
+    const supabase = createClient()
+    const { data: row } = await supabase
+      .from('budget_orders')
+      .select('notes')
+      .eq('id', id)
+      .maybeSingle()
+    const existingNotes = (row?.notes as string) || ''
+    const today = new Date().toISOString().substring(0, 10)
+    const newNote = `[核销 ${today}] ${reason}`
+    const mergedNotes = existingNotes ? `${existingNotes}\n${newNote}` : newNote
+
+    const { error } = await supabase
+      .from('budget_orders')
+      .update({
+        ar_received_amount: totalRevenue,
+        ar_received_at: new Date().toISOString(),
+        notes: mergedNotes,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+
+    if (error) return { error: error.message }
+    return { error: null }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Unknown error' }
+  }
+}
+
+/**
+ * 修正订单应收金额（total_revenue）— 用于应收页面数据纠错。
+ * 同时在 notes 中追加修改记录。
+ */
+export async function correctOrderRevenue(
+  id: string,
+  newRevenue: number,
+  reason: string
+): Promise<{ error: string | null }> {
+  if (!isSupabaseConfigured()) {
+    return { error: '当前为演示模式或未连接数据库，无法保存' }
+  }
+  try {
+    const supabase = createClient()
+    const { data: row } = await supabase
+      .from('budget_orders')
+      .select('notes, total_revenue')
+      .eq('id', id)
+      .maybeSingle()
+    const existingNotes = (row?.notes as string) || ''
+    const oldRevenue = row?.total_revenue as number ?? 0
+    const today = new Date().toISOString().substring(0, 10)
+    const newNote = `[金额修正 ${today}] ${oldRevenue} → ${newRevenue}，原因: ${reason}`
+    const mergedNotes = existingNotes ? `${existingNotes}\n${newNote}` : newNote
+
+    const { error } = await supabase
+      .from('budget_orders')
+      .update({
+        total_revenue: newRevenue,
+        notes: mergedNotes,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+
+    if (error) return { error: error.message }
+    return { error: null }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Unknown error' }
+  }
+}

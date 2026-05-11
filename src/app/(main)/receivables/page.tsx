@@ -10,12 +10,12 @@ import {
 } from '@/components/ui/table'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
-  DollarSign, AlertTriangle, Clock, Search, TrendingDown, Loader2,
+  DollarSign, AlertTriangle, Clock, Search, TrendingDown, Loader2, CheckCircle2, Pencil,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
-import { getBudgetOrders, updateBudgetOrderReceivable } from '@/lib/supabase/queries'
+import { getBudgetOrders, updateBudgetOrderReceivable, writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
 import Link from 'next/link'
 import type { BudgetOrder } from '@/lib/types'
 import { Button } from '@/components/ui/button'
@@ -23,6 +23,7 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'sonner'
 
 type ReceivableRow = {
@@ -52,26 +53,26 @@ function buildReceivables(orders: BudgetOrder[]): ReceivableRow[] {
   const now = new Date()
   return orders
     .filter(o => {
-      // 只有已审批和已关闭的订单才算应收
       if (o.status !== 'approved' && o.status !== 'closed') return false
-      // 金额为0的不显示
       if (!o.total_revenue || o.total_revenue <= 0) return false
       return true
     })
     .map(o => {
-      // 交货日期后30天为应收到期日
       const deliveryDate = o.delivery_date ? new Date(o.delivery_date) : new Date(o.order_date)
       const dueDate = new Date(deliveryDate)
       dueDate.setDate(dueDate.getDate() + 30)
 
       const isPastDue = now > dueDate
-      const agingDays = isPastDue ? Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24)) : 0
+      const agingDays = isPastDue
+        ? Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24))
+        : 0
 
       const explicit = o.ar_received_amount != null && !Number.isNaN(Number(o.ar_received_amount))
       const paid = explicit
         ? Math.min(Math.max(0, Number(o.ar_received_amount)), o.total_revenue)
         : (o.status === 'closed' ? o.total_revenue : 0)
       const balance = o.total_revenue - paid
+
       let status: ReceivableRow['status'] = 'unpaid'
       if (paid >= o.total_revenue) status = 'paid'
       else if (paid > 0) status = 'partial'
@@ -100,28 +101,41 @@ export default function ReceivablesPage() {
   const [tab, setTab] = useState('all')
   const [loading, setLoading] = useState(true)
   const [receivables, setReceivables] = useState<ReceivableRow[]>([])
-
-  const [allOrderCount, setAllOrderCount] = useState(0)
   const [draftCount, setDraftCount] = useState(0)
 
+  // ── 登记收款 Dialog ─────────────────────────────────────────
   const [receiptDialog, setReceiptDialog] = useState<ReceivableRow | null>(null)
   const [receiptAmount, setReceiptAmount] = useState('')
   const [receiptDate, setReceiptDate] = useState('')
   const [receiptSaving, setReceiptSaving] = useState(false)
 
+  // ── 核销余额 Dialog ─────────────────────────────────────────
+  const [writeOffDialog, setWriteOffDialog] = useState<ReceivableRow | null>(null)
+  const [writeOffReason, setWriteOffReason] = useState('')
+  const [writeOffSaving, setWriteOffSaving] = useState(false)
+
+  // ── 修正订单金额 Dialog ──────────────────────────────────────
+  const [correctDialog, setCorrectDialog] = useState<ReceivableRow | null>(null)
+  const [correctAmount, setCorrectAmount] = useState('')
+  const [correctReason, setCorrectReason] = useState('')
+  const [correctSaving, setCorrectSaving] = useState(false)
+
+  async function reload() {
+    const orders = await getBudgetOrders()
+    setDraftCount(orders.filter(o => o.status === 'draft' || o.status === 'pending_review').length)
+    setReceivables(buildReceivables(orders))
+  }
+
   useEffect(() => {
     async function load() {
-      try {
-        const orders = await getBudgetOrders()
-        setAllOrderCount(orders.length)
-        setDraftCount(orders.filter(o => o.status === 'draft' || o.status === 'pending_review').length)
-        setReceivables(buildReceivables(orders))
-      } catch { /* empty */ }
+      try { await reload() } catch { /* empty */ }
       setLoading(false)
     }
     load()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // ── 登记收款 ────────────────────────────────────────────────
   async function saveReceipt() {
     if (!receiptDialog) return
     const amt = Number(receiptAmount)
@@ -130,28 +144,59 @@ export default function ReceivablesPage() {
       return
     }
     setReceiptSaving(true)
-    const at = receiptDate
-      ? new Date(receiptDate + 'T12:00:00').toISOString()
-      : null
+    const at = receiptDate ? new Date(receiptDate + 'T12:00:00').toISOString() : null
     const { error } = await updateBudgetOrderReceivable(receiptDialog.id, {
       ar_received_amount: amt,
       ar_received_at: at,
     })
     setReceiptSaving(false)
-    if (error) {
-      toast.error(error)
-      return
-    }
+    if (error) { toast.error(error); return }
     toast.success('收款信息已保存')
     setReceiptDialog(null)
     setReceiptAmount('')
     setReceiptDate('')
-    try {
-      const orders = await getBudgetOrders()
-      setReceivables(buildReceivables(orders))
-    } catch { /* empty */ }
+    try { await reload() } catch { /* empty */ }
   }
 
+  // ── 核销余额 ────────────────────────────────────────────────
+  async function saveWriteOff() {
+    if (!writeOffDialog) return
+    if (!writeOffReason.trim()) { toast.error('请填写核销原因'); return }
+    setWriteOffSaving(true)
+    const { error } = await writeOffReceivable(
+      writeOffDialog.id,
+      writeOffDialog.amount,
+      writeOffReason.trim()
+    )
+    setWriteOffSaving(false)
+    if (error) { toast.error(error); return }
+    toast.success(`余额 ${writeOffDialog.currency} ${writeOffDialog.balance.toLocaleString()} 已核销`)
+    setWriteOffDialog(null)
+    setWriteOffReason('')
+    try { await reload() } catch { /* empty */ }
+  }
+
+  // ── 修正订单金额 ─────────────────────────────────────────────
+  async function saveCorrectRevenue() {
+    if (!correctDialog) return
+    const amt = Number(correctAmount)
+    if (!correctAmount || Number.isNaN(amt) || amt <= 0) {
+      toast.error('请输入有效的修正金额')
+      return
+    }
+    if (!correctReason.trim()) { toast.error('请填写修正原因'); return }
+    setCorrectSaving(true)
+    const { error } = await correctOrderRevenue(correctDialog.id, amt, correctReason.trim())
+    setCorrectSaving(false)
+    if (error) { toast.error(error); return }
+    toast.success(`订单金额已修正为 ${correctDialog.currency} ${amt.toLocaleString()}`)
+    setCorrectDialog(null)
+    setCorrectAmount('')
+    setCorrectReason('')
+    try { await reload() } catch { /* empty */ }
+  }
+
+  // ── 统计 ─────────────────────────────────────────────────────
   const unpaid = receivables.filter(r => r.status !== 'paid')
   const overdue = receivables.filter(r => r.status === 'overdue')
   const totalBalance = unpaid.reduce((s, r) => s + r.balance, 0)
@@ -164,18 +209,24 @@ export default function ReceivablesPage() {
 
   const filtered = receivables.filter(r => {
     const matchTab = tab === 'all' || r.status === tab
-    const matchSearch = !search || r.customer.toLowerCase().includes(search.toLowerCase()) || r.orderNo.toLowerCase().includes(search.toLowerCase())
+    const matchSearch = !search
+      || r.customer.toLowerCase().includes(search.toLowerCase())
+      || r.orderNo.toLowerCase().includes(search.toLowerCase())
     return matchTab && matchSearch
   })
 
   const statusConfig = {
-    paid: { label: '已收', variant: 'default' as const },
+    paid:    { label: '已收',  variant: 'default' as const },
     partial: { label: '部分收', variant: 'secondary' as const },
-    unpaid: { label: '未收', variant: 'outline' as const },
-    overdue: { label: '逾期', variant: 'destructive' as const },
+    unpaid:  { label: '未收',  variant: 'outline' as const },
+    overdue: { label: '逾期',  variant: 'destructive' as const },
   }
 
-  if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
+  if (loading) return (
+    <div className="flex items-center justify-center h-full">
+      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+    </div>
+  )
 
   return (
     <div className="flex flex-col h-full">
@@ -185,34 +236,33 @@ export default function ReceivablesPage() {
         {/* KPI */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div>
-                <div><p className="text-xs text-muted-foreground">应收总额</p><p className="text-xl font-bold">¥{totalBalance.toLocaleString()}</p></div>
-              </div>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div>
+              <div><p className="text-xs text-muted-foreground">应收总额</p><p className="text-xl font-bold">¥{totalBalance.toLocaleString()}</p></div>
             </CardContent>
           </Card>
           <Card className={overdueBalance > 0 ? 'border-red-200' : ''}>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-red-50"><AlertTriangle className="h-4 w-4 text-red-600" /></div>
-                <div><p className="text-xs text-muted-foreground">逾期金额</p><p className="text-xl font-bold text-red-600">¥{overdueBalance.toLocaleString()}</p></div>
-              </div>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-red-50"><AlertTriangle className="h-4 w-4 text-red-600" /></div>
+              <div><p className="text-xs text-muted-foreground">逾期金额</p><p className="text-xl font-bold text-red-600">¥{overdueBalance.toLocaleString()}</p></div>
             </CardContent>
           </Card>
           <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-amber-50"><Clock className="h-4 w-4 text-amber-600" /></div>
-                <div><p className="text-xs text-muted-foreground">逾期笔数</p><p className="text-xl font-bold">{overdue.length}</p></div>
-              </div>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-amber-50"><Clock className="h-4 w-4 text-amber-600" /></div>
+              <div><p className="text-xs text-muted-foreground">逾期笔数</p><p className="text-xl font-bold">{overdue.length}</p></div>
             </CardContent>
           </Card>
           <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-green-50"><TrendingDown className="h-4 w-4 text-green-600" /></div>
-                <div><p className="text-xs text-muted-foreground">已收回比率</p><p className="text-xl font-bold">{receivables.length > 0 ? Math.round(receivables.filter(r => r.status === 'paid').length / receivables.length * 100) : 0}%</p></div>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-green-50"><TrendingDown className="h-4 w-4 text-green-600" /></div>
+              <div>
+                <p className="text-xs text-muted-foreground">已收回比率</p>
+                <p className="text-xl font-bold">
+                  {receivables.length > 0
+                    ? Math.round(receivables.filter(r => r.status === 'paid').length / receivables.length * 100)
+                    : 0}%
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -258,7 +308,9 @@ export default function ReceivablesPage() {
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList>
               <TabsTrigger value="all">全部 ({receivables.length})</TabsTrigger>
-              <TabsTrigger value="overdue" className={overdue.length > 0 ? 'text-red-600' : ''}>逾期 ({overdue.length})</TabsTrigger>
+              <TabsTrigger value="overdue" className={overdue.length > 0 ? 'text-red-600' : ''}>
+                逾期 ({overdue.length})
+              </TabsTrigger>
               <TabsTrigger value="unpaid">未收 ({receivables.filter(r => r.status === 'unpaid').length})</TabsTrigger>
               <TabsTrigger value="paid">已收 ({receivables.filter(r => r.status === 'paid').length})</TabsTrigger>
             </TabsList>
@@ -283,7 +335,7 @@ export default function ReceivablesPage() {
                   <TableHead>账龄</TableHead>
                   <TableHead>实际收款日</TableHead>
                   <TableHead>状态</TableHead>
-                  <TableHead className="text-right w-[100px]">操作</TableHead>
+                  <TableHead className="text-right w-[160px]">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -292,14 +344,35 @@ export default function ReceivablesPage() {
                   return (
                     <TableRow key={r.id} className={r.status === 'overdue' ? 'bg-red-50/50' : ''}>
                       <TableCell>
-                        <div><p className="text-sm font-medium">{r.customer}</p><p className="text-xs text-muted-foreground">{r.country}</p></div>
+                        <div>
+                          <p className="text-sm font-medium">{r.customer}</p>
+                          <p className="text-xs text-muted-foreground">{r.country}</p>
+                        </div>
                       </TableCell>
                       <TableCell>
-                        <Link href={`/orders/${r.id}`} className="text-primary text-sm hover:underline">{r.orderNo}</Link>
+                        <Link href={`/orders/${r.id}`} className="text-primary text-sm hover:underline">
+                          {r.orderNo}
+                        </Link>
                       </TableCell>
-                      <TableCell className="text-right">{r.currency} {r.amount.toLocaleString()}</TableCell>
-                      <TableCell className="text-right text-green-600">{r.currency} {r.paid.toLocaleString()}</TableCell>
-                      <TableCell className={`text-right font-semibold ${r.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      {/* 订单金额 — 点击铅笔图标可修正 */}
+                      <TableCell className="text-right">
+                        <span className="text-sm">{r.currency} {r.amount.toLocaleString()}</span>
+                        <button
+                          className="ml-1.5 text-muted-foreground hover:text-primary opacity-50 hover:opacity-100 transition-opacity"
+                          title="修正订单金额"
+                          onClick={() => {
+                            setCorrectDialog(r)
+                            setCorrectAmount(String(r.amount))
+                            setCorrectReason('')
+                          }}
+                        >
+                          <Pencil className="h-3 w-3 inline" />
+                        </button>
+                      </TableCell>
+                      <TableCell className="text-right text-green-600 text-sm">
+                        {r.currency} {r.paid.toLocaleString()}
+                      </TableCell>
+                      <TableCell className={`text-right font-semibold text-sm ${r.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
                         {r.currency} {r.balance.toLocaleString()}
                       </TableCell>
                       <TableCell className="text-sm">{r.dueDate}</TableCell>
@@ -315,18 +388,39 @@ export default function ReceivablesPage() {
                       </TableCell>
                       <TableCell><Badge variant={sc.variant}>{sc.label}</Badge></TableCell>
                       <TableCell className="text-right">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 text-xs"
-                          onClick={() => {
-                            setReceiptDialog(r)
-                            setReceiptAmount(String(r.paid))
-                            setReceiptDate(r.receivedAt ? r.receivedAt.slice(0, 10) : new Date().toISOString().slice(0, 10))
-                          }}
-                        >
-                          登记收款
-                        </Button>
+                        <div className="flex items-center justify-end gap-1">
+                          {/* 核销余额 — 只对部分收款显示 */}
+                          {r.status === 'partial' && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-xs border-amber-300 text-amber-700 hover:bg-amber-50"
+                              onClick={() => {
+                                setWriteOffDialog(r)
+                                setWriteOffReason('')
+                              }}
+                            >
+                              <CheckCircle2 className="h-3 w-3 mr-1" />
+                              核销余额
+                            </Button>
+                          )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => {
+                              setReceiptDialog(r)
+                              setReceiptAmount(String(r.paid))
+                              setReceiptDate(
+                                r.receivedAt
+                                  ? r.receivedAt.slice(0, 10)
+                                  : new Date().toISOString().slice(0, 10)
+                              )
+                            }}
+                          >
+                            登记收款
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   )
@@ -334,7 +428,9 @@ export default function ReceivablesPage() {
                 {filtered.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">
-                      {receivables.length === 0 ? '暂无已审批订单，应收数据将在订单审批通过后自动生成' : '没有匹配的记录'}
+                      {receivables.length === 0
+                        ? '暂无已审批订单，应收数据将在订单审批通过后自动生成'
+                        : '没有匹配的记录'}
                     </TableCell>
                   </TableRow>
                 )}
@@ -344,24 +440,25 @@ export default function ReceivablesPage() {
         </Card>
       </div>
 
+      {/* ── 登记收款 Dialog ─────────────────────────────────── */}
       <Dialog open={!!receiptDialog} onOpenChange={(open) => { if (!open) setReceiptDialog(null) }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>登记实际收款</DialogTitle>
           </DialogHeader>
           {receiptDialog && (
-            <div className="space-y-3 py-2">
+            <div className="space-y-4 py-2">
               <p className="text-sm text-muted-foreground">
-                订单 {receiptDialog.orderNo} · 应收 {receiptDialog.currency} {receiptDialog.amount.toLocaleString()}
+                订单 <span className="font-medium text-foreground">{receiptDialog.orderNo}</span>
+                {' · '}应收 {receiptDialog.currency} {receiptDialog.amount.toLocaleString()}
               </p>
               <div className="space-y-2">
                 <Label>实际收款金额（{receiptDialog.currency}）</Label>
                 <Input
-                  type="number"
-                  step="0.01"
-                  min={0}
+                  type="number" step="0.01" min={0}
                   value={receiptAmount}
                   onChange={e => setReceiptAmount(e.target.value)}
+                  placeholder={`最大 ${receiptDialog.amount}`}
                 />
               </div>
               <div className="space-y-2">
@@ -377,6 +474,103 @@ export default function ReceivablesPage() {
             <Button variant="outline" onClick={() => setReceiptDialog(null)}>取消</Button>
             <Button onClick={saveReceipt} disabled={receiptSaving}>
               {receiptSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : '保存'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── 核销余额 Dialog ─────────────────────────────────── */}
+      <Dialog open={!!writeOffDialog} onOpenChange={(open) => { if (!open) setWriteOffDialog(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>核销应收余额</DialogTitle>
+          </DialogHeader>
+          {writeOffDialog && (
+            <div className="space-y-4 py-2">
+              <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 space-y-1">
+                <p className="text-sm font-medium text-amber-800">
+                  订单 {writeOffDialog.orderNo} · {writeOffDialog.customer}
+                </p>
+                <div className="flex justify-between text-sm text-amber-700">
+                  <span>已收：{writeOffDialog.currency} {writeOffDialog.paid.toLocaleString()}</span>
+                  <span>待核销余额：<strong>{writeOffDialog.currency} {writeOffDialog.balance.toLocaleString()}</strong></span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>
+                  核销原因 <span className="text-red-500">*</span>
+                </Label>
+                <Textarea
+                  placeholder="例：客户尾款差额豁免 / 运费抵扣 / 汇率损益 / 双方协商平账..."
+                  value={writeOffReason}
+                  onChange={e => setWriteOffReason(e.target.value)}
+                  rows={3}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                核销后状态变为「已收」，原因将记录到订单备注中，操作不可撤销。
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWriteOffDialog(null)}>取消</Button>
+            <Button
+              onClick={saveWriteOff}
+              disabled={writeOffSaving || !writeOffReason.trim()}
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+            >
+              {writeOffSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-1" />}
+              确认核销
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── 修正订单金额 Dialog ──────────────────────────────── */}
+      <Dialog open={!!correctDialog} onOpenChange={(open) => { if (!open) setCorrectDialog(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>修正订单金额</DialogTitle>
+          </DialogHeader>
+          {correctDialog && (
+            <div className="space-y-4 py-2">
+              <p className="text-sm text-muted-foreground">
+                订单 <span className="font-medium text-foreground">{correctDialog.orderNo}</span>
+                {' · '}当前金额：{correctDialog.currency} {correctDialog.amount.toLocaleString()}
+              </p>
+              <div className="space-y-2">
+                <Label>
+                  修正后金额（{correctDialog.currency}）<span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  type="number" step="0.01" min={0.01}
+                  value={correctAmount}
+                  onChange={e => setCorrectAmount(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>
+                  修正原因 <span className="text-red-500">*</span>
+                </Label>
+                <Textarea
+                  placeholder="例：原始录入有误 / 汇率调整 / 合同变更..."
+                  value={correctReason}
+                  onChange={e => setCorrectReason(e.target.value)}
+                  rows={2}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                修改将直接更新订单金额，修正记录写入订单备注。请确认已知会相关同事。
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCorrectDialog(null)}>取消</Button>
+            <Button
+              onClick={saveCorrectRevenue}
+              disabled={correctSaving || !correctAmount || !correctReason.trim()}
+            >
+              {correctSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : '确认修正'}
             </Button>
           </DialogFooter>
         </DialogContent>
