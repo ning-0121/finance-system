@@ -3,7 +3,7 @@
 // 扩展 dependency-resolver.ts 的信任系统
 // ============================================================
 
-import { createClient } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/server'
 import { recordTimelineEvent } from './timeline-engine'
 import { freezeEntity } from './freeze-engine'
 import type { TrustLevel } from '@/lib/document-engine/dependency-resolver'
@@ -180,7 +180,7 @@ async function computeDimensionScores(
   subjectId: string,
   dimensions: TrustDimension[]
 ): Promise<DimensionScore[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const results: DimensionScore[] = []
 
   // Fetch the trust score record for event-based dimensions
@@ -440,7 +440,7 @@ export async function calculateTrustScore(
   subjectType: string,
   subjectId: string
 ): Promise<TrustScoreResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const dimensions = TRUST_DIMENSIONS[subjectType] ?? TRUST_DIMENSIONS['action_type']
 
   // Get current record for previous level
@@ -549,7 +549,7 @@ export async function recalculateAllTrustScores(): Promise<{
   downgrades: number
   upgrades: number
 }> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   const { data: allSubjects } = await supabase
     .from('automation_trust_scores')
@@ -584,7 +584,7 @@ export async function getTrustProfile(
   subjectType: string,
   subjectId: string
 ): Promise<TrustProfile> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // Get current trust record
   const { data: record } = await supabase
@@ -641,7 +641,7 @@ export async function downgradeTrust(
   reason: string,
   triggerFreeze: boolean = false
 ): Promise<void> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // Get current record
   const { data: current } = await supabase
@@ -706,7 +706,7 @@ export async function downgradeTrust(
 // --------------- Trust dashboard ---------------
 
 export async function getTrustDashboard(): Promise<TrustDashboard> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // Get all trust scores
   const { data: allScores } = await supabase
@@ -811,7 +811,7 @@ export async function getTrustDashboard(): Promise<TrustDashboard> {
 // --------------- Record daily snapshot ---------------
 
 export async function recordTrustSnapshot(): Promise<void> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const today = new Date().toISOString().slice(0, 10)
 
   // Get all current scores

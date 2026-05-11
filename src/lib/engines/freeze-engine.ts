@@ -3,7 +3,7 @@
 // 与 circuit-breaker 集成，每次操作写入 timeline
 // ============================================================
 
-import { createClient } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/server'
 import { recordTimelineEvent } from './timeline-engine'
 
 // --------------- Types ---------------
@@ -38,7 +38,7 @@ export async function freezeEntity(params: {
   triggerSource?: string
   frozenBy?: string
 }): Promise<{ success: boolean; freezeId?: string; error?: string }> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // Check if already frozen
   const { data: existing } = await supabase
@@ -103,7 +103,7 @@ export async function isEntityFrozen(
   entityType: string,
   entityId: string
 ): Promise<{ frozen: boolean; freeze?: Record<string, unknown> }> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   const { data, error } = await supabase
     .from('entity_freezes')
@@ -129,7 +129,7 @@ export async function requestUnfreeze(
   requestedBy: string,
   reason: string
 ): Promise<void> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // Get the freeze record first
   const { data: freeze, error: fetchError } = await supabase
@@ -180,7 +180,7 @@ export async function approveUnfreeze(
   freezeId: string,
   approvedBy: string
 ): Promise<void> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   const { data: freeze, error: fetchError } = await supabase
     .from('entity_freezes')
@@ -237,7 +237,7 @@ export async function approveUnfreeze(
 export async function getActiveFreezes(
   entityType?: string
 ): Promise<Record<string, unknown>[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   let query = supabase
     .from('entity_freezes')

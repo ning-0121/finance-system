@@ -5,7 +5,7 @@
 // reconciliation, GL, and FX modules. Supports overrides, timeline
 // auditing, and year-end carry-forward journal entries.
 
-import { createClient } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/server'
 import { recordTimelineEvent } from './timeline-engine'
 import {
   checkGLBalance,
@@ -92,7 +92,7 @@ export async function initClosingChecklist(
   periodCode: string,
   closeType: 'month' | 'year'
 ): Promise<void> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // Check if already initialized
   const { data: existing } = await supabase
@@ -138,7 +138,7 @@ export async function executeClosingCheck(
   periodCode: string,
   checkKey: string
 ): Promise<CheckResult> {
-  const supabase = createClient()
+  const supabase = await createClient()
   let result: CheckResult
 
   switch (checkKey) {
@@ -352,7 +352,7 @@ export async function overrideCheck(
   reason: string,
   approvedBy: string
 ): Promise<void> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   const { error } = await supabase
     .from('period_close_checklists')
@@ -385,7 +385,7 @@ export async function finalizePeriodClose(
   periodCode: string,
   closedBy: string
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // Check all items are resolved
   const items = await getClosingStatus(periodCode)
@@ -436,7 +436,7 @@ export async function finalizePeriodClose(
  * Creates a closing journal entry transferring net income to equity.
  */
 export async function yearEndCarryForward(year: number): Promise<{ voucherNo: string }> {
-  const supabase = createClient()
+  const supabase = await createClient()
   const periodCode = `${year}-12`
 
   // Get full year P&L by summing all 12 months
@@ -503,39 +503,32 @@ export async function yearEndCarryForward(year: number): Promise<{ voucherNo: st
   const totalDebit = lines.reduce((s, l) => s + l.debit, 0)
   const totalCredit = lines.reduce((s, l) => s + l.credit, 0)
 
-  const { data: journal, error } = await supabase
-    .from('journal_entries')
-    .insert({
-      voucher_no: '',
-      period_code: periodCode,
-      voucher_date: `${year}-12-31`,
-      voucher_type: 'closing',
-      description: `${year}年末损益结转 — 利润结转至未分配利润`,
-      source_type: 'year_end_close',
-      total_debit: Math.round(totalDebit * 100) / 100,
-      total_credit: Math.round(totalCredit * 100) / 100,
-      status: 'posted',
-      created_by: createdBy,
-      posted_by: createdBy,
-      posted_at: new Date().toISOString(),
-    })
-    .select('id, voucher_no')
-    .single()
+  // Atomic: header + lines in one DB transaction via RPC
+  const linesJson = lines.map(l => ({
+    account_code: l.account_code,
+    description: l.description,
+    debit: l.debit,
+    credit: l.credit,
+    currency: 'CNY',
+    exchange_rate: 1,
+  }))
+
+  const { data: rpcResult, error } = await supabase.rpc('create_journal_atomic', {
+    p_period_code: periodCode,
+    p_date: `${year}-12-31`,
+    p_description: `${year}年末损益结转 — 利润结转至未分配利润`,
+    p_source_type: 'year_end_close',
+    p_source_id: null,
+    p_total_debit: Math.round(totalDebit * 100) / 100,
+    p_total_credit: Math.round(totalCredit * 100) / 100,
+    p_voucher_type: 'closing',
+    p_created_by: createdBy ?? null,
+    p_lines: linesJson,
+  })
 
   if (error) throw new Error(`年末结转凭证创建失败: ${error.message}`)
 
-  await supabase.from('journal_lines').insert(
-    lines.map((l, i) => ({
-      journal_id: journal.id,
-      line_no: i + 1,
-      account_code: l.account_code,
-      description: l.description,
-      debit: l.debit,
-      credit: l.credit,
-      currency: 'CNY',
-      exchange_rate: 1,
-    }))
-  )
+  const voucherNo = (rpcResult as { voucher_no: string } | null)?.voucher_no ?? ''
 
   await recordTimelineEvent({
     entityType: 'period_close',
@@ -546,19 +539,19 @@ export async function yearEndCarryForward(year: number): Promise<{ voucherNo: st
       totalRevenue,
       totalExpense,
       netIncome,
-      voucherNo: journal.voucher_no,
+      voucherNo,
     },
     sourceType: 'system',
   })
 
-  return { voucherNo: journal.voucher_no }
+  return { voucherNo }
 }
 
 /**
  * Get current closing status for a period.
  */
 export async function getClosingStatus(periodCode: string): Promise<ClosingCheckItem[]> {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   const { data, error } = await supabase
     .from('period_close_checklists')
