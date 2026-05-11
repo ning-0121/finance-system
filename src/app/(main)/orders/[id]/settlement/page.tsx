@@ -47,6 +47,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
   const [confirming, setConfirming] = useState(false)
   const [showAddReturn, setShowAddReturn] = useState(false)
   const [costItemRows, setCostItemRows] = useState<CostItemRow[]>([])
+  const [costSource, setCostSource] = useState<'actual' | 'estimated'>('actual')
 
   // 入库表单
   const [returnType, setReturnType] = useState('raw_material')
@@ -69,6 +70,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
       setSettlement(settlementData)
 
       // 加载实际成本明细（用于新格式决算单导出）
+      // 优先从 cost_items 表读取实际成本；无数据则降级合成，并标记来源
       try {
         const { data: dbCostItems } = await createClient()
           .from('cost_items')
@@ -76,6 +78,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
           .eq('budget_order_id', id)
           .order('created_at')
         if (dbCostItems && dbCostItems.length > 0) {
+          setCostSource('actual')
           setCostItemRows(dbCostItems.map((c) => {
             const meta = c.detail_meta as Record<string, unknown> | null
             return {
@@ -89,11 +92,15 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
             }
           }))
         } else if (orderData) {
-          // 无 cost_items 记录时，从 order._cost_breakdown 合成
+          // 无 cost_items 记录 → 降级使用预算成本估算，Excel 中标注
+          setCostSource('estimated')
           setCostItemRows(synthesizeCostItems(orderData))
         }
       } catch {
-        if (orderData) setCostItemRows(synthesizeCostItems(orderData))
+        if (orderData) {
+          setCostSource('estimated')
+          setCostItemRows(synthesizeCostItems(orderData))
+        }
       }
 
       setLoading(false)
@@ -208,15 +215,15 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
                 导出决算单
               </Button>
             )}
-            {/* 新格式决算单导出 */}
+            {/* 新格式决算单导出（义乌绮陌标准格式，支持降级标注） */}
             {order && (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
                   try {
-                    exportBudgetOrSettlementToExcel(order, costItemRows, 'settlement')
-                    toast.success(`决算单(新格式) ${order.order_no} 已导出`)
+                    exportBudgetOrSettlementToExcel(order, costItemRows, 'settlement', costSource)
+                    toast.success(`决算单(标准格式) ${order.order_no} 已导出${costSource === 'estimated' ? ' ⚠ 使用预算估算成本' : ''}`)
                   } catch (e) {
                     toast.error(`导出失败: ${e instanceof Error ? e.message : '未知错误'}`)
                   }

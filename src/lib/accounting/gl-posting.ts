@@ -226,7 +226,7 @@ export async function postPaymentMade(params: {
  * 查询试算平衡表
  */
 export async function getTrialBalance(periodCode: string) {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('gl_balances')
     .select('*, accounts(account_name, account_type, balance_direction)')
@@ -241,7 +241,7 @@ export async function getTrialBalance(periodCode: string) {
  * 查询科目明细（某科目某期间的所有凭证行）
  */
 export async function getAccountDetail(accountCode: string, periodCode: string) {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('journal_lines')
     .select('*, journal_entries(voucher_no, voucher_date, description, status)')
@@ -250,35 +250,45 @@ export async function getAccountDetail(accountCode: string, periodCode: string) 
 
   if (error) throw error
   // 筛选期间
-  return (data || []).filter(d => {
-    const je = d.journal_entries as Record<string, unknown>
-    return je && (je.voucher_no as string)?.includes(periodCode.replace('-', ''))
+  return (data || []).filter((d: Record<string, unknown>) => {
+    const je = d['journal_entries'] as Record<string, unknown>
+    return je && (je['voucher_no'] as string)?.includes(periodCode.replace('-', ''))
   })
+}
+
+// gl_balances 行的本地类型（无 DB 类型定义时，手动约束）
+interface GlBalanceRow {
+  account_code: string
+  period_debit: number | null
+  period_credit: number | null
+  accounts: { account_name: string; account_type: string } | null
 }
 
 /**
  * 查询利润表数据（P&L）
  */
 export async function getProfitAndLoss(periodCode: string) {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data } = await supabase
     .from('gl_balances')
     .select('account_code, period_debit, period_credit, accounts(account_name, account_type)')
     .eq('period_code', periodCode)
     .in('account_code', ['500101', '500102', '5051', '5301', '540101', '540102', '540103', '540201', '540202', '540203', '540204', '540205', '5403', '5601'])
 
-  const revenue = (data || [])
-    .filter(d => (d.accounts as unknown as Record<string, string>)?.account_type === 'revenue')
-    .reduce((s, d) => s + (d.period_credit || 0) - (d.period_debit || 0), 0)
+  const rows = (data || []) as unknown as GlBalanceRow[]
 
-  const expense = (data || [])
-    .filter(d => (d.accounts as unknown as Record<string, string>)?.account_type === 'expense')
-    .reduce((s, d) => s + (d.period_debit || 0) - (d.period_credit || 0), 0)
+  const revenue = rows
+    .filter((d) => d.accounts?.account_type === 'revenue')
+    .reduce((s: number, d) => s + (d.period_credit ?? 0) - (d.period_debit ?? 0), 0)
+
+  const expense = rows
+    .filter((d) => d.accounts?.account_type === 'expense')
+    .reduce((s: number, d) => s + (d.period_debit ?? 0) - (d.period_credit ?? 0), 0)
 
   return {
     revenue: Math.round(revenue * 100) / 100,
     expense: Math.round(expense * 100) / 100,
     profit: Math.round((revenue - expense) * 100) / 100,
-    details: data || [],
+    details: rows,
   }
 }
