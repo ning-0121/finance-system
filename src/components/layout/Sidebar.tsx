@@ -41,6 +41,7 @@ const baseNavigation = [
   { name: '财务驾驶舱', href: '/analytics', icon: BarChart3 },
   { name: '风险地图', href: '/risks', icon: BarChart3 },
   { name: '现金流预测', href: '/cashflow', icon: BarChart3 },
+  { name: '每周资金计划', href: '/funding-plan', icon: Calendar },
   { name: '老板驾驶舱', href: '/dashboard/boss', icon: BarChart3 },
   // 总账模块
   { name: '科目表', href: '/gl/accounts', icon: BookOpen },
