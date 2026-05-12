@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
-export async function middleware(request: NextRequest) {
+// Next.js 16: middleware 已重命名为 proxy（原 middleware.ts → proxy.ts）
+export async function proxy(request: NextRequest) {
   // API 集成端点：由 API Key + 签名保护，不需要用户认证
   if (request.nextUrl.pathname.startsWith('/api/integration')) {
     return NextResponse.next()
