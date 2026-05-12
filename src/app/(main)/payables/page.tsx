@@ -116,7 +116,7 @@ export default function PayablesPage() {
       try {
         const records = await getPayableRecords()
         setRows(buildAPRows(records))
-      } catch { /* empty */ }
+      } catch (err) { console.error('加载应付数据失败:', err) }
       setLoading(false)
     }
     load()

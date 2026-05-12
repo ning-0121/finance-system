@@ -215,7 +215,7 @@ export default function JournalPage() {
                   {detail.lines.map(l => (
                     <TableRow key={l.id}>
                       <TableCell>{l.line_no}</TableCell>
-                      <TableCell className="font-mono">{l.account_code} {(l.accounts as unknown as Record<string, string>)?.account_name || ''}</TableCell>
+                      <TableCell className="font-mono">{l.account_code} {l.accounts?.account_name || ''}</TableCell>
                       <TableCell className="text-muted-foreground">{l.description || '-'}</TableCell>
                       <TableCell className="text-right font-medium">{l.debit > 0 ? `¥${l.debit.toLocaleString()}` : ''}</TableCell>
                       <TableCell className="text-right font-medium">{l.credit > 0 ? `¥${l.credit.toLocaleString()}` : ''}</TableCell>

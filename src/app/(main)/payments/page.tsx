@@ -139,7 +139,7 @@ export default function PaymentsPage() {
 
       if (payDialog.invoice_id) {
         const { error: invoiceErr } = await supabase.from('actual_invoices').update({ status: 'paid' }).eq('id', payDialog.invoice_id)
-        if (invoiceErr) console.error('发票状态更新失败:', invoiceErr.message)
+        if (invoiceErr) toast.error(`发票状态更新失败: ${invoiceErr.message}`)
       }
 
       setRecords(records.map(r => r.id === payDialog.id ? { ...r, payment_status: 'paid' as PaymentStatus } : r))
