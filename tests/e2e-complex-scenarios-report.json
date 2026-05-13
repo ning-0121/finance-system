@@ -1,0 +1,218 @@
+[
+  {
+    "scenario": 1,
+    "name": "多次回款",
+    "input": {
+      "tranches": [
+        3000,
+        5000,
+        2000
+      ],
+      "total": 10000,
+      "currency": "USD"
+    },
+    "expected": {
+      "final_ar": 10000,
+      "final_status": "paid",
+      "tranche_vouchers": 3,
+      "revenue_vouchers": 1,
+      "intermediate_statuses": [
+        "partial",
+        "partial",
+        "paid"
+      ]
+    },
+    "actual": {
+      "final_ar": 10000,
+      "final_status": "paid",
+      "tranche_vouchers": [
+        "PZ-202605-0005",
+        "PZ-202605-0007",
+        "PZ-202605-0008"
+      ],
+      "revenue_vouchers": 1
+    },
+    "pass": true,
+    "fix_status": "not_applicable"
+  },
+  {
+    "scenario": 2,
+    "name": "分批出货 / 少出 20 件",
+    "input": {
+      "ordered": 1000,
+      "shipments": [
+        600,
+        380
+      ]
+    },
+    "expected": {
+      "shipped": 980,
+      "shortage": 20,
+      "risk_created": true,
+      "actual_revenue_cny": 70560,
+      "actual_profit": 33360
+    },
+    "actual": {
+      "shipped": 980,
+      "shortage": 20,
+      "risk_event_id": "03db4b96-1710-4114-afbd-8e19af65e527",
+      "actual_revenue_cny": 70560,
+      "actual_profit": 33360,
+      "shipments_inserted": 2
+    },
+    "pass": true,
+    "fix_status": "manual_review_required",
+    "fix_note": "当前 shipping_documents.items.quantity 与订单 quantity 的对账纯靠业务层校对，DB 无 CHECK；建议加 trigger 或定期对账任务"
+  },
+  {
+    "scenario": 3,
+    "name": "多供应商同一订单",
+    "input": {
+      "suppliers": 4,
+      "total": 57000
+    },
+    "expected": {
+      "records": 4,
+      "total": 57000,
+      "independent_statuses": true
+    },
+    "actual": {
+      "records": 4,
+      "total": 57000,
+      "by_supplier": {
+        "辅料供应商B": "unpaid",
+        "物流D": "unpaid",
+        "面料供应商A": "paid",
+        "加工厂C": "paid"
+      }
+    },
+    "pass": true,
+    "fix_status": "not_applicable"
+  },
+  {
+    "scenario": 4,
+    "name": "汇率变化（汇兑损益）",
+    "input": {
+      "usd": 10000,
+      "lockedRate": 7.2,
+      "actualRate": 7.05
+    },
+    "expected": {
+      "revenueCny": 72000,
+      "cashCny": 70500,
+      "fxLoss": 1500,
+      "fx_account": "5601",
+      "revenue_account": "500101",
+      "isolated": true
+    },
+    "actual": {
+      "revenueCny": 72000,
+      "cashCny": 70500,
+      "fxLoss": 1500,
+      "revenue_voucher_ok": true,
+      "receipt_voucher_ok": true,
+      "fx_line_debit": 1500,
+      "revenue_line_credit": 72000
+    },
+    "pass": true,
+    "fix_status": "not_applicable"
+  },
+  {
+    "scenario": 5,
+    "name": "重复付款拦截",
+    "input": {
+      "invoice_no": "INV-DUP-1778672411666",
+      "attempt": "same supplier + same invoice_no + same amount twice"
+    },
+    "expected": {
+      "dup_invoice_blocked_by_db": true,
+      "app_layer_blocks": true,
+      "trigger_blocks_paid_reupdate": true,
+      "dup_journal_rejected": true
+    },
+    "actual": {
+      "dup_invoice_blocked_by_db": false,
+      "app_layer_blocks": true,
+      "trigger_blocks_paid_reupdate": true,
+      "dup_journal_rejected": false
+    },
+    "pass": false,
+    "new_bug": "⚠ actual_invoices 无 (supplier_name, invoice_no) 唯一约束，DB 层不拦截重复发票；⚠ create_journal_atomic 不校验同一 payment source_id 是否已生成过付款凭证（可重复出凭证）",
+    "fix_status": "documented_gap",
+    "fix_note": "建议: 1) 加 UNIQUE(supplier_name, invoice_no) where deleted_at is null; 2) RPC 内增加 source_id+source_type 已存在已 posted 凭证检查"
+  },
+  {
+    "scenario": 6,
+    "name": "回滚（void / 反向冲销）",
+    "input": {
+      "journal_id": "e0cfba83-6287-4e2e-929d-8b6ed0897737",
+      "amount": 25000,
+      "account": "540101"
+    },
+    "expected": {
+      "entry_status": "voided",
+      "gl_debit_reversed": 25000,
+      "manual_change_preserved": true,
+      "physically_deleted": false
+    },
+    "actual": {
+      "entry_status": "voided",
+      "gl_debit_before": 0,
+      "gl_debit_after": 0,
+      "gl_debit_diff": 0,
+      "manual_change_preserved": true
+    },
+    "pass": false,
+    "new_bug": "⚠ 凭证 posted 后 gl_balances 未被 trg_update_gl 写入，导致 reverse_gl_on_void 反向 UPDATE 匹配 0 行；试算平衡/损益表将永远为 0",
+    "fix_status": "documented_gap",
+    "fix_note": "迁移 migrations/20260513_gl_balance_and_dup_guards.sql 包含 trg_update_gl 重建；voided 凭证保留在 journal_entries 表中作为审计痕迹 ✓"
+  },
+  {
+    "scenario": 7,
+    "name": "关闭期间禁止记账",
+    "input": {
+      "period": "2099-12",
+      "status": "closed"
+    },
+    "expected": {
+      "rpc_rejected": true,
+      "error_message_contains": "已关闭",
+      "orphan_entries": 0
+    },
+    "actual": {
+      "rpc_error": "会计期间 2099-12 已关闭，不能写入凭证",
+      "blocked": true,
+      "orphan_entries": 0,
+      "rpc_data": null
+    },
+    "pass": true,
+    "fix_status": "not_applicable"
+  },
+  {
+    "scenario": 8,
+    "name": "并发编辑（乐观锁）",
+    "input": {
+      "user_a": "notes=User-A编辑",
+      "user_b": "notes=User-B编辑",
+      "initial_version": 1
+    },
+    "expected": {
+      "winners": 1,
+      "loser_sees_zero_rows": true,
+      "version_bumped": 2,
+      "diagnostic_logged": true
+    },
+    "actual": {
+      "winner": "B",
+      "loser_sees_zero_rows": {
+        "id": "d3f36ff5-8264-4f5f-b3b5-87d525691bb8",
+        "version": 2
+      },
+      "final_notes": "User-B编辑",
+      "final_version": 2,
+      "diagnostic_id": "79391229-714a-40b9-ac93-2f31fbbb3077"
+    },
+    "pass": true,
+    "fix_status": "not_applicable"
+  }
+]
