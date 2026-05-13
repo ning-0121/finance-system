@@ -1,0 +1,492 @@
+[
+  {
+    "step": 1,
+    "name": "预算单",
+    "input": {
+      "order_no": "E2E-1778668151109-PO",
+      "customer_id": "2ca1b5df-b9e2-4696-b00b-57a213cbcec6",
+      "created_by": "9b023d80-124b-4840-baae-9baed41a3d2e",
+      "order_date": "2026-05-13",
+      "delivery_date": "2026-05-13",
+      "items": [
+        {
+          "_cost_breakdown": {
+            "fabric": 30000,
+            "accessory": 5000,
+            "processing": 8000,
+            "forwarder": 3000,
+            "container": 2000,
+            "logistics": 1500
+          }
+        }
+      ],
+      "target_purchase_price": 30000,
+      "estimated_commission": 8000,
+      "estimated_freight": 3000,
+      "estimated_customs_fee": 2000,
+      "other_costs": 1500,
+      "total_revenue": 10000,
+      "total_cost": 49500,
+      "estimated_profit": 22500,
+      "estimated_margin": 31.25,
+      "currency": "USD",
+      "exchange_rate": 7.2,
+      "status": "draft",
+      "notes": "E2E-1778668151109"
+    },
+    "write_result": {
+      "id": "406b4454-dfa1-4ce0-890f-16ac78347fd0",
+      "order_no": "E2E-1778668151109-PO",
+      "status": "draft"
+    },
+    "read_back": {
+      "id": "406b4454-dfa1-4ce0-890f-16ac78347fd0",
+      "total_revenue": 10000,
+      "total_cost": 49500,
+      "estimated_profit": 22500,
+      "estimated_margin": 31.25,
+      "currency": "USD"
+    },
+    "formula": {
+      "expected": {
+        "profit": 22500,
+        "margin": 31.25
+      },
+      "actual": {
+        "profit": 22500,
+        "margin": 31.25
+      }
+    },
+    "pass": true
+  },
+  {
+    "step": 2,
+    "name": "成本项",
+    "input": {
+      "count": 6,
+      "total": 49500
+    },
+    "write_result": {
+      "inserted": 6,
+      "ids": [
+        "99de8930-afea-4e2e-ba07-ec6bce17c6c0",
+        "77da56f5-222d-4345-9ae3-7996d0f8c039",
+        "834b1c57-e009-43c1-b672-232763f50a7b",
+        "c0065e0f-6e2f-4a01-94d1-79bc6195d6ea",
+        "9373f176-5df7-43a5-aa6e-bf9a315a3eb5",
+        "a92e284c-4409-4f53-8f5c-dc3a7f8fd9e9"
+      ]
+    },
+    "read_back": {
+      "count": 6,
+      "sum": 49500,
+      "by_type": {
+        "fabric": 30000,
+        "accessory": 5000,
+        "processing": 8000,
+        "freight": 3000,
+        "container": 2000,
+        "logistics": 1500
+      }
+    },
+    "formula": {
+      "expected": 49500,
+      "actual": 49500
+    },
+    "pass": true
+  },
+  {
+    "step": 3,
+    "name": "决算单",
+    "input": {
+      "budget_order_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0",
+      "total_actual": 49500,
+      "status": "draft"
+    },
+    "write_result": {
+      "id": "289beba2-40c1-42d6-b698-bf82956e2991",
+      "status_after_confirm": "confirmed"
+    },
+    "read_back": {
+      "id": "289beba2-40c1-42d6-b698-bf82956e2991",
+      "status": "confirmed",
+      "total_actual": 49500,
+      "settled_at": "2026-05-13T10:29:15.051+00:00"
+    },
+    "formula": {
+      "expected": {
+        "total_actual": 49500,
+        "status": "confirmed"
+      },
+      "actual": {
+        "total_actual": 49500,
+        "status": "confirmed"
+      }
+    },
+    "pass": true
+  },
+  {
+    "step": 4,
+    "name": "应收",
+    "input": {
+      "order_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0",
+      "expected_AR_usd": 10000
+    },
+    "write_result": "(无需写入，应收 = budget_orders.total_revenue)",
+    "read_back": {
+      "total_revenue": 10000,
+      "currency": "USD",
+      "ar_received_amount": null,
+      "ar_received_at": null
+    },
+    "formula": {
+      "expected": {
+        "total_revenue": 10000,
+        "received": null
+      },
+      "actual": {
+        "total_revenue": 10000,
+        "received": null
+      }
+    },
+    "pass": true
+  },
+  {
+    "step": 5,
+    "name": "回款",
+    "input": {
+      "order_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0",
+      "receipt_usd": 9900,
+      "receipt_cny": 71280
+    },
+    "write_result": {
+      "ar_updated": true,
+      "journal_id": "537d0f0f-3b74-4881-9f89-71f396464b38",
+      "voucher_no": "PZ-202605-0001"
+    },
+    "read_back": {
+      "ar_received_amount": 9900,
+      "ar_received_at": "2026-05-13T10:29:19.253+00:00",
+      "lines": [
+        {
+          "account_code": "100201",
+          "debit": 71280,
+          "credit": 0
+        },
+        {
+          "account_code": "1122",
+          "debit": 0,
+          "credit": 71280
+        }
+      ]
+    },
+    "formula": {
+      "expected": {
+        "debit_100201": 71280,
+        "credit_1122": 71280
+      },
+      "actual": {
+        "debit_100201": 71280,
+        "credit_1122": 71280
+      }
+    },
+    "pass": true
+  },
+  {
+    "step": 6,
+    "name": "应付",
+    "input": {
+      "count": 4,
+      "total": 46000
+    },
+    "write_result": {
+      "inserted": 4,
+      "records": [
+        {
+          "id": "9ff5feb9-12ab-45a8-a3ec-1bfbc0a105f2",
+          "supplier_name": "面料供应商A",
+          "amount": 30000,
+          "payment_status": "unpaid"
+        },
+        {
+          "id": "59bf84d4-9634-4344-b31d-13181d020aaf",
+          "supplier_name": "辅料供应商B",
+          "amount": 5000,
+          "payment_status": "unpaid"
+        },
+        {
+          "id": "516428f5-132c-416a-bde3-266490a932a6",
+          "supplier_name": "加工厂C",
+          "amount": 8000,
+          "payment_status": "unpaid"
+        },
+        {
+          "id": "dd9340f7-a608-49d3-b84e-0c185c631733",
+          "supplier_name": "货代D",
+          "amount": 3000,
+          "payment_status": "unpaid"
+        }
+      ]
+    },
+    "read_back": {
+      "count": 4,
+      "sum": 46000,
+      "all_unpaid": true
+    },
+    "formula": {
+      "expected": 46000,
+      "actual": 46000
+    },
+    "pass": true
+  },
+  {
+    "step": 7,
+    "name": "付款",
+    "input": {
+      "record_id": "9ff5feb9-12ab-45a8-a3ec-1bfbc0a105f2",
+      "amount": 30000
+    },
+    "write_result": {
+      "status": "paid",
+      "voucher_no": "PZ-202605-0002"
+    },
+    "read_back": {
+      "payment_status": "paid",
+      "paid_amount": 30000,
+      "gl_lines": [
+        {
+          "account_code": "2202",
+          "debit": 30000,
+          "credit": 0
+        },
+        {
+          "account_code": "100201",
+          "debit": 0,
+          "credit": 30000
+        }
+      ]
+    },
+    "formula": {
+      "expected": {
+        "debit_2202": 30000,
+        "credit_100201": 30000
+      },
+      "actual": {
+        "debit_2202": 30000,
+        "credit_100201": 30000
+      }
+    },
+    "pass": true
+  },
+  {
+    "step": 8,
+    "name": "GL 凭证（收入+成本）",
+    "input": {
+      "revenue_cny": 72000,
+      "cost_cny": 46000
+    },
+    "write_result": {
+      "revenue_voucher": "PZ-202605-0003",
+      "cost_voucher": "PZ-202605-0004"
+    },
+    "read_back": {
+      "revenue": {
+        "voucher_no": "PZ-202605-0003",
+        "total_debit": 72000,
+        "total_credit": 72000,
+        "status": "posted"
+      },
+      "cost": {
+        "voucher_no": "PZ-202605-0004",
+        "total_debit": 46000,
+        "total_credit": 46000,
+        "status": "posted"
+      }
+    },
+    "formula": {
+      "expected": {
+        "balanced": true
+      },
+      "actual": {
+        "revBalanced": true,
+        "costBalanced": true
+      }
+    },
+    "pass": true
+  },
+  {
+    "step": 9,
+    "name": "预算表导出",
+    "input": {
+      "order_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0",
+      "type": "budget"
+    },
+    "write_result": {
+      "rows": 25,
+      "hasWarning": false
+    },
+    "read_back": {
+      "financials": {
+        "revenueCNY": 72000,
+        "totalCost": 49500,
+        "profit": 22500,
+        "margin": 31.25
+      },
+      "sample_rows": [
+        [
+          "义乌市绮陌服饰有限公司",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          "YIWU QIMO CLOTHING CO.,LTD",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        [
+          "订  单  预  算  表",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      ]
+    },
+    "formula": {
+      "expected": {
+        "revenueCNY": 72000,
+        "profit": 22500,
+        "margin": 31.25
+      },
+      "actual": {
+        "revenueCNY": 72000,
+        "totalCost": 49500,
+        "profit": 22500,
+        "margin": 31.25
+      }
+    },
+    "pass": true
+  },
+  {
+    "step": 10,
+    "name": "决算表导出",
+    "input": {
+      "order_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0",
+      "type": "settlement",
+      "costSource": "estimated"
+    },
+    "write_result": {
+      "rows": 26,
+      "hasFallbackWarning": true
+    },
+    "read_back": {
+      "financials": {
+        "revenueCNY": 72000,
+        "totalCost": 49500,
+        "profit": 22500,
+        "margin": 31.25
+      }
+    },
+    "formula": {
+      "expected": {
+        "profit": 22500,
+        "hasWarning": true
+      },
+      "actual": {
+        "profit": 22500,
+        "hasWarning": true
+      }
+    },
+    "pass": true
+  },
+  {
+    "step": 11,
+    "name": "异常检测",
+    "input": {
+      "risk_type": "overdue_payment",
+      "risk_level": "yellow",
+      "related_order_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0",
+      "related_customer_id": "2ca1b5df-b9e2-4696-b00b-57a213cbcec6",
+      "title": "E2E-1778668151109-PO 客户少付 100 USD",
+      "description": "应收 10000 USD，实收 9900 USD，差额 100 USD",
+      "suggested_action": "请财务跟进核销或催收",
+      "status": "pending"
+    },
+    "write_result": {
+      "id": "20c2bb5f-6113-456f-874c-4e7c04da4508",
+      "risk_type": "overdue_payment",
+      "risk_level": "yellow"
+    },
+    "read_back": {
+      "id": "20c2bb5f-6113-456f-874c-4e7c04da4508",
+      "status": "pending",
+      "title": "E2E-1778668151109-PO 客户少付 100 USD",
+      "related_order_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0"
+    },
+    "formula": {
+      "expected": {
+        "shortfall_usd": 100,
+        "risk_level": "yellow"
+      },
+      "actual": {
+        "shortfall_usd": 100,
+        "risk_level": "yellow"
+      }
+    },
+    "pass": true
+  },
+  {
+    "step": 12,
+    "name": "诊断日志",
+    "input": {
+      "action": "insert",
+      "table_name": "budget_orders",
+      "record_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0",
+      "actor_id": null,
+      "source_page": "e2e-test",
+      "api_route": null,
+      "payload_hash": "e2e-payload-hash",
+      "db_hash": "e2e-db-hash",
+      "status": "ok",
+      "error_detail": null
+    },
+    "write_result": {
+      "id": "1240bda5-11b3-4595-9b61-5db89f7b1180",
+      "status": "ok"
+    },
+    "read_back": {
+      "id": "1240bda5-11b3-4595-9b61-5db89f7b1180",
+      "table_name": "budget_orders",
+      "status": "ok",
+      "action": "insert",
+      "record_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0"
+    },
+    "formula": {
+      "expected": {
+        "status": "ok",
+        "record_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0"
+      },
+      "actual": {
+        "status": "ok",
+        "record_id": "406b4454-dfa1-4ce0-890f-16ac78347fd0"
+      }
+    },
+    "pass": true
+  }
+]

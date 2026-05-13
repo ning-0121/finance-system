@@ -46,7 +46,7 @@ export async function POST(
       .from('order_settlements')
       .update({
         status: 'confirmed',
-        confirmed_at: new Date().toISOString(),
+        settled_at: new Date().toISOString(),
       })
       .eq('id', settlement.id)
       .eq('status', 'draft')
