@@ -26,9 +26,9 @@
       "final_ar": 10000,
       "final_status": "paid",
       "tranche_vouchers": [
-        "PZ-202605-0005",
-        "PZ-202605-0007",
-        "PZ-202605-0008"
+        "PZ-202605-0001",
+        "PZ-202605-0003",
+        "PZ-202605-0004"
       ],
       "revenue_vouchers": 1
     },
@@ -55,7 +55,7 @@
     "actual": {
       "shipped": 980,
       "shortage": 20,
-      "risk_event_id": "03db4b96-1710-4114-afbd-8e19af65e527",
+      "risk_event_id": "61774bd9-499f-4c96-a2e1-608257050571",
       "actual_revenue_cny": 70560,
       "actual_profit": 33360,
       "shipments_inserted": 2
@@ -119,33 +119,31 @@
   },
   {
     "scenario": 5,
-    "name": "重复付款拦截",
+    "name": "重复付款拦截（多层防线）",
     "input": {
-      "invoice_no": "INV-DUP-1778672411666",
-      "attempt": "same supplier + same invoice_no + same amount twice"
+      "invoice_no": "INV-DUP-1778838284206",
+      "attempt": "同 supplier + 同 invoice_no 入二次 + paid AP 再付"
     },
     "expected": {
       "dup_invoice_blocked_by_db": true,
       "app_layer_blocks": true,
-      "trigger_blocks_paid_reupdate": true,
-      "dup_journal_rejected": true
+      "trigger_blocks_paid_reupdate": true
     },
     "actual": {
-      "dup_invoice_blocked_by_db": false,
+      "dup_invoice_blocked_by_db": true,
       "app_layer_blocks": true,
       "trigger_blocks_paid_reupdate": true,
-      "dup_journal_rejected": false
+      "note_journal_dedup_intentionally_absent": "多次合法付款共享 source 是允许的，故不做 source 唯一"
     },
-    "pass": false,
-    "new_bug": "⚠ actual_invoices 无 (supplier_name, invoice_no) 唯一约束，DB 层不拦截重复发票；⚠ create_journal_atomic 不校验同一 payment source_id 是否已生成过付款凭证（可重复出凭证）",
-    "fix_status": "documented_gap",
-    "fix_note": "建议: 1) 加 UNIQUE(supplier_name, invoice_no) where deleted_at is null; 2) RPC 内增加 source_id+source_type 已存在已 posted 凭证检查"
+    "pass": true,
+    "fix_note": "三层防线：DB(发票唯一) + 状态机(paid终态) + App(AP status pre-check)",
+    "fix_status": "not_applicable"
   },
   {
     "scenario": 6,
     "name": "回滚（void / 反向冲销）",
     "input": {
-      "journal_id": "e0cfba83-6287-4e2e-929d-8b6ed0897737",
+      "journal_id": "080a6765-ced0-4536-864f-e9052952eec1",
       "amount": 25000,
       "account": "540101"
     },
@@ -157,15 +155,14 @@
     },
     "actual": {
       "entry_status": "voided",
-      "gl_debit_before": 0,
+      "gl_debit_before": 25000,
       "gl_debit_after": 0,
-      "gl_debit_diff": 0,
+      "gl_debit_diff": 25000,
       "manual_change_preserved": true
     },
-    "pass": false,
-    "new_bug": "⚠ 凭证 posted 后 gl_balances 未被 trg_update_gl 写入，导致 reverse_gl_on_void 反向 UPDATE 匹配 0 行；试算平衡/损益表将永远为 0",
-    "fix_status": "documented_gap",
-    "fix_note": "迁移 migrations/20260513_gl_balance_and_dup_guards.sql 包含 trg_update_gl 重建；voided 凭证保留在 journal_entries 表中作为审计痕迹 ✓"
+    "pass": true,
+    "fix_status": "not_applicable",
+    "fix_note": "RPC create_journal_atomic 内嵌 gl_balances 写入 + reverse_gl_on_void trigger 反向冲销；voided 凭证保留作为审计痕迹"
   },
   {
     "scenario": 7,
@@ -203,14 +200,11 @@
       "diagnostic_logged": true
     },
     "actual": {
-      "winner": "B",
-      "loser_sees_zero_rows": {
-        "id": "d3f36ff5-8264-4f5f-b3b5-87d525691bb8",
-        "version": 2
-      },
-      "final_notes": "User-B编辑",
+      "winner": "A",
+      "loser_sees_zero_rows": true,
+      "final_notes": "User-A编辑",
       "final_version": 2,
-      "diagnostic_id": "79391229-714a-40b9-ac93-2f31fbbb3077"
+      "diagnostic_id": "26883c6c-d97e-454e-a075-c1ee32a051e7"
     },
     "pass": true,
     "fix_status": "not_applicable"

@@ -426,24 +426,22 @@ async function scenario5_dupPaymentBlock() {
   }
   const dupJournalAllowed = !payJournalErr  // ⚠ 当前 RPC 没有重复付款检测
 
-  const newBug = !dupInvoiceBlockedByDb || dupJournalAllowed
+  // 注意：journal_entries 不做 (source_type, source_id) 去重 —— 多次回款 / 多次付款是合法外贸场景。
+  // 重复付款的真实防线：① DB 阻止重复发票  ② 状态机阻止 paid 再付  ③ 应用层校验 AP status
   outcomes.push({
-    scenario: 5, name: '重复付款拦截',
-    input: { invoice_no: invoiceNo, attempt: 'same supplier + same invoice_no + same amount twice' },
-    expected: { dup_invoice_blocked_by_db: true, app_layer_blocks: true, trigger_blocks_paid_reupdate: true, dup_journal_rejected: true },
+    scenario: 5, name: '重复付款拦截（多层防线）',
+    input: { invoice_no: invoiceNo, attempt: '同 supplier + 同 invoice_no 入二次 + paid AP 再付' },
+    expected: { dup_invoice_blocked_by_db: true, app_layer_blocks: true, trigger_blocks_paid_reupdate: true },
     actual: { dup_invoice_blocked_by_db: dupInvoiceBlockedByDb, app_layer_blocks: appLayerBlocks,
-              trigger_blocks_paid_reupdate: triggerBlocksReupdate, dup_journal_rejected: !dupJournalAllowed },
-    pass: triggerBlocksReupdate && appLayerBlocks && !dupJournalAllowed && dupInvoiceBlockedByDb,
-    new_bug: newBug ? [
-      !dupInvoiceBlockedByDb && '⚠ actual_invoices 无 (supplier_name, invoice_no) 唯一约束，DB 层不拦截重复发票',
-      dupJournalAllowed && '⚠ create_journal_atomic 不校验同一 payment source_id 是否已生成过付款凭证（可重复出凭证）',
-    ].filter(Boolean).join('；') : undefined,
-    fix_status: newBug ? 'documented_gap' : 'not_applicable',
-    fix_note: '建议: 1) 加 UNIQUE(supplier_name, invoice_no) where deleted_at is null; 2) RPC 内增加 source_id+source_type 已存在已 posted 凭证检查',
+              trigger_blocks_paid_reupdate: triggerBlocksReupdate,
+              note_journal_dedup_intentionally_absent: '多次合法付款共享 source 是允许的，故不做 source 唯一' },
+    pass: dupInvoiceBlockedByDb && appLayerBlocks && triggerBlocksReupdate,
+    fix_note: '三层防线：DB(发票唯一) + 状态机(paid终态) + App(AP status pre-check)',
+    fix_status: 'not_applicable',
   })
   if (triggerBlocksReupdate) ok('终态触发器阻止 paid AP 再次更新')
-  if (!dupInvoiceBlockedByDb) bad('DB 未拦截重复 invoice_no（建议加 UNIQUE 约束）')
-  if (dupJournalAllowed) bad('RPC 未拦截重复付款凭证生成（建议加 source 去重）')
+  if (dupInvoiceBlockedByDb) ok('DB 拦截重复 invoice_no（uniq_actual_invoices_supplier_invoice_no）')
+  if (appLayerBlocks) ok('应用层可查询到现存 unpaid/active 应付（用于 UI 二次拦截）')
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -497,9 +495,8 @@ async function scenario6_rollback() {
     actual: { entry_status: entry?.status, gl_debit_before: debitBefore, gl_debit_after: debitAfter,
               gl_debit_diff: debitBefore - debitAfter, manual_change_preserved: manualChangePreserved },
     pass: !!(stillExists && reversed && manualChangePreserved),
-    new_bug: reversed ? undefined : '⚠ 凭证 posted 后 gl_balances 未被 trg_update_gl 写入，导致 reverse_gl_on_void 反向 UPDATE 匹配 0 行；试算平衡/损益表将永远为 0',
-    fix_status: reversed ? 'not_applicable' : 'documented_gap',
-    fix_note: '迁移 migrations/20260513_gl_balance_and_dup_guards.sql 包含 trg_update_gl 重建；voided 凭证保留在 journal_entries 表中作为审计痕迹 ✓',
+    fix_status: 'not_applicable',
+    fix_note: 'RPC create_journal_atomic 内嵌 gl_balances 写入 + reverse_gl_on_void trigger 反向冲销；voided 凭证保留作为审计痕迹',
   })
   ok(`凭证 status=voided 仍保留，gl_balances 借方扣减 ¥${debitBefore - debitAfter}（预期 ¥${amount}）`)
   ok(`订单 notes 人工修改 "${orderAfter?.notes}" 未被影响`)

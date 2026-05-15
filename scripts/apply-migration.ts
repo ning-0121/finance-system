@@ -26,9 +26,14 @@ async function viaPg(url: string, sql: string) {
 async function viaRpc(sql: string) {
   const { createClient } = await import('@supabase/supabase-js')
   const svc = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
-  const { error } = await svc.rpc('exec_sql' as never, { sql } as never)
-  if (error) throw new Error('exec_sql RPC 失败 — 是否先跑了 scripts/_bootstrap_exec_sql.sql ? 原因: ' + error.message)
-  console.log('✓ DDL 通过 RPC 已执行')
+  const { data, error } = await svc.rpc('exec_sql' as never, { sql } as never)
+  if (error) throw new Error('exec_sql RPC 调用失败（RPC 是否已部署？跑 scripts/_bootstrap_exec_sql.sql）: ' + error.message)
+  // exec_sql 的 EXCEPTION 块会把 DDL 错误包装成 {ok:false, error, detail}
+  const result = data as { ok: boolean; error?: string; detail?: string } | null
+  if (!result || result.ok === false) {
+    throw new Error(`DDL 执行失败 (sqlstate ${result?.detail || '?'}): ${result?.error || 'unknown'}`)
+  }
+  console.log('✓ DDL 通过 RPC 已执行 (ok:true)')
 }
 
 async function main() {
