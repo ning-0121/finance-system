@@ -700,9 +700,9 @@ export default function CostsPage() {
             )}
             {entryMode === 'shared' && !editItem && (
               <div className="rounded-lg border p-3 space-y-2 max-h-[220px] overflow-y-auto">
-                <Label className="text-xs text-muted-foreground">勾选多个订单，总金额将按各订单明细「件数」合计占比分配（件数均为 0 时平均分配）</Label>
+                <Label className="text-xs text-muted-foreground">勾选多个订单，总金额将按各订单明细「件数」合计占比分配（件数均为 0 时平均分配）。仅排除"已拒绝"状态。</Label>
                 <div className="space-y-1">
-                  {orders.filter(o => o.status === 'approved' || o.status === 'closed').map(o => {
+                  {orders.filter(o => o.status !== 'rejected').map(o => {
                     const checked = sharedOrderIds.includes(o.id)
                     const label = syncedOrderMap[o.id] || o.order_no
                     const q = orderTotalQty(o)
@@ -763,16 +763,19 @@ export default function CostsPage() {
                     onChange={(e) => { setOrderSearch(e.target.value); setFormOrderId('') }}
                     onFocus={() => setShowOrderList(true)}
                   />
-                  {showOrderList && !(entryMode === 'shared' && !editItem) && (
-                    <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-white border rounded-lg shadow-lg max-h-[200px] overflow-y-auto">
-                      {orders
-                        .filter(o => {
-                          if (!orderSearch) return true
-                          const label = syncedOrderMap[o.id] || o.order_no
-                          return label.toLowerCase().includes(orderSearch.toLowerCase()) || (o.customer?.company || '').toLowerCase().includes(orderSearch.toLowerCase())
-                        })
-                        .slice(0, 20)
-                        .map(o => {
+                  {showOrderList && !(entryMode === 'shared' && !editItem) && (() => {
+                    const matched = orders.filter(o => {
+                      if (o.status === 'rejected') return false
+                      if (!orderSearch) return true
+                      const label = syncedOrderMap[o.id] || o.order_no
+                      return label.toLowerCase().includes(orderSearch.toLowerCase()) || (o.customer?.company || '').toLowerCase().includes(orderSearch.toLowerCase())
+                    })
+                    const DISPLAY_CAP = 50
+                    const shown = matched.slice(0, DISPLAY_CAP)
+                    const more = matched.length - shown.length
+                    return (
+                      <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-white border rounded-lg shadow-lg max-h-[300px] overflow-y-auto">
+                        {shown.map(o => {
                           const label = syncedOrderMap[o.id] || o.order_no
                           return (
                             <button key={o.id} className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors" onClick={() => { setFormOrderId(o.id); setOrderSearch(''); setShowOrderList(false) }}>
@@ -780,9 +783,12 @@ export default function CostsPage() {
                             </button>
                           )
                         })}
-                      {orders.length === 0 && <p className="px-3 py-2 text-sm text-muted-foreground">暂无订单</p>}
-                    </div>
-                  )}
+                        {orders.length === 0 && <p className="px-3 py-2 text-sm text-muted-foreground">暂无订单</p>}
+                        {matched.length === 0 && orders.length > 0 && <p className="px-3 py-2 text-sm text-muted-foreground">无匹配订单（已排除已拒绝）</p>}
+                        {more > 0 && <p className="px-3 py-2 text-xs text-amber-600 bg-amber-50 border-t">还有 {more} 个匹配，请输入更精确的关键词缩小结果</p>}
+                      </div>
+                    )
+                  })()}
                 </div>
                 {formOrderId && <button className="text-xs text-muted-foreground hover:text-red-500" onClick={() => setFormOrderId('')}>清除关联</button>}
                 {entryMode === 'shared' && !editItem && (

@@ -34,6 +34,15 @@ function isSupabaseConfigured(): boolean {
 // 预算单 CRUD
 // ============================================================
 
+/**
+ * 取预算订单。
+ *
+ * 财务级安全策略（不再用 demo 数据掩盖真实状态）：
+ *   - Supabase 未配置：返回 demoBudgetOrders（演示模式）
+ *   - DB 报错：console.error 并返回 []。绝不能把"DB 故障"伪装成"业务有数据"，
+ *     调用方看到空数组应当结合 toast/loading 状态自行提示
+ *   - DB 返回空：返回 [] —— 真实空状态，不要替换成 demo
+ */
 export async function getBudgetOrders(statusFilter?: string): Promise<BudgetOrder[]> {
   if (!isSupabaseConfigured()) return demoBudgetOrders
 
@@ -43,7 +52,8 @@ export async function getBudgetOrders(statusFilter?: string): Promise<BudgetOrde
       .from('budget_orders')
       .select('*, customers(*)')
       .order('created_at', { ascending: false })
-      .limit(500)
+      // 提到 2000：一年外贸订单量上限以下，仍然加 cap 防御性写法
+      .limit(2000)
 
     if (statusFilter && statusFilter !== 'all') {
       query = query.eq('status', statusFilter)
@@ -51,15 +61,13 @@ export async function getBudgetOrders(statusFilter?: string): Promise<BudgetOrde
 
     const { data, error } = await query
     if (error) {
-      console.error('getBudgetOrders DB error:', error.message)
-      return demoBudgetOrders // DB错误时降级
+      console.error('[getBudgetOrders] DB error:', error.message)
+      return [] // 真实失败：返回空，不返回 demo
     }
-    if (!data || data.length === 0) return demoBudgetOrders // 空数据时用demo
-
-    return data.map(mapDbBudgetOrder)
+    return (data || []).map(mapDbBudgetOrder)
   } catch (e) {
-    console.error('getBudgetOrders error:', e)
-    return demoBudgetOrders
+    console.error('[getBudgetOrders] unexpected error:', e)
+    return []
   }
 }
 
@@ -76,13 +84,15 @@ export async function getBudgetOrderById(id: string): Promise<BudgetOrder | null
       .eq('id', id)
       .single()
 
-    if (error) throw error
-    if (!data) return demoBudgetOrders.find(o => o.id === id) || null
-
+    if (error) {
+      console.error('[getBudgetOrderById] DB error:', error.message)
+      return null  // 不再回 demo：DB 错时 UI 显示"订单不存在"比假数据安全
+    }
+    if (!data) return null
     return mapDbBudgetOrder(data)
   } catch (e) {
-    console.error('getBudgetOrderById error:', e)
-    return demoBudgetOrders.find(o => o.id === id) || null
+    console.error('[getBudgetOrderById] unexpected error:', e)
+    return null
   }
 }
 
@@ -242,10 +252,15 @@ export async function getSettlementByBudgetId(budgetOrderId: string): Promise<Se
       .eq('budget_order_id', budgetOrderId)
       .single()
 
-    if (error || !data) return demoSettlementOrders.find(s => s.budget_order_id === budgetOrderId) || null
+    if (error) {
+      console.error('[getSettlementByBudgetId] DB error:', error.message)
+      return null
+    }
+    if (!data) return null
     return data as SettlementOrder
-  } catch {
-    return demoSettlementOrders.find(s => s.budget_order_id === budgetOrderId) || null
+  } catch (e) {
+    console.error('[getSettlementByBudgetId] unexpected error:', e)
+    return null
   }
 }
 
@@ -263,10 +278,14 @@ export async function getCustomers(): Promise<Customer[]> {
       .select('*')
       .order('company')
 
-    if (error || !data?.length) return demoCustomers
-    return data as Customer[]
-  } catch {
-    return demoCustomers
+    if (error) {
+      console.error('[getCustomers] DB error:', error.message)
+      return []
+    }
+    return (data || []) as Customer[]
+  } catch (e) {
+    console.error('[getCustomers] unexpected error:', e)
+    return []
   }
 }
 
@@ -280,10 +299,14 @@ export async function getProducts(): Promise<Product[]> {
       .select('*')
       .order('sku')
 
-    if (error || !data?.length) return demoProducts
-    return data as Product[]
-  } catch {
-    return demoProducts
+    if (error) {
+      console.error('[getProducts] DB error:', error.message)
+      return []
+    }
+    return (data || []) as Product[]
+  } catch (e) {
+    console.error('[getProducts] unexpected error:', e)
+    return []
   }
 }
 
@@ -302,10 +325,14 @@ export async function getAlerts(): Promise<Alert[]> {
       .order('created_at', { ascending: false })
       .limit(20)
 
-    if (error || !data?.length) return demoAlerts
-    return data as Alert[]
-  } catch {
-    return demoAlerts
+    if (error) {
+      console.error('[getAlerts] DB error:', error.message)
+      return []
+    }
+    return (data || []) as Alert[]
+  } catch (e) {
+    console.error('[getAlerts] unexpected error:', e)
+    return []
   }
 }
 
@@ -322,13 +349,17 @@ export async function getApprovalLogs(entityId: string): Promise<ApprovalLog[]> 
       .eq('entity_id', entityId)
       .order('created_at', { ascending: true })
 
-    if (error || !data?.length) return demoApprovalLogs.filter(l => l.entity_id === entityId)
-    return data.map(log => ({
+    if (error) {
+      console.error('[getApprovalLogs] DB error:', error.message)
+      return []
+    }
+    return (data || []).map(log => ({
       ...log,
       operator: log.profiles ? { ...log.profiles, role: log.profiles.role || 'admin' } : undefined,
     })) as ApprovalLog[]
-  } catch {
-    return demoApprovalLogs.filter(l => l.entity_id === entityId)
+  } catch (e) {
+    console.error('[getApprovalLogs] unexpected error:', e)
+    return []
   }
 }
 
@@ -346,7 +377,14 @@ export async function getProfitSummary(): Promise<ProfitSummary> {
       .select('total_revenue, total_cost, estimated_profit, estimated_margin, currency, exchange_rate')
       .in('status', ['approved', 'closed'])
 
-    if (error || !data?.length) return demoProfitSummary
+    if (error) {
+      console.error('[getProfitSummary] DB error:', error.message)
+      return { total_revenue: 0, total_cost: 0, total_profit: 0, avg_margin: 0, order_count: 0, period: '' }
+    }
+    if (!data?.length) {
+      // 真实空：返回零值而非 demo
+      return { total_revenue: 0, total_cost: 0, total_profit: 0, avg_margin: 0, order_count: 0, period: new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' }) }
+    }
 
     // 全部转CNY口径
     const totalRevenueCny = data.reduce((s, o) => {
@@ -365,8 +403,9 @@ export async function getProfitSummary(): Promise<ProfitSummary> {
       order_count: data.length,
       period: new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' }),
     }
-  } catch {
-    return demoProfitSummary
+  } catch (e) {
+    console.error('[getProfitSummary] unexpected error:', e)
+    return { total_revenue: 0, total_cost: 0, total_profit: 0, avg_margin: 0, order_count: 0, period: '' }
   }
 }
 
@@ -380,7 +419,7 @@ export async function getMonthlyProfitData() {
       .not('order_date', 'is', null)
       .order('order_date')
       .limit(1000)
-    if (!orders || orders.length === 0) return demoMonthlyProfit
+    if (!orders || orders.length === 0) return []
 
     // 按月聚合（全部转CNY）
     const monthMap = new Map<string, { revenue: number; cost: number; profit: number; count: number }>()
@@ -408,9 +447,10 @@ export async function getMonthlyProfitData() {
         margin: d.revenue > 0 ? Math.round(d.profit / d.revenue * 10000) / 100 : 0,
       }))
 
-    return result.length > 0 ? result : demoMonthlyProfit
-  } catch {
-    return demoMonthlyProfit
+    return result
+  } catch (e) {
+    console.error('[getMonthlyProfitData] unexpected error:', e)
+    return []
   }
 }
 
