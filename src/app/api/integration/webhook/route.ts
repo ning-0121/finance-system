@@ -284,10 +284,10 @@ async function markSyncStatus(
     budget_sync_attempt_count: undefined as never, // 由下面 RPC 递增
     ...patch,
   }).eq('id', syncedOrderId)
-  // 单独原子递增 attempt_count（避免读改写竞态）
-  await supabase.rpc('exec_sql' as never, {
-    sql: `UPDATE public.synced_orders SET budget_sync_attempt_count = budget_sync_attempt_count + 1 WHERE id = '${syncedOrderId}'`,
-  } as never)
+  // 单独原子递增 attempt_count
+  // Wave 1-E P0 修复: 不再字符串插值 syncedOrderId（即使来自有签名 webhook payload，
+  // 财务系统也不允许 SQL 注入面）。改用参数化 RPC。
+  await supabase.rpc('increment_sync_attempt' as never, { p_id: syncedOrderId } as never)
 }
 
 async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResult> {
