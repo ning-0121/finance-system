@@ -326,44 +326,53 @@ async function executeSingleAction(
     }
 
     case 'update_receivable': {
+      // Wave 2 P0-E2 修复：客户回款 = subledger + GL 同事务原子
+      // 旧版只插 actual_invoices(status='paid') 无 GL → trial balance 看不到现金，AR 不对冲
+      // 新版调 record_customer_receipt_atomic RPC：Dr Cash / Cr AR + ar_received_amount 累加
       if (!confirmedBy) throw new Error('update_receivable: 操作者 ID 不能为空')
       const payerName = String(f.payer_name || f.customer_name || '')
       if (!payerName) throw new Error('update_receivable: 文档中缺少付款方名称')
 
-      // 尝试找到关联订单（按客户名）
-      let recvOrderId: string | null = null
+      // 找关联订单（按客户名 fuzzy）
       const { data: custRows } = await supabase
-        .from('customers')
-        .select('id')
-        .ilike('company', `%${payerName}%`)
-        .limit(1)
-      if (custRows?.length) {
-        const { data: orderRows } = await supabase
-          .from('budget_orders')
-          .select('id')
-          .eq('customer_id', custRows[0].id)
-          .in('status', ['approved', 'draft'])
-          .order('created_at', { ascending: false })
-          .limit(1)
-        recvOrderId = orderRows?.[0]?.id ?? null
+        .from('customers').select('id').ilike('company', `%${payerName}%`).limit(1)
+      if (!custRows?.length) {
+        throw new Error(`update_receivable: 未找到客户"${payerName}"，请先创建客户档案`)
       }
+      const { data: orderRows } = await supabase
+        .from('budget_orders').select('id')
+        .eq('customer_id', custRows[0].id)
+        .in('status', ['approved', 'draft'])
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false }).limit(1)
+      const recvOrderId = orderRows?.[0]?.id
       if (!recvOrderId) {
-        throw new Error(`update_receivable: 未找到客户"${payerName}"的关联订单，请先确认订单存在`)
+        throw new Error(`update_receivable: 客户"${payerName}"没有 approved/draft 订单`)
       }
 
-      const { data, error } = await supabase.from('actual_invoices').insert({
-        budget_order_id: recvOrderId,
-        invoice_type: 'customer_statement',
-        invoice_no: `RCV-${Date.now().toString(36)}`,
-        supplier_name: payerName,
-        total_amount: Number(f.amount || f.total_amount || 0),
-        currency: String(f.currency || 'USD'),
-        status: 'paid',
-        invoice_date: (f.transaction_date as string) || new Date().toISOString().split('T')[0],
-        created_by: confirmedBy,
-      }).select('id').single()
-      if (error) throw new Error(error.message)
-      return data?.id || null
+      const amount = Number(f.amount || f.total_amount || 0)
+      if (!amount || amount <= 0) throw new Error('update_receivable: 金额必须 > 0')
+      const transactionDate = (f.transaction_date as string) || new Date().toISOString().split('T')[0]
+      const currency = String(f.currency || 'USD')
+
+      // RPC 内部完整事务：actual_invoices + journal_entries + journal_lines + gl_balances
+      // 任一失败整体 rollback，executor 收到 throw → retry → 永久失败时 subledger 也不存在
+      const { data: rpcResult, error: rpcErr } = await supabase.rpc(
+        'record_customer_receipt_atomic',
+        {
+          p_budget_order_id: recvOrderId,
+          p_payer_name: payerName,
+          p_amount: amount,
+          p_currency: currency,
+          p_transaction_date: transactionDate,
+          p_actor_id: confirmedBy,
+          p_invoice_no: `RCV-${Date.now().toString(36)}`,
+        } as never,
+      )
+      if (rpcErr) throw new Error(`record_customer_receipt_atomic: ${rpcErr.message}`)
+      const r = rpcResult as { invoice_id: string; journal_id: string; voucher_no: string }
+      // 返回 invoice_id（与原行为一致，但同时 GL 已 posted）
+      return r.invoice_id
     }
 
     case 'update_customer_credit': {
