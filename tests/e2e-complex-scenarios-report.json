@@ -55,7 +55,7 @@
     "actual": {
       "shipped": 980,
       "shortage": 20,
-      "risk_event_id": "5967c448-2a91-468f-b3af-bc39347ebd73",
+      "risk_event_id": "4d5d7400-242c-4d8e-abd9-ddf52be6e6bd",
       "actual_revenue_cny": 70560,
       "actual_profit": 33360,
       "shipments_inserted": 2
@@ -121,7 +121,7 @@
     "scenario": 5,
     "name": "重复付款拦截（多层防线）",
     "input": {
-      "invoice_no": "INV-DUP-1779506907046",
+      "invoice_no": "INV-DUP-1779508376979",
       "attempt": "同 supplier + 同 invoice_no 入二次 + paid AP 再付"
     },
     "expected": {
@@ -143,7 +143,7 @@
     "scenario": 6,
     "name": "回滚（void / 反向冲销）",
     "input": {
-      "journal_id": "d3bc82c8-5744-4776-87e0-91dd35d4cf40",
+      "journal_id": "27b43741-ed4d-4cb6-b5ac-a3b66651d49e",
       "amount": 25000,
       "account": "540101"
     },
@@ -200,11 +200,14 @@
       "diagnostic_logged": true
     },
     "actual": {
-      "winner": "A",
-      "loser_sees_zero_rows": true,
-      "final_notes": "User-A编辑",
+      "winner": "B",
+      "loser_sees_zero_rows": {
+        "id": "fc81a7e6-6c23-416e-825c-203e68e0491c",
+        "version": 2
+      },
+      "final_notes": "User-B编辑",
       "final_version": 2,
-      "diagnostic_id": "1b60ee7a-4da7-46c1-856c-70e485e4df90"
+      "diagnostic_id": "a43c5af7-b55c-4808-863e-b0bd97f2c159"
     },
     "pass": true,
     "fix_status": "not_applicable"
