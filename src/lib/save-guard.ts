@@ -111,60 +111,85 @@ export async function safeUpdate<T extends Record<string, unknown>>(
 }
 
 /**
- * 财务记录软删除表 — 这些表只标记 deleted_at，不物理删除。
- * 需配合 DB 迁移：ALTER TABLE <table> ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
- * 并在 RLS 中过滤: WHERE deleted_at IS NULL
+ * Wave 1-A · 财务实体软删除受保护清单。
  *
- * journal_entries 改用 status='voided'（已有该字段），无需 deleted_at。
+ * 与 src/lib/financial/soft-delete.ts 中的 FINANCIAL_ENTITY_TABLES 保持一致；
+ * DB 层 BEFORE DELETE trigger（financial_hard_delete_guard）作为底线兜底。
+ *
+ * 财务实体的删除必须走 softDeleteFinancialEntity()（强制 actor+reason），
+ * 本文件不再提供针对财务表的"便利"硬删除路径——任何"fallback 到硬删除"
+ * 被视为 P0 architecture violation。
  */
-const SOFT_DELETE_TABLES = new Set([
-  'actual_invoices', 'cost_items', 'payable_records',
-])
+import {
+  FINANCIAL_ENTITY_TABLES,
+  isFinancialEntityTable,
+  softDeleteFinancialEntity,
+} from '@/lib/financial/soft-delete'
+
+const SOFT_DELETE_TABLES = new Set<string>(FINANCIAL_ENTITY_TABLES)
 
 /**
- * 软删除：为财务凭证表设置 deleted_at，其余表硬删除。
- * 作为财务级操作的首选删除方式。
+ * 软删除：财务实体走 softDeleteFinancialEntity（强制 actor+reason）；
+ * 非财务表走 safeDelete 物理删除。
+ *
+ * 注意：传入财务表但未提供 deletedBy/reason 会直接报错——这是有意的，
+ * 软删除必须可追溯，UI 必须强制弹窗收集 reason。
  */
 export async function softDelete(
   table: string,
   id: string,
-  options?: { showToast?: boolean; deletedBy?: string }
+  options?: { showToast?: boolean; deletedBy?: string; reason?: string; sourcePage?: string }
 ): Promise<SaveResult> {
-  const supabase = createClient()
-
-  if (SOFT_DELETE_TABLES.has(table)) {
-    // 标记删除时间而非物理删除
-    const { error } = await supabase
-      .from(table)
-      .update({
-        deleted_at: new Date().toISOString(),
-        ...(options?.deletedBy ? { deleted_by: options.deletedBy } : {}),
-      })
-      .eq('id', id)
-      .is('deleted_at', null) // 幂等：已软删除的不重复标记
-
-    if (error) {
-      // 若列不存在则降级硬删除并记录警告
-      console.warn(`[SaveGuard] softDelete ${table} id=${id}: deleted_at update failed (${error.message}), 降级硬删除`)
-      return safeDelete(table, id, options)
+  if (SOFT_DELETE_TABLES.has(table) && isFinancialEntityTable(table)) {
+    if (!options?.deletedBy) {
+      const msg = '财务实体删除必须提供 deletedBy（actor UUID）'
+      if (options?.showToast !== false) toast.error(msg)
+      return { success: false, error: msg, verified: false }
     }
-
-    if (options?.showToast !== false) toast.success('已删除')
+    if (!options?.reason || options.reason.trim().length < 4) {
+      const msg = '财务实体删除必须提供原因（不少于 4 字符）'
+      if (options?.showToast !== false) toast.error(msg)
+      return { success: false, error: msg, verified: false }
+    }
+    const result = await softDeleteFinancialEntity({
+      table,
+      id,
+      actorId: options.deletedBy,
+      reason: options.reason,
+      sourcePage: options.sourcePage,
+    })
+    if (!result.ok) {
+      if (options?.showToast !== false) toast.error(`删除失败: ${result.error}`)
+      return { success: false, error: result.error ?? '未知错误', verified: false }
+    }
+    if (options?.showToast !== false) {
+      toast.success(result.alreadyDeleted ? '该记录已于早前删除' : '已删除')
+    }
     return { success: true, verified: true }
   }
 
-  // 非财务表正常硬删除
+  // 非财务表才允许硬删除
   return safeDelete(table, id, options)
 }
 
 /**
- * 安全删除：删除后验证确实不存在
+ * 安全删除（非财务表专用）。如果误传财务表，立刻 hard fail。
+ *
+ * Wave 1-A 之前的"silently fallback to hard delete"路径已彻底移除。
  */
 export async function safeDelete(
   table: string,
   id: string,
   options?: { showToast?: boolean }
 ): Promise<SaveResult> {
+  // 财务表禁止走硬删除路径——任何调用方误传都视为 P0 阻断
+  if (SOFT_DELETE_TABLES.has(table)) {
+    const msg = `safeDelete 拒绝执行：表 "${table}" 是受保护财务实体，请使用 softDeleteFinancialEntity()`
+    console.error('[SaveGuard]', msg)
+    if (options?.showToast !== false) toast.error(msg)
+    return { success: false, error: msg, verified: false }
+  }
+
   const supabase = createClient()
 
   const { error } = await supabase.from(table).delete().eq('id', id)
@@ -175,9 +200,11 @@ export async function safeDelete(
   }
 
   // 验证确实删除
-  const { data: still } = await supabase.from(table).select('id').eq('id', id).single()
+  const { data: still } = await supabase.from(table).select('id').eq('id', id).maybeSingle()
   if (still) {
-    console.error(`[SaveGuard] DELETE ${table} id=${id} returned success but record still exists`)
+    const msg = `DELETE ${table} id=${id} returned success but record still exists`
+    console.error(`[SaveGuard] ${msg}`)
+    if (options?.showToast !== false) toast.error('删除未生效')
     return { success: false, error: '删除未生效', verified: false }
   }
 

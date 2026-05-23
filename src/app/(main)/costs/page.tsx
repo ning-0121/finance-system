@@ -631,14 +631,29 @@ export default function CostsPage() {
                             setShowAdd(true)
                           }}>编辑</Button>
                           <Button variant="ghost" size="sm" className="h-7 text-xs text-red-500 hover:text-red-700" onClick={async () => {
-                            if (!confirm(`确定删除这笔费用？\n${item.description}\n金额: ${item.amount}`)) return
-                            try {
-                              const supabase = createClient()
-                              const { error } = await supabase.from('cost_items').delete().eq('id', item.id)
-                              if (error) throw error
+                            // Wave 1-A：财务实体软删除，强制 actor + reason
+                            const reason = prompt(`请输入删除这笔费用的原因（≥4 字符，将永久审计）：\n${item.description}\n金额: ${item.amount}`)
+                            if (!reason || reason.trim().length < 4) {
+                              if (reason !== null) toast.error('原因不能少于 4 字符')
+                              return
+                            }
+                            const supabase = createClient()
+                            const { data: user } = await supabase.auth.getUser()
+                            if (!user?.user?.id) { toast.error('未登录'); return }
+                            const { softDeleteFinancialEntity } = await import('@/lib/financial/soft-delete')
+                            const result = await softDeleteFinancialEntity({
+                              table: 'cost_items',
+                              id: item.id,
+                              actorId: user.user.id,
+                              reason: reason.trim(),
+                              sourcePage: 'costs/page.tsx',
+                            })
+                            if (result.ok) {
                               setCostItems(costItems.filter(c => c.id !== item.id))
-                              toast.success('已删除')
-                            } catch (err) { toast.error(`删除失败: ${err instanceof Error ? err.message : '未知错误'}`) }
+                              toast.success(result.alreadyDeleted ? '该记录已于早前删除' : '已删除（审计已记录）')
+                            } else {
+                              toast.error(`删除失败: ${result.error}`)
+                            }
                           }}>删除</Button>
                         </TableCell>
                       </TableRow>

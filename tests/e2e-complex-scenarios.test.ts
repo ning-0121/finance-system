@@ -16,6 +16,7 @@ import { createClient } from '@supabase/supabase-js'
 import Decimal from 'decimal.js'
 import fs from 'fs'
 import path from 'path'
+import { hardDeleteForTest } from './_test-cleanup'
 
 const URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SVC = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -77,7 +78,7 @@ async function createOrder(opts: { revenue: number; currency: 'USD'|'CNY'; rate:
     notes: 'E2E复杂场景',
   }).select('*').single()
   if (error || !data) throw new Error(`createOrder: ${error?.message}`)
-  cleanup.push(async () => { await svc.from('budget_orders').delete().eq('id', data.id) })
+  cleanup.push(async () => { await hardDeleteForTest(svc, 'budget_orders', data.id, 'cpx cleanup') })
   return data
 }
 
@@ -92,8 +93,8 @@ async function postJournal(opts: { sourceType: string; sourceId: string; desc: s
   if (error) return { error: error.message }
   const j = data as { journal_id: string; voucher_no: string }
   cleanup.push(async () => {
-    await svc.from('journal_lines').delete().eq('journal_id', j.journal_id)
-    await svc.from('journal_entries').delete().eq('id', j.journal_id)
+    // journal_lines 由 FK ON DELETE CASCADE 自动清；session-var 绕过传播至 cascade
+    await hardDeleteForTest(svc, 'journal_entries', j.journal_id, 'cpx cleanup')
   })
   return { journalId: j.journal_id, voucherNo: j.voucher_no }
 }
@@ -199,7 +200,7 @@ async function scenario2_partialShipping() {
     }).select('id').single()
     if (error) { bad(`shipment: ${error.message}`); break }
     shipIds.push(data!.id)
-    cleanup.push(async () => { await svc.from('shipping_documents').delete().eq('id', data!.id) })
+    cleanup.push(async () => { await hardDeleteForTest(svc, 'shipping_documents', data!.id, 'cpx cleanup') })
   }
 
   // 校验数量
@@ -222,7 +223,7 @@ async function scenario2_partialShipping() {
     }).select('id').single()
     if (!error && risk) {
       riskId = risk.id
-      cleanup.push(async () => { await svc.from('financial_risk_events').delete().eq('id', risk!.id) })
+      cleanup.push(async () => { await hardDeleteForTest(svc, 'financial_risk_events', risk!.id, 'cpx cleanup') })
     }
   }
 
@@ -235,7 +236,7 @@ async function scenario2_partialShipping() {
       amount, currency: 'CNY', exchange_rate: 1, source_module: 'shipping_actual',
       supplier: 'A', created_by: actorId,
     }).select('id').single()
-    if (data) cleanup.push(async () => { await svc.from('cost_items').delete().eq('id', data.id) })
+    if (data) cleanup.push(async () => { await hardDeleteForTest(svc, 'cost_items', data.id, 'cpx cleanup') })
   }
 
   // 决算利润 = 实际收入(按实际出货比例) - 实际成本
@@ -278,7 +279,7 @@ async function scenario3_multiSupplier() {
     }).select('id').single()
     if (error) { bad(`AP ${r.supplier_name}: ${error.message}`); continue }
     ids.push(data!.id)
-    cleanup.push(async () => { await svc.from('payable_records').delete().eq('id', data!.id) })
+    cleanup.push(async () => { await hardDeleteForTest(svc, 'payable_records', data!.id, 'cpx cleanup') })
   }
 
   // 只支付 A 和 C（B、D 仍 unpaid），验证状态独立
@@ -379,13 +380,13 @@ async function scenario5_dupPaymentBlock() {
     budget_order_id: order.id, invoice_no: invoiceNo,
     invoice_type: 'supplier_invoice', supplier_name: '供应商X', total_amount: 20000, currency: 'CNY', status: 'pending',
   }).select('id').single()
-  if (inv1) cleanup.push(async () => { await svc.from('actual_invoices').delete().eq('id', inv1.id) })
+  if (inv1) cleanup.push(async () => { await hardDeleteForTest(svc, 'actual_invoices', inv1.id, 'cpx cleanup') })
 
   const { data: ap1 } = await svc.from('payable_records').insert({
     budget_order_id: order.id, invoice_id: inv1?.id, supplier_name: '供应商X', amount: 20000, currency: 'CNY',
     description: invoiceNo, payment_status: 'unpaid', over_budget: false,
   }).select('id').single()
-  if (ap1) cleanup.push(async () => { await svc.from('payable_records').delete().eq('id', ap1.id) })
+  if (ap1) cleanup.push(async () => { await hardDeleteForTest(svc, 'payable_records', ap1.id, 'cpx cleanup') })
 
   // 第二次：用同一个 invoice_no 再发起
   const { data: inv2, error: dup1Err } = await svc.from('actual_invoices').insert({
@@ -393,7 +394,7 @@ async function scenario5_dupPaymentBlock() {
     invoice_type: 'supplier_invoice', supplier_name: '供应商X', total_amount: 20000, currency: 'CNY', status: 'pending',
   }).select('id').single()
   const dupInvoiceBlockedByDb = !!dup1Err
-  if (inv2) cleanup.push(async () => { await svc.from('actual_invoices').delete().eq('id', inv2.id) })
+  if (inv2) cleanup.push(async () => { await hardDeleteForTest(svc, 'actual_invoices', inv2.id, 'cpx cleanup') })
 
   // 应用层防线：查询是否已有同 invoice_no 的有效应付
   const { data: existing } = await svc.from('payable_records').select('id, payment_status')
@@ -420,8 +421,7 @@ async function scenario5_dupPaymentBlock() {
   if (dupPayVoucher) {
     const j = dupPayVoucher as { journal_id: string }
     cleanup.push(async () => {
-      await svc.from('journal_lines').delete().eq('journal_id', j.journal_id)
-      await svc.from('journal_entries').delete().eq('id', j.journal_id)
+      await hardDeleteForTest(svc, 'journal_entries', j.journal_id, 'cpx cleanup')
     })
   }
   const dupJournalAllowed = !payJournalErr  // ⚠ 当前 RPC 没有重复付款检测
@@ -586,7 +586,7 @@ async function scenario8_concurrentEdit() {
     input: { user_a: 'notes=User-A编辑', user_b: 'notes=User-B编辑', initial_version: v0 },
     expected: { winners: 1, loser_sees_zero_rows: true, version_bumped: v0 + 1, diagnostic_logged: true },
     actual: { winner, loser_sees_zero_rows: loserSawZeroRows, final_notes: rd?.notes, final_version: rd?.version, diagnostic_id: diag?.id },
-    pass: !!winner && loserSawZeroRows && onlyWinnerPersisted && versionBumped && !!diag,
+    pass: !!(winner && loserSawZeroRows && onlyWinnerPersisted && versionBumped && diag),
     fix_status: 'not_applicable',
   })
   ok(`并发: ${winner} 胜出（version ${v0}→${rd?.version}），另一方 0 行匹配 → 用户层应弹出"保存冲突"`)

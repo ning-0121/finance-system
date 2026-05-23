@@ -364,7 +364,7 @@ async function step6_payable() {
     write_result: { inserted: ins?.length, records: ins },
     read_back: { count: rd?.length, sum, all_unpaid: rd?.every(r => r.payment_status === 'unpaid') },
     formula: { expected: expectedSum, actual: sum },
-    pass: sumOk && rd?.every(r => r.payment_status === 'unpaid'),
+    pass: !!(sumOk && rd?.every(r => r.payment_status === 'unpaid')),
   })
   ok(`${rows.length} 条应付入库，合计 ¥${sum}`)
   return true
@@ -643,14 +643,12 @@ async function step12_diagnosticLog() {
 // ═══════════════════════════════════════════════════════════════
 async function cleanup() {
   console.log('\n═══ 清理测试数据 ═══')
-  // 先删 journal_lines（无 id 跟踪，通过 journal_id 删）
-  for (const jid of [revenueJournalId, costJournalId, receiptJournalId, paymentJournalId].filter(Boolean)) {
-    await svc.from('journal_lines').delete().eq('journal_id', jid)
-  }
-  // 倒序删除有 id 的记录
+  const { hardDeleteForTest } = await import('./_test-cleanup')
+  // journal_lines 由 journal_entries FK ON DELETE CASCADE 自动清，session-var 绕过对 cascade 同样生效
+  // 倒序硬删（财务表走 _admin_hard_delete RPC，非财务表走 .delete()）
   for (const { table, id } of [...created].reverse()) {
-    const { error } = await svc.from(table).delete().eq('id', id)
-    if (error) console.log(`  ⚠ 删除 ${table}/${id.slice(0,8)}: ${error.message}`)
+    const r = await hardDeleteForTest(svc, table, id, 'e2e-full-loop cleanup')
+    if (r.error) console.log(`  ⚠ 删除 ${table}/${id.slice(0,8)}: ${r.error}`)
   }
   console.log(`  已清理 ${created.length} 条记录`)
 }

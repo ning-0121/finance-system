@@ -12,10 +12,12 @@ import fs from 'fs'
 import path from 'path'
 
 async function viaPg(url: string, sql: string) {
-  const { Client } = await import('pg').catch(() => {
+  // 动态字符串导入：避免 pg 未安装时 tsc 编译失败（推荐路径是 --via-rpc）
+  const pgModule = 'pg'
+  const mod = await import(pgModule as never).catch(() => {
     throw new Error('需要先安装: npm i -D pg @types/pg')
-  })
-  const c = new Client({ connectionString: url, ssl: { rejectUnauthorized: false } })
+  }) as { Client: new (cfg: unknown) => { connect(): Promise<void>; query(sql: string): Promise<unknown>; end(): Promise<void> } }
+  const c = new mod.Client({ connectionString: url, ssl: { rejectUnauthorized: false } })
   await c.connect()
   try {
     await c.query(sql)
