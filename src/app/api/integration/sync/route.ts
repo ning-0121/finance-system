@@ -98,30 +98,18 @@ export async function POST() {
     // 5. 为新订单创建budget_orders草稿
     let createdCount = 0
     for (const o of newOrders) {
-      // 查找或创建客户
+      // Wave 3-C P1-E2: 用 RPC 把 lookup-or-create 串行化（pg_advisory_xact_lock 防 race）
       let customerId: string | null = null
       if (o.customer_name) {
-        const { data: existing } = await finance
-          .from('customers')
-          .select('id')
-          .ilike('company', `%${escapeIlike(o.customer_name)}%`)
-          .limit(1)
-
-        if (existing?.length) {
-          customerId = existing[0].id
-        } else {
-          // upsert 防止并发重复插入同名客户
-          const { data: newCust } = await finance
-            .from('customers')
-            .upsert({ name: o.customer_name, company: o.customer_name, currency: o.currency || 'USD' }, { onConflict: 'company', ignoreDuplicates: false })
-            .select('id')
-            .single()
-          if (newCust) customerId = newCust.id
-          // upsert 未返回数据时（已存在），再 select 一次
-          if (!customerId) {
-            const { data: fallback } = await finance.from('customers').select('id').ilike('company', escapeIlike(o.customer_name)).limit(1)
-            customerId = fallback?.[0]?.id ?? null
-          }
+        const { data: cust, error: custErr } = await finance.rpc('get_or_create_customer' as never, {
+          p_name: o.customer_name,
+          p_currency: o.currency || 'USD',
+        } as never) as any
+        if (custErr) {
+          // 不抛错，按 manual_review 处理（保留可见性）
+          console.error('[sync] get_or_create_customer 失败:', custErr.message)
+        } else if (cust?.id) {
+          customerId = cust.id as string
         }
       }
 

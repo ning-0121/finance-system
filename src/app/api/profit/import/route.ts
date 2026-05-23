@@ -155,7 +155,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '所有行均无法匹配订单', skipped }, { status: 400 })
     }
 
-    // Upsert (same order + style_no = update)
+    // Wave 3-D P2-E4: upsert 不区分 created/updated。
+    // 在 upsert 前查现有 keys，把 N 条分成 created vs updated 两份，分别返回真实计数。
+    const lookupKeys = toInsert.map(r => `${r.budget_order_id}|${r.style_no}`)
+    const { data: existingRows } = await supabase
+      .from('profit_order_styles')
+      .select('budget_order_id, style_no')
+      .in('budget_order_id', [...new Set(toInsert.map(r => r.budget_order_id))])
+    const existingKeys = new Set((existingRows || []).map(r => `${r.budget_order_id}|${r.style_no}`))
+    const createdCount = lookupKeys.filter(k => !existingKeys.has(k)).length
+    const updatedCount = lookupKeys.length - createdCount
+
     const { data: inserted, error: insertErr } = await supabase
       .from('profit_order_styles')
       .upsert(toInsert, { onConflict: 'budget_order_id,style_no' })
@@ -166,6 +176,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       imported: inserted?.length || toInsert.length,
+      created: createdCount,
+      updated: updatedCount,
       skipped_count: skipped.length,
       parse_errors: errors,
       skipped_rows: skipped,

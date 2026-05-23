@@ -40,21 +40,21 @@ export async function GET() {
       .order('fetched_at', { ascending: false })
       .limit(10)
 
-    // Fallback rate if table doesn't exist or is empty
+    // Wave 3-D P2-E7: 表为空仍 fallback（业务可降级），但显式标 fallback=true
     const currentRate = rates?.[0]?.rate || 7.15
-
     return NextResponse.json({
       current_rate: currentRate,
       history: rates || [],
-      note: rates?.length ? null : '汇率表为空，使用默认汇率 7.15。请在下方录入当前汇率。',
+      fallback: !rates?.length,
+      warning: rates?.length ? null : '⚠ 汇率表为空，临时使用 7.15。请尽快录入当前汇率以避免财务报表偏差。',
     })
-  } catch {
-    // Table may not exist yet
+  } catch (err) {
+    // Wave 3-D P2-E7: 表缺失不再静默 fallback。返回 503 + 显式 missing_table，UI 提示运维
     return NextResponse.json({
-      current_rate: 7.15,
-      history: [],
-      note: '汇率表尚未创建，请先运行 migration。当前使用默认汇率 7.15。',
-    })
+      error: 'fx_rates 表不可用，请运行 migration',
+      missing_table: 'exchange_rates',
+      detail: err instanceof Error ? err.message : 'unknown',
+    }, { status: 503 })
   }
 }
 

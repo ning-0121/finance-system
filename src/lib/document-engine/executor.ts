@@ -118,12 +118,16 @@ export async function executeDocumentActions(
     }
 
     // 4. 关键动作失败 → 后续跳过（依赖图已处理大部分，这里是额外保护）
+    // Wave 3-B P2-E8: 透传根因，不再吞失败 action 的 error 详情
     if (result.status === 'failed' && config.execution_order <= 1) {
+      const rootCause = result.error || '(未知错误)'
       for (const remaining of configs.filter(c => c.execution_order > config.execution_order)) {
         results.push({
           action_type: remaining.action_type, label: remaining.label,
           status: 'skipped', target_table: remaining.target_table,
-          record_id: null, error: `前置动作 ${config.label} 失败，跳过`, retry_count: 0,
+          record_id: null,
+          error: `前置动作 ${config.label} 失败 → 跳过。根因: ${rootCause}`,
+          retry_count: 0,
         })
       }
       break
@@ -168,8 +172,15 @@ export async function executeDocumentActions(
         .eq('document_id', documentId)
         .eq('action_type', r.action_type)
     } else if (r.status === 'failed') {
+      // Wave 3-A P2-E2: 把 error 留到 document_actions.execution_error 供回滚追溯
       await supabase.from('document_actions')
-        .update({ status: 'rejected', decision: 'rejected' })
+        .update({ status: 'rejected', decision: 'rejected', execution_error: r.error })
+        .eq('document_id', documentId)
+        .eq('action_type', r.action_type)
+    } else if (r.status === 'skipped' && r.error) {
+      // skipped 也写 execution_error（含 P2-E8 透传的根因）
+      await supabase.from('document_actions')
+        .update({ execution_error: r.error })
         .eq('document_id', documentId)
         .eq('action_type', r.action_type)
     }
@@ -311,6 +322,8 @@ async function executeSingleAction(
     }
 
     case 'link_cost_item': {
+      // Wave 3-B P2-E1: actor 不能 fallback 到零 UUID（会让 provenance 丢失归属）
+      if (!confirmedBy) throw new Error('link_cost_item: 操作者 ID 不能为空')
       const { data, error } = await supabase.from('cost_items').insert({
         cost_type: String(f._cost_type || 'procurement'),
         description: `文档导入: ${f.supplier_name || f.logistics_company || f.description || ''}`,
@@ -319,7 +332,7 @@ async function executeSingleAction(
         exchange_rate: 1,
         source_module: 'document_intelligence',
         source_id: documentId,
-        created_by: confirmedBy || '00000000-0000-0000-0000-000000000000',
+        created_by: confirmedBy,
       }).select('id').single()
       if (error) throw new Error(error.message)
       return data?.id || null

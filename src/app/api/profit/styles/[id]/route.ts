@@ -102,9 +102,25 @@ export async function DELETE(
 
   try {
     const supabase = await createClient()
-    const { error } = await supabase.from('profit_order_styles').delete().eq('id', id)
+
+    // Wave 3-B P2-E6: DELETE 必须留 audit 痕迹
+    const { data: existing } = await supabase
+      .from('profit_order_styles').select('id, budget_order_id, style_no').eq('id', id).maybeSingle()
+    if (!existing) return NextResponse.json({ error: 'Style record not found' }, { status: 404 })
+
+    await supabase.from('save_diagnostic_logs').insert({
+      action: 'delete', table_name: 'profit_order_styles', record_id: id,
+      source_page: 'profit/styles', status: 'ok',
+      actor_id: auth.userId,
+      error_detail: `[audit] DELETE profit_order_styles id=${id} budget_order_id=${existing.budget_order_id} style_no=${existing.style_no}`,
+    })
+
+    const { error, count } = await supabase.from('profit_order_styles').delete({ count: 'exact' }).eq('id', id)
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    return NextResponse.json({ success: true })
+    if (count === 0) {
+      return NextResponse.json({ error: 'Record was concurrently deleted', affected_rows: 0 }, { status: 409 })
+    }
+    return NextResponse.json({ success: true, affected_rows: count })
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Server error' }, { status: 500 })
   }

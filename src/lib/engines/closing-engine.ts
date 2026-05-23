@@ -310,15 +310,31 @@ export async function executeClosingCheck(
 
 /**
  * Run all 12 checks sequentially. Returns aggregated result.
+ *
+ * Wave 3-C P1-E6 加固: 启动前 CAS 'open' → 'closing' 获取锁，
+ * 结束（无论成功失败）恢复 'open'，仅人工 confirm 才转 'closed'。
+ * 并发请求会因 CAS 失败而被拒绝。
  */
 export async function runFullClosingChecklist(periodCode: string): Promise<ClosingResult> {
-  // Ensure initialized
-  await initClosingChecklist(periodCode, 'month')
+  const supabase = await createClient()
 
-  const results: ClosingCheckItem[] = []
+  // CAS 获锁
+  const { error: lockErr } = await supabase.rpc('begin_period_close' as never, { p_period_code: periodCode } as never)
+  if (lockErr) {
+    // PERIOD_CLOSE_IN_PROGRESS / PERIOD_NOT_FOUND / PERIOD_ALREADY_CLOSED 等
+    throw new Error(`关账锁获取失败: ${lockErr.message}`)
+  }
 
-  for (const check of MONTH_CHECKS) {
-    await executeClosingCheck(periodCode, check.key)
+  try {
+    // Ensure initialized
+    await initClosingChecklist(periodCode, 'month')
+
+    for (const check of MONTH_CHECKS) {
+      await executeClosingCheck(periodCode, check.key)
+    }
+  } finally {
+    // 无论检查 pass/fail，统一恢复到 'open'（人工再决定是否进 'closed'）
+    await supabase.rpc('end_period_close' as never, { p_period_code: periodCode, p_final_status: 'open' } as never)
   }
 
   // Reload from DB for consistent state

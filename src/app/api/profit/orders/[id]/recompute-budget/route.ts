@@ -222,21 +222,32 @@ export async function POST(
       context: sotContext,
     }
 
-    // 故意 await，但失败时只 log（sotWriteShadow 已 try/catch，不抛错）
-    await Promise.all([
+    // Wave 3-B P1-E4: SoT shadow 失败不再静默吞，写 diagnostic + 标 partial_success
+    const sotResults = await Promise.all([
       sotWriteShadow({ ...sotCommon, field: 'total_revenue',     value: targetRevenue }),
       sotWriteShadow({ ...sotCommon, field: 'total_cost',        value: costRmb }),
       sotWriteShadow({ ...sotCommon, field: 'estimated_profit',  value: profitUsd }),
       sotWriteShadow({ ...sotCommon, field: 'estimated_margin',  value: margin }),
     ])
+    const sotFailures = sotResults.filter(r => !r.ok)
+    if (sotFailures.length > 0) {
+      await supabase.from('save_diagnostic_logs').insert({
+        action: 'sot_shadow_write', table_name: 'budget_orders', record_id: id,
+        source_page: 'profit/recompute-budget', status: 'error',
+        actor_id: auth.userId,
+        error_detail: `[partial_success] SoT 血缘部分写入失败 (${sotFailures.length}/4)：${sotFailures.map(f => f.error).join('; ')}`,
+      })
+    }
 
     return NextResponse.json({
-      success: true,
+      success: sotFailures.length === 0,
+      status: sotFailures.length > 0 ? 'partial_success' : 'ok',
+      sot_lineage: { ok: sotResults.length - sotFailures.length, failed: sotFailures.length, errors: sotFailures.map(f => f.error) },
       before,
       after,
       summary,
       warnings,
-      status: order.status,
+      order_status: order.status,
     })
   } catch (error) {
     return NextResponse.json(
