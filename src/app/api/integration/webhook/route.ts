@@ -151,12 +151,25 @@ async function handleOrderSync(order: SyncedOrder, event: string) {
 
   if (error) throw new Error(`Sync failed: ${error.message}`)
 
-  // 新订单自动创建预算单草稿
+  // 新订单自动创建预算单草稿（Wave 1-B 加固：所有路径都持久化 budget_sync_status，无 silent failure）
+  let budgetSync: { status: string; budget_order_id?: string; error?: string } | null = null
   if (event === 'order.created' || event === 'order.activated') {
-    try { await autoCreateBudgetDraft(order) } catch (err) { console.error('自动创建预算单失败:', err) }
+    budgetSync = await autoCreateBudgetDraft(order)
+    // 失败必须写诊断日志（No Silent Financial Failure）
+    if (budgetSync.status === 'draft_failed') {
+      await supabase.from('save_diagnostic_logs').insert({
+        action: 'auto_create',
+        table_name: 'budget_orders',
+        record_id: order.id,
+        source_page: 'webhook',
+        status: 'error',
+        error_detail: `auto-budget 失败 [synced_order=${order.order_no}]: ${budgetSync.error}`,
+        actor_id: null,
+      })
+    }
   }
 
-  return { action: 'synced', order_no: order.order_no, event }
+  return { action: 'synced', order_no: order.order_no, event, budget_sync: budgetSync }
 }
 
 // --- 订单状态变更 ---
@@ -255,61 +268,104 @@ async function handleFileUpload(data: Record<string, unknown>) {
 }
 
 // --- 订单同步时自动创建预算单草稿 ---
-async function autoCreateBudgetDraft(order: SyncedOrder) {
-  if (!order.total_amount && !order.unit_price) return // 无金额不创建
+// Wave 1-B 加固：所有出口都把 budget_sync_status 写回 synced_orders，
+//                 永不 silent fail，永不 silent skip
+type AutoBudgetResult = { status: string; budget_order_id?: string; error?: string }
 
+async function markSyncStatus(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  syncedOrderId: string,
+  status: string,
+  patch: Partial<{ budget_order_id: string; budget_sync_error: string | null }> = {},
+) {
+  await supabase.from('synced_orders').update({
+    budget_sync_status: status,
+    budget_sync_attempted_at: new Date().toISOString(),
+    budget_sync_attempt_count: undefined as never, // 由下面 RPC 递增
+    ...patch,
+  }).eq('id', syncedOrderId)
+  // 单独原子递增 attempt_count（避免读改写竞态）
+  await supabase.rpc('exec_sql' as never, {
+    sql: `UPDATE public.synced_orders SET budget_sync_attempt_count = budget_sync_attempt_count + 1 WHERE id = '${syncedOrderId}'`,
+  } as never)
+}
+
+async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResult> {
   const supabase = await createClient()
-
-  // 检查是否已有预算单
-  const { data: existing } = await supabase
-    .from('budget_orders')
-    .select('id')
-    .ilike('notes', `%${order.order_no}%`)
-    .limit(1)
-
-  if (existing?.length) return // 已存在
-
-  // 获取创建者profile
-  const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-  const createdBy = profiles?.[0]?.id
-  if (!createdBy) return // 无可用profile，跳过
-
-  // 查找或创建客户
-  let customerId: string | null = null
-  if (order.customer_name) {
-    const { data: customer } = await supabase
-      .from('customers')
-      .select('id')
-      .ilike('company', `%${order.customer_name}%`)
-      .limit(1)
-
-    if (customer?.length) {
-      customerId = customer[0].id
-    } else {
-      // 自动创建客户
-      const { data: newCustomer } = await supabase
-        .from('customers')
-        .insert({ name: order.customer_name, company: order.customer_name, currency: order.currency || 'USD' })
-        .select('id')
-        .single()
-      if (newCustomer) customerId = newCustomer.id
+  try {
+    // ────────── 1. 业务规则：无金额则跳过（可解释） ──────────
+    if (!order.total_amount && !order.unit_price) {
+      await markSyncStatus(supabase, order.id, 'no_amount_skipped', { budget_sync_error: null })
+      return { status: 'no_amount_skipped' }
     }
+
+    // ────────── 2. 幂等：通过 synced_orders.budget_order_id 检查（不再用 ilike） ──────────
+    const { data: synced } = await supabase
+      .from('synced_orders').select('budget_order_id').eq('id', order.id).maybeSingle()
+    if (synced?.budget_order_id) {
+      await markSyncStatus(supabase, order.id, 'draft_skipped', { budget_sync_error: null })
+      return { status: 'draft_skipped', budget_order_id: synced.budget_order_id }
+    }
+
+    // ────────── 3. 获取 actor profile ──────────
+    const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
+    const createdBy = profiles?.[0]?.id
+    if (!createdBy) {
+      await markSyncStatus(supabase, order.id, 'no_actor_skipped', {
+        budget_sync_error: 'profiles 表为空，无可用 actor — 部署初期请先创建至少一个 profile',
+      })
+      return { status: 'no_actor_skipped', error: 'no actor profile available' }
+    }
+
+    // ────────── 4. 查找或创建客户（注意：customers 不是受 trigger 保护的财务表） ──────────
+    let customerId: string | null = null
+    const cleanCustomerName = order.customer_name?.trim()  // 空白字符串视作未提供
+    if (cleanCustomerName) {
+      const { data: customer } = await supabase
+        .from('customers').select('id').ilike('company', `%${cleanCustomerName}%`).limit(1)
+      if (customer?.length) customerId = customer[0].id
+      else {
+        const { data: newCustomer, error: createErr } = await supabase
+          .from('customers')
+          .insert({ name: cleanCustomerName, company: cleanCustomerName, currency: order.currency || 'USD' })
+          .select('id').single()
+        if (createErr) throw new Error(`customer create failed: ${createErr.message}`)
+        if (newCustomer) customerId = newCustomer.id
+      }
+    }
+    if (!customerId) {
+      await markSyncStatus(supabase, order.id, 'manual_review', {
+        budget_sync_error: '无 customer_name 或客户匹配失败，已转人工',
+      })
+      return { status: 'manual_review', error: 'no customer info' }
+    }
+
+    // ────────── 5. 真实创建预算单草稿 ──────────
+    const totalAmount = Number(order.total_amount) || (Number(order.unit_price || 0) * Number(order.quantity || 0))
+    const { data: created, error: insertErr } = await supabase.from('budget_orders').insert({
+      order_no: '',
+      customer_id: customerId,
+      total_revenue: totalAmount,
+      currency: order.currency || 'USD',
+      status: 'draft',
+      created_by: createdBy,
+      notes: `来源: 订单节拍器自动同步\n节拍器订单号: ${order.order_no}\n客户: ${cleanCustomerName || ''}\nPO: ${order.po_number || ''}`,
+      has_sub_documents: false,
+    }).select('id').single()
+
+    if (insertErr || !created) throw new Error(`budget_orders insert failed: ${insertErr?.message || 'unknown'}`)
+
+    await markSyncStatus(supabase, order.id, 'draft_created', {
+      budget_order_id: created.id,
+      budget_sync_error: null,
+    })
+    return { status: 'draft_created', budget_order_id: created.id }
+
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    await markSyncStatus(supabase, order.id, 'draft_failed', { budget_sync_error: msg })
+    return { status: 'draft_failed', error: msg }
   }
-
-  if (!customerId) return // 无客户信息，跳过
-
-  const totalAmount = Number(order.total_amount) || (Number(order.unit_price || 0) * Number(order.quantity || 0))
-
-  await supabase.from('budget_orders').insert({
-    order_no: '',
-    customer_id: customerId,
-    total_revenue: totalAmount,
-    currency: order.currency || 'USD',
-    status: 'draft',
-    created_by: createdBy,
-    notes: `来源: 订单节拍器自动同步\n节拍器订单号: ${order.order_no}\n客户: ${order.customer_name || ''}\nPO: ${order.po_number || ''}`,
-    has_sub_documents: false,
-  })
 }
 
 // --- 记录集成日志 ---
