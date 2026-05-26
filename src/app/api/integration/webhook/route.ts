@@ -340,26 +340,71 @@ async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResu
       return { status: 'manual_review', error: 'no customer info' }
     }
 
-    // ────────── 5. 真实创建预算单草稿 ──────────
+    // ────────── 5. Phase 3 Path A: 如果节拍器推了 quotation, 构建 _cost_breakdown ──────────
+    const q = order.quotation
+    const fabric = Number(q?.fabric_amount || 0)
+    const accessory = Number(q?.accessory_amount || 0)
+    const processing = Number(q?.processing_amount || 0)
+    const forwarder = Number(q?.forwarder_amount || 0)
+    const container = Number(q?.container_amount || 0)
+    const logistics = Number(q?.logistics_amount || 0)
+    const hasQuotation = fabric + accessory + processing + forwarder + container + logistics > 0
+    const rate = Number(q?.exchange_rate || 0) || null
+
     const totalAmount = Number(order.total_amount) || (Number(order.unit_price || 0) * Number(order.quantity || 0))
+    const totalCost = fabric + accessory + processing + forwarder + container + logistics
+    const revenueCny = (order.currency || 'USD') === 'CNY' ? totalAmount : (rate ? totalAmount * rate : 0)
+    const profit = revenueCny - totalCost
+    const margin = revenueCny > 0 ? Math.round((profit / revenueCny) * 10000) / 100 : 0
+
+    const itemsField = hasQuotation ? [{
+      _cost_breakdown: {
+        fabric, accessory, processing, forwarder, container, logistics,
+        extras: q?.extras || [],
+        _currency: 'CNY',
+        _revenue_input: totalAmount,
+        _revenue_currency: order.currency || 'USD',
+        _rate: rate,
+        _source: 'metronome_quotation',
+        _quoted_at: q?._quoted_at || null,
+      },
+    }] : []
+
     const { data: created, error: insertErr } = await supabase.from('budget_orders').insert({
       order_no: '',
       customer_id: customerId,
       total_revenue: totalAmount,
       currency: order.currency || 'USD',
+      exchange_rate: rate,
+      items: itemsField as never,
+      target_purchase_price: hasQuotation ? fabric + accessory : 0,
+      estimated_freight: hasQuotation ? forwarder : 0,
+      estimated_commission: hasQuotation ? processing : 0,
+      total_cost: totalCost,
+      estimated_profit: profit,
+      estimated_margin: margin,
+      product_name: q?.product_name || null,
       status: 'draft',
       created_by: createdBy,
-      notes: `来源: 订单节拍器自动同步\n节拍器订单号: ${order.order_no}\n客户: ${cleanCustomerName || ''}\nPO: ${order.po_number || ''}`,
+      notes: `来源: 订单节拍器自动同步\n节拍器订单号: ${order.order_no}\n客户: ${cleanCustomerName || ''}\nPO: ${order.po_number || ''}${hasQuotation ? '\n报价已附带，含 _cost_breakdown' : '\n⚠ 节拍器未附带报价，需财务人工补充'}`,
       has_sub_documents: false,
     }).select('id').single()
 
     if (insertErr || !created) throw new Error(`budget_orders insert failed: ${insertErr?.message || 'unknown'}`)
 
-    await markSyncStatus(supabase, order.id, 'draft_created', {
+    // 把 quotation 原始 payload 存进 synced_orders 做审计
+    if (q) {
+      await supabase.from('synced_orders').update({
+        quotation_data: q as never,
+        quotation_applied_at: new Date().toISOString(),
+      }).eq('id', order.id)
+    }
+
+    await markSyncStatus(supabase, order.id, hasQuotation ? 'draft_created' : 'draft_created_no_quotation', {
       budget_order_id: created.id,
       budget_sync_error: null,
     })
-    return { status: 'draft_created', budget_order_id: created.id }
+    return { status: hasQuotation ? 'draft_created' : 'draft_created_no_quotation', budget_order_id: created.id }
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

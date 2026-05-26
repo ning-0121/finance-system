@@ -55,7 +55,7 @@
     "actual": {
       "shipped": 980,
       "shortage": 20,
-      "risk_event_id": "c2bbf87d-6066-43c2-b338-203e6a02ef56",
+      "risk_event_id": "9d5563bc-1e13-451a-b671-3c1818fdc33f",
       "actual_revenue_cny": 70560,
       "actual_profit": 33360,
       "shipments_inserted": 2
@@ -80,10 +80,10 @@
       "records": 4,
       "total": 57000,
       "by_supplier": {
-        "面料供应商A": "paid",
-        "加工厂C": "paid",
         "辅料供应商B": "unpaid",
-        "物流D": "unpaid"
+        "物流D": "unpaid",
+        "面料供应商A": "paid",
+        "加工厂C": "paid"
       }
     },
     "pass": true,
@@ -121,7 +121,7 @@
     "scenario": 5,
     "name": "重复付款拦截（多层防线）",
     "input": {
-      "invoice_no": "INV-DUP-1779776242977",
+      "invoice_no": "INV-DUP-1779778768628",
       "attempt": "同 supplier + 同 invoice_no 入二次 + paid AP 再付"
     },
     "expected": {
@@ -143,7 +143,7 @@
     "scenario": 6,
     "name": "回滚（void / 反向冲销）",
     "input": {
-      "journal_id": "794dd359-6005-4d9b-96e0-b3f0a091068a",
+      "journal_id": "0fe5662b-d18e-4b52-a13c-323f0d28e6f7",
       "amount": 25000,
       "account": "540101"
     },
@@ -155,8 +155,8 @@
     },
     "actual": {
       "entry_status": "voided",
-      "gl_debit_before": 55000,
-      "gl_debit_after": 30000,
+      "gl_debit_before": 85000,
+      "gl_debit_after": 60000,
       "gl_debit_diff": 25000,
       "manual_change_preserved": true
     },
@@ -204,7 +204,7 @@
       "loser_sees_zero_rows": true,
       "final_notes": "User-A编辑",
       "final_version": 2,
-      "diagnostic_id": "4c48ca0e-19ae-4304-8fce-9c9648c54061"
+      "diagnostic_id": "6cf4c142-6178-4fc4-85a6-8c9fd0c3677e"
     },
     "pass": true,
     "fix_status": "not_applicable"

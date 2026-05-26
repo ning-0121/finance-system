@@ -251,17 +251,77 @@ async function executeSingleAction(
       }
       const customerId = customerRows[0].id
 
+      // Phase 3 path C: 如果文档抽取出报价细项，构建 _cost_breakdown
+      // 来自 OCR 的字段：fabric_amount / accessory_amount / processing_amount /
+      //                forwarder_amount / container_amount / logistics_amount (单位 CNY)
+      const breakdown: Record<string, unknown> = {}
+      const num = (k: string): number => Number(f[k] || 0)
+      const fabric = num('fabric_amount')
+      const accessory = num('accessory_amount')
+      const processing = num('processing_amount')
+      const forwarder = num('forwarder_amount')
+      const container = num('container_amount')
+      const logistics = num('logistics_amount')
+      const hasBreakdown = fabric + accessory + processing + forwarder + container + logistics > 0
+      if (hasBreakdown) {
+        breakdown._cost_breakdown = {
+          fabric, accessory, processing, forwarder, container, logistics,
+          extras: [],
+          _currency: 'CNY',
+          _revenue_input: Number(f.total_amount) || 0,
+          _revenue_currency: String(f.currency || 'USD'),
+          _rate: Number(f.exchange_rate || 1),
+          _source: 'document_ocr',
+          _source_document_id: documentId,
+        }
+      }
+      const itemsField = hasBreakdown ? [breakdown] : []
+      const totalCost = fabric + accessory + processing + forwarder + container + logistics
+      const revenueCny = String(f.currency || 'USD') === 'CNY'
+        ? Number(f.total_amount) || 0
+        : (Number(f.total_amount) || 0) * (Number(f.exchange_rate) || 1)
+      const profit = revenueCny - totalCost
+      const margin = revenueCny > 0 ? Math.round((profit / revenueCny) * 10000) / 100 : 0
+
       // 幂等：检查是否已创建
       const poNo = (f.po_number || f.order_no || '') as string
       if (poNo) {
         const { data: existing } = await supabase.from('budget_orders').select('id').ilike('notes', `%${poNo}%`).limit(1)
-        if (existing?.length) return existing[0].id
+        if (existing?.length) {
+          // 如果已有订单但缺 _cost_breakdown，补一次（不覆盖已有的 breakdown）
+          if (hasBreakdown) {
+            const { data: existingOrder } = await supabase.from('budget_orders').select('items').eq('id', existing[0].id).single()
+            const existingItems = (existingOrder?.items as unknown as Record<string, unknown>[]) || []
+            const hasExistingBreakdown = existingItems[0]?._cost_breakdown
+            if (!hasExistingBreakdown) {
+              await supabase.from('budget_orders').update({
+                items: itemsField as never,
+                target_purchase_price: fabric + accessory,
+                estimated_freight: forwarder,
+                estimated_commission: processing,
+                total_cost: totalCost,
+                estimated_profit: profit,
+                estimated_margin: margin,
+              }).eq('id', existing[0].id)
+            }
+          }
+          return existing[0].id
+        }
       }
       const { data, error } = await supabase.from('budget_orders').insert({
         order_no: '',
         customer_id: customerId,
         total_revenue: Number(f.total_amount) || 0,
         currency: String(f.currency || 'USD'),
+        exchange_rate: Number(f.exchange_rate) || null,
+        items: itemsField as never,
+        target_purchase_price: hasBreakdown ? fabric + accessory : 0,
+        estimated_freight: hasBreakdown ? forwarder : 0,
+        estimated_commission: hasBreakdown ? processing : 0,
+        total_cost: totalCost,
+        estimated_profit: profit,
+        estimated_margin: margin,
+        product_name: f.product_name ? String(f.product_name) : null,
         status: 'draft',
         created_by: confirmedBy,
         notes: `来源: 文档智能导入\nPO: ${f.po_number || ''}\n客户: ${customerName}`,

@@ -25,6 +25,23 @@ export interface WebhookPayload {
   signature: string          // HMAC-SHA256 签名
 }
 
+// --- 报价单分解（Phase 3 Path A：节拍器侧 webhook 可选 payload）---
+// 若 metronome 推过来，则财务侧 webhook 直接据此构建 _cost_breakdown，
+// 不再依赖业务人员手工补充 / OCR 抽取
+export interface SyncedQuotation {
+  fabric_amount?: number       // 面料 CNY
+  accessory_amount?: number    // 辅料 CNY
+  processing_amount?: number   // 加工费 CNY
+  forwarder_amount?: number    // 货代 CNY
+  container_amount?: number    // 装柜 CNY
+  logistics_amount?: number    // 物流 CNY
+  exchange_rate?: number       // 锁汇率
+  product_name?: string        // 品名（瑜伽裤等）
+  extras?: { name: string; amount: number }[]
+  _source?: string             // 'metronome_quotation'
+  _quoted_at?: string          // ISO timestamp
+}
+
 // --- 从节拍器同步过来的订单摘要 ---
 export interface SyncedOrder {
   id: string
@@ -48,6 +65,8 @@ export interface SyncedOrder {
   created_by: string
   created_at: string
   updated_at: string
+  // Phase 3 Path A: 节拍器推过来的报价细分（可选，全空也合法）
+  quotation?: SyncedQuotation | null
 }
 
 // --- 价格审批请求 ---

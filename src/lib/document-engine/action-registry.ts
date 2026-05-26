@@ -26,7 +26,7 @@ export interface ActionConfig {
 export const ACTION_REGISTRY: Record<DocCategory, ActionConfig[]> = {
   customer_po: [
     { action_type: 'create_order', label: '创建订单草稿', safety_level: 'L2', execution_order: 1, depends_on: [], dependency_type: 'hard', required_fields: ['customer_name', 'total_amount', 'currency'], target_table: 'budget_orders', responsible_role: 'finance_staff', notification: 'finance', creates_todo: true, creates_approval: false, rollback_supported: true },
-    { action_type: 'create_budget', label: '创建预算草稿', safety_level: 'L2', execution_order: 2, depends_on: ['create_order'], dependency_type: 'hard', required_fields: ['total_amount'], target_table: 'budget_sub_documents', responsible_role: 'finance_staff', notification: 'none', creates_todo: false, creates_approval: false, rollback_supported: true },
+    { action_type: 'create_budget', label: '创建预算草稿（含报价细项）', safety_level: 'L2', execution_order: 2, depends_on: ['create_order'], dependency_type: 'hard', required_fields: ['total_amount'], target_table: 'budget_orders', responsible_role: 'finance_staff', notification: 'none', creates_todo: false, creates_approval: false, rollback_supported: true },
     { action_type: 'create_risk_check', label: '运行财务预审', safety_level: 'L1', execution_order: 3, depends_on: ['create_order'], dependency_type: 'soft', required_fields: ['customer_name'], target_table: 'financial_risk_events', responsible_role: 'finance_staff', notification: 'finance', creates_todo: true, creates_approval: false, rollback_supported: false },
   ],
 
