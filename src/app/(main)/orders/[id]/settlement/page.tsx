@@ -27,6 +27,11 @@ import { generateOrderSettlement, getOrderSettlement, getSubDocuments, getInvent
 import { toChineseUppercase } from '@/lib/excel/chinese-amount'
 import { exportSettlementSheetToExcel } from '@/lib/excel/export-settlement-sheet'
 import { exportBudgetOrSettlementToExcel, synthesizeCostItems, type CostItemRow } from '@/lib/excel/export-budget-sheet'
+import {
+  buildSettlementBundle,
+  exportSettlementInvoiceToExcel,
+  synthesizeExpensesFromBudget,
+} from '@/lib/excel/export-settlement-invoice'
 import type { SubDocument, InventoryReturn, OrderSettlement } from '@/lib/types'
 
 const returnTypeLabels: Record<string, string> = {
@@ -48,6 +53,10 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
   const [showAddReturn, setShowAddReturn] = useState(false)
   const [costItemRows, setCostItemRows] = useState<CostItemRow[]>([])
   const [costSource, setCostSource] = useState<'actual' | 'estimated'>('actual')
+  // Wave 4 · 核算单(图片格式) 数据源
+  const [invoiceReceipts, setInvoiceReceipts] = useState<Array<{ invoice_date: string|null; total_amount: number; currency: string; exchange_rate: number|null; supplier_name: string|null; invoice_no: string|null }>>([])
+  const [invoiceExpenses, setInvoiceExpenses] = useState<Array<{ cost_type: string; description: string|null; supplier: string|null; cost_group: string|null; quantity: number|null; unit: string|null; unit_price: number|null; amount: number; currency: string; exchange_rate: number|null; created_at: string }>>([])
+  const [shipCompletedAt, setShipCompletedAt] = useState<string | null>(null)
 
   // 入库表单
   const [returnType, setReturnType] = useState('raw_material')
@@ -101,6 +110,37 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
           setCostSource('estimated')
           setCostItemRows(synthesizeCostItems(orderData))
         }
+      }
+
+      // Wave 4 核算单数据：回款 + 完整成本 + 完结日期
+      try {
+        const sb = createClient()
+        const [{ data: receipts }, { data: costs }, { data: ship }] = await Promise.all([
+          sb.from('actual_invoices')
+            .select('invoice_date, total_amount, currency, exchange_rate, supplier_name, invoice_no')
+            .eq('budget_order_id', id)
+            .eq('invoice_type', 'customer_statement')
+            .eq('status', 'paid')
+            .is('deleted_at', null)
+            .order('invoice_date', { ascending: true }),
+          sb.from('cost_items')
+            .select('cost_type, description, supplier, cost_group, quantity, unit, unit_price, amount, currency, exchange_rate, created_at')
+            .eq('budget_order_id', id)
+            .is('deleted_at', null)
+            .order('cost_group, supplier, created_at'),
+          sb.from('shipping_documents')
+            .select('completed_at, updated_at, status')
+            .eq('budget_order_id', id)
+            .eq('status', 'completed')
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+        ])
+        setInvoiceReceipts(receipts || [])
+        setInvoiceExpenses(costs || [])
+        setShipCompletedAt((ship?.completed_at as string | undefined) || (ship?.updated_at as string | undefined) || null)
+      } catch (err) {
+        console.error('[settlement] 核算单数据加载失败:', err)
       }
 
       setLoading(false)
@@ -231,6 +271,39 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
               >
                 <Download className="h-4 w-4 mr-1" />
                 导出决算单(标准格式)
+              </Button>
+            )}
+            {/* Wave 4 · 订单核算单（图片复刻：6行头 + 收/支 + 毛利） */}
+            {order && (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => {
+                  try {
+                    const orderWithCustomer = {
+                      ...order,
+                      product_name: (order as { product_name?: string }).product_name || null,
+                      customer_name: (order as { customers?: { company?: string } }).customers?.company || '',
+                    }
+                    const bundle = buildSettlementBundle(
+                      orderWithCustomer as never,
+                      invoiceReceipts,
+                      invoiceExpenses.length > 0 ? invoiceExpenses : synthesizeExpensesFromBudget(order),
+                      shipCompletedAt,
+                    )
+                    exportSettlementInvoiceToExcel(bundle)
+                    const warn = [
+                      bundle.meta.cost_source === 'estimated' && '⚠ 使用预算估算成本',
+                      bundle.meta.receipt_source === 'pending' && '⚠ 尚无实际回款',
+                    ].filter(Boolean).join(' ')
+                    toast.success(`核算单 ${order.order_no} 已导出${warn ? ' (' + warn + ')' : ''}`)
+                  } catch (e) {
+                    toast.error(`导出失败: ${e instanceof Error ? e.message : '未知错误'}`)
+                  }
+                }}
+              >
+                <Download className="h-4 w-4 mr-1" />
+                导出核算单(图片格式)
               </Button>
             )}
           </div>

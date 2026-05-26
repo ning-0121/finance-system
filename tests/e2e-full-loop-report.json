@@ -3,11 +3,11 @@
     "step": 1,
     "name": "预算单",
     "input": {
-      "order_no": "E2E-1779512452396-PO",
+      "order_no": "E2E-1779776193847-PO",
       "customer_id": "2ca1b5df-b9e2-4696-b00b-57a213cbcec6",
       "created_by": "9b023d80-124b-4840-baae-9baed41a3d2e",
-      "order_date": "2026-05-23",
-      "delivery_date": "2026-05-23",
+      "order_date": "2026-05-26",
+      "delivery_date": "2026-05-26",
       "items": [
         {
           "_cost_breakdown": {
@@ -32,15 +32,15 @@
       "currency": "USD",
       "exchange_rate": 7.2,
       "status": "draft",
-      "notes": "E2E-1779512452396"
+      "notes": "E2E-1779776193847"
     },
     "write_result": {
-      "id": "c867b542-e0d3-423a-81ab-3e414303725b",
-      "order_no": "E2E-1779512452396-PO",
+      "id": "731f3407-2a8c-490b-8796-abb4ebe6fec9",
+      "order_no": "E2E-1779776193847-PO",
       "status": "draft"
     },
     "read_back": {
-      "id": "c867b542-e0d3-423a-81ab-3e414303725b",
+      "id": "731f3407-2a8c-490b-8796-abb4ebe6fec9",
       "total_revenue": 10000,
       "total_cost": 49500,
       "estimated_profit": 22500,
@@ -69,12 +69,12 @@
     "write_result": {
       "inserted": 6,
       "ids": [
-        "a267e061-373b-498b-8ff9-f050386142c9",
-        "d640a706-1f5e-4a81-ad63-e0217aa5361a",
-        "0db1e72a-4682-4ec8-87b3-8cf423e7e1c5",
-        "2947cab0-7ce4-428b-bfea-c4b8c3761edb",
-        "c7f9a61e-6d60-47c9-ae23-40b2a47dc8b6",
-        "78915ccd-8e7f-4a13-b38c-f627c6976fa7"
+        "0e2b271e-5035-485c-a28b-5ae351b85b96",
+        "5002a03f-f7f3-4227-94cc-6fff2113da3d",
+        "fafb9929-587f-43be-bd77-d7e07b185d55",
+        "e08cefed-8408-409e-b299-c50bb178b32e",
+        "7ba7e4d8-3567-48ea-a3be-84b7c1a34de9",
+        "ceb60a72-0526-4a65-98fc-d0c3ea6406f8"
       ]
     },
     "read_back": {
@@ -99,19 +99,19 @@
     "step": 3,
     "name": "决算单",
     "input": {
-      "budget_order_id": "c867b542-e0d3-423a-81ab-3e414303725b",
+      "budget_order_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9",
       "total_actual": 49500,
       "status": "draft"
     },
     "write_result": {
-      "id": "2506e6f9-2f25-403c-a257-df198acad317",
+      "id": "62ea439f-e98f-4d2b-b4f6-795a70f29b1d",
       "status_after_confirm": "confirmed"
     },
     "read_back": {
-      "id": "2506e6f9-2f25-403c-a257-df198acad317",
+      "id": "62ea439f-e98f-4d2b-b4f6-795a70f29b1d",
       "status": "confirmed",
       "total_actual": 49500,
-      "settled_at": "2026-05-23T05:00:56.446+00:00"
+      "settled_at": "2026-05-26T06:16:42.489+00:00"
     },
     "formula": {
       "expected": {
@@ -129,7 +129,7 @@
     "step": 4,
     "name": "应收",
     "input": {
-      "order_id": "c867b542-e0d3-423a-81ab-3e414303725b",
+      "order_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9",
       "expected_AR_usd": 10000
     },
     "write_result": "(无需写入，应收 = budget_orders.total_revenue)",
@@ -155,18 +155,18 @@
     "step": 5,
     "name": "回款",
     "input": {
-      "order_id": "c867b542-e0d3-423a-81ab-3e414303725b",
+      "order_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9",
       "receipt_usd": 9900,
       "receipt_cny": 71280
     },
     "write_result": {
       "ar_updated": true,
-      "journal_id": "8802fd05-6c16-42ca-8f93-84dc696830fb",
+      "journal_id": "ccf7bc46-ae50-48d0-bbf7-94b190c0bb57",
       "voucher_no": "PZ-202605-0001"
     },
     "read_back": {
       "ar_received_amount": 9900,
-      "ar_received_at": "2026-05-23T05:00:58.681+00:00",
+      "ar_received_at": "2026-05-26T06:16:46.548+00:00",
       "lines": [
         {
           "account_code": "100201",
@@ -203,25 +203,25 @@
       "inserted": 4,
       "records": [
         {
-          "id": "40a9c996-9846-42f0-a01c-b595b3242094",
+          "id": "d4c48f12-281b-43eb-bbd0-f4df2a772828",
           "supplier_name": "面料供应商A",
           "amount": 30000,
           "payment_status": "unpaid"
         },
         {
-          "id": "28a2a3bb-9eba-409e-b88b-c3651bc5ac5b",
+          "id": "dd50ae35-9ea8-4d84-a7f4-799ce32d77af",
           "supplier_name": "辅料供应商B",
           "amount": 5000,
           "payment_status": "unpaid"
         },
         {
-          "id": "0cd39cf8-b9d7-4154-b00f-d07cea92172f",
+          "id": "894352fa-a5ee-4456-8f3a-f14e13fb6288",
           "supplier_name": "加工厂C",
           "amount": 8000,
           "payment_status": "unpaid"
         },
         {
-          "id": "2a995c0a-9d8e-4092-aea3-b9c47cc0281d",
+          "id": "9eaf3fd4-e5b0-45a3-b954-3f6ac77e0a6e",
           "supplier_name": "货代D",
           "amount": 3000,
           "payment_status": "unpaid"
@@ -243,7 +243,7 @@
     "step": 7,
     "name": "付款",
     "input": {
-      "record_id": "40a9c996-9846-42f0-a01c-b595b3242094",
+      "record_id": "d4c48f12-281b-43eb-bbd0-f4df2a772828",
       "amount": 30000
     },
     "write_result": {
@@ -318,7 +318,7 @@
     "step": 9,
     "name": "预算表导出",
     "input": {
-      "order_id": "c867b542-e0d3-423a-81ab-3e414303725b",
+      "order_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9",
       "type": "budget"
     },
     "write_result": {
@@ -387,7 +387,7 @@
     "step": 10,
     "name": "决算表导出",
     "input": {
-      "order_id": "c867b542-e0d3-423a-81ab-3e414303725b",
+      "order_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9",
       "type": "settlement",
       "costSource": "estimated"
     },
@@ -421,23 +421,23 @@
     "input": {
       "risk_type": "overdue_payment",
       "risk_level": "yellow",
-      "related_order_id": "c867b542-e0d3-423a-81ab-3e414303725b",
+      "related_order_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9",
       "related_customer_id": "2ca1b5df-b9e2-4696-b00b-57a213cbcec6",
-      "title": "E2E-1779512452396-PO 客户少付 100 USD",
+      "title": "E2E-1779776193847-PO 客户少付 100 USD",
       "description": "应收 10000 USD，实收 9900 USD，差额 100 USD",
       "suggested_action": "请财务跟进核销或催收",
       "status": "pending"
     },
     "write_result": {
-      "id": "604aa3e6-2903-4ebc-a74d-6da079eb89f0",
+      "id": "8f4b3ef7-16e6-4957-9082-af3fa57ec828",
       "risk_type": "overdue_payment",
       "risk_level": "yellow"
     },
     "read_back": {
-      "id": "604aa3e6-2903-4ebc-a74d-6da079eb89f0",
+      "id": "8f4b3ef7-16e6-4957-9082-af3fa57ec828",
       "status": "pending",
-      "title": "E2E-1779512452396-PO 客户少付 100 USD",
-      "related_order_id": "c867b542-e0d3-423a-81ab-3e414303725b"
+      "title": "E2E-1779776193847-PO 客户少付 100 USD",
+      "related_order_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9"
     },
     "formula": {
       "expected": {
@@ -457,7 +457,7 @@
     "input": {
       "action": "insert",
       "table_name": "budget_orders",
-      "record_id": "c867b542-e0d3-423a-81ab-3e414303725b",
+      "record_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9",
       "actor_id": null,
       "source_page": "e2e-test",
       "api_route": null,
@@ -467,24 +467,24 @@
       "error_detail": null
     },
     "write_result": {
-      "id": "77d0c0cd-5ca8-43dc-a9e1-9a4f5ffc64a2",
+      "id": "98f049ff-d42a-4fcb-95ea-86f5b6f596eb",
       "status": "ok"
     },
     "read_back": {
-      "id": "77d0c0cd-5ca8-43dc-a9e1-9a4f5ffc64a2",
+      "id": "98f049ff-d42a-4fcb-95ea-86f5b6f596eb",
       "table_name": "budget_orders",
       "status": "ok",
       "action": "insert",
-      "record_id": "c867b542-e0d3-423a-81ab-3e414303725b"
+      "record_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9"
     },
     "formula": {
       "expected": {
         "status": "ok",
-        "record_id": "c867b542-e0d3-423a-81ab-3e414303725b"
+        "record_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9"
       },
       "actual": {
         "status": "ok",
-        "record_id": "c867b542-e0d3-423a-81ab-3e414303725b"
+        "record_id": "731f3407-2a8c-490b-8796-abb4ebe6fec9"
       }
     },
     "pass": true
