@@ -22,6 +22,15 @@ export interface CostItemRow {
   amount: number   // CNY
 }
 
+// ── 预算成本类别下的明细行（持久化在 order.items[0]._cost_breakdown.lines[category]）──
+export interface BudgetLine {
+  name: string         // 品名（如：黑纱、拉链）
+  qty: number          // 数量
+  unit: string         // 单位（kg / 米 / 件 / 只 ...）
+  unit_price: number   // 单价（CNY）
+  amount: number       // 金额（CNY）= qty × unit_price
+}
+
 // ── 财务汇总结果（纯函数，方便单测）────────────────────────
 export interface ExportFinancials {
   revenueCNY: number   // 收入折合人民币
@@ -77,12 +86,33 @@ export function synthesizeCostItems(order: BudgetOrder): CostItemRow[] {
   const rows: CostItemRow[] = []
   const n = (key: string) => Number(breakdown[key] ?? 0)
 
-  if (n('fabric') > 0)     rows.push({ description: '面料',   amount: n('fabric') })
-  if (n('accessory') > 0)  rows.push({ description: '辅料',   amount: n('accessory') })
-  if (n('processing') > 0) rows.push({ description: '加工费', amount: n('processing') })
-  if (n('forwarder') > 0)  rows.push({ description: '货代费', amount: n('forwarder') })
-  if (n('container') > 0)  rows.push({ description: '装柜费', amount: n('container') })
-  if (n('logistics') > 0)  rows.push({ description: '物流费', amount: n('logistics') })
+  // 各类别若有明细行（lines），按行展开（含 数量/单位/单价）；否则退回单行汇总。
+  const lines = breakdown['lines'] as Record<string, BudgetLine[]> | undefined
+  const emit = (key: string, label: string) => {
+    const catLines = lines?.[key]
+    if (Array.isArray(catLines) && catLines.length > 0) {
+      for (const l of catLines) {
+        if ((Number(l.amount) || 0) === 0 && !(Number(l.qty) && Number(l.unit_price))) continue
+        const amount = Number(l.amount) || (Number(l.qty) || 0) * (Number(l.unit_price) || 0)
+        rows.push({
+          description: l.name || label,
+          unit: l.unit || undefined,
+          qty: l.qty != null ? Number(l.qty) : null,
+          unitPrice: l.unit_price != null ? Number(l.unit_price) : null,
+          amount,
+        })
+      }
+      return
+    }
+    if (n(key) > 0) rows.push({ description: label, amount: n(key) })
+  }
+
+  emit('fabric', '面料')
+  emit('accessory', '辅料')
+  emit('processing', '加工费')
+  emit('forwarder', '货代费')
+  emit('container', '装柜费')
+  emit('logistics', '物流费')
 
   const extras = breakdown['extras'] as { name: string; amount: number }[] | undefined
   if (Array.isArray(extras)) {

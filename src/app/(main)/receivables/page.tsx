@@ -40,6 +40,7 @@ type ReceivableRow = {
   status: 'paid' | 'partial' | 'unpaid' | 'overdue'
   agingDays: number
   receivedAt: string | null
+  bank: string | null
 }
 
 const agingBuckets = [
@@ -92,6 +93,7 @@ function buildReceivables(orders: BudgetOrder[]): ReceivableRow[] {
         status,
         agingDays,
         receivedAt: o.ar_received_at || null,
+        bank: o.ar_received_bank || null,
       }
     })
 }
@@ -107,6 +109,7 @@ export default function ReceivablesPage() {
   const [receiptDialog, setReceiptDialog] = useState<ReceivableRow | null>(null)
   const [receiptAmount, setReceiptAmount] = useState('')
   const [receiptDate, setReceiptDate] = useState('')
+  const [receiptBank, setReceiptBank] = useState('')
   const [receiptSaving, setReceiptSaving] = useState(false)
 
   // ── 核销余额 Dialog ─────────────────────────────────────────
@@ -148,13 +151,20 @@ export default function ReceivablesPage() {
     const { error } = await updateBudgetOrderReceivable(receiptDialog.id, {
       ar_received_amount: amt,
       ar_received_at: at,
+      ar_received_bank: receiptBank.trim() || null,
     })
     setReceiptSaving(false)
-    if (error) { toast.error(error); return }
-    toast.success('收款信息已保存')
+    // 银行列缺失时返回部分成功提示（仍已保存金额/日期）：用 warning 不当作失败
+    if (error) {
+      if (error.includes('收款银行')) toast.warning(error)
+      else { toast.error(error); return }
+    } else {
+      toast.success('收款信息已保存')
+    }
     setReceiptDialog(null)
     setReceiptAmount('')
     setReceiptDate('')
+    setReceiptBank('')
     try { await reload() } catch { /* empty */ }
   }
 
@@ -214,6 +224,11 @@ export default function ReceivablesPage() {
       || r.orderNo.toLowerCase().includes(search.toLowerCase())
     return matchTab && matchSearch
   })
+
+  // 历史收款银行（去重）— 供登记弹窗下拉建议
+  const bankOptions = Array.from(new Set(
+    receivables.map(r => r.bank).filter((b): b is string => !!b && b.trim() !== '')
+  )).sort()
 
   const statusConfig = {
     paid:    { label: '已收',  variant: 'default' as const },
@@ -334,6 +349,7 @@ export default function ReceivablesPage() {
                   <TableHead>到期日</TableHead>
                   <TableHead>账龄</TableHead>
                   <TableHead>实际收款日</TableHead>
+                  <TableHead>收款银行</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead className="text-right w-[160px]">操作</TableHead>
                 </TableRow>
@@ -386,6 +402,9 @@ export default function ReceivablesPage() {
                       <TableCell className="text-sm text-muted-foreground">
                         {r.receivedAt ? new Date(r.receivedAt).toLocaleDateString('zh-CN') : '—'}
                       </TableCell>
+                      <TableCell className="text-sm text-muted-foreground max-w-[140px] truncate" title={r.bank || ''}>
+                        {r.bank || '—'}
+                      </TableCell>
                       <TableCell><Badge variant={sc.variant}>{sc.label}</Badge></TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
@@ -416,6 +435,7 @@ export default function ReceivablesPage() {
                                   ? r.receivedAt.slice(0, 10)
                                   : new Date().toISOString().slice(0, 10)
                               )
+                              setReceiptBank(r.bank || '')
                             }}
                           >
                             登记收款
@@ -427,7 +447,7 @@ export default function ReceivablesPage() {
                 })}
                 {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">
+                    <TableCell colSpan={11} className="text-center py-12 text-muted-foreground">
                       {receivables.length === 0
                         ? '暂无已审批订单，应收数据将在订单审批通过后自动生成'
                         : '没有匹配的记录'}
@@ -464,6 +484,19 @@ export default function ReceivablesPage() {
               <div className="space-y-2">
                 <Label>实际收款日期</Label>
                 <Input type="date" value={receiptDate} onChange={e => setReceiptDate(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>收款银行 / 账户</Label>
+                <Input
+                  list="ar-bank-options"
+                  placeholder="如：工行义乌分行 / 招行 6222... / PayPal"
+                  value={receiptBank}
+                  onChange={e => setReceiptBank(e.target.value)}
+                />
+                <datalist id="ar-bank-options">
+                  {bankOptions.map(b => <option key={b} value={b} />)}
+                </datalist>
+                <p className="text-[11px] text-muted-foreground">记录这笔钱打到了哪个银行账户，方便后续核对回款流向。可从下拉选历史银行，也可直接输入新的。</p>
               </div>
               <p className="text-xs text-muted-foreground">
                 未手动登记时，「已关闭」订单仍按原逻辑视为全额已收。登记后以此金额与日期为准。

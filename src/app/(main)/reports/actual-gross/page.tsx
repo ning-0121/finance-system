@@ -8,10 +8,15 @@ import { Input } from '@/components/ui/input'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { Loader2, Download, Search } from 'lucide-react'
+import { Loader2, Download, Search, FileSpreadsheet } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
-import { getBudgetOrders } from '@/lib/supabase/queries'
+import { getBudgetOrders, getBudgetOrderById } from '@/lib/supabase/queries'
 import type { BudgetOrder } from '@/lib/types'
+import {
+  buildSettlementBundle,
+  exportSettlementInvoiceToExcel,
+  synthesizeExpensesFromBudget,
+} from '@/lib/excel/export-settlement-invoice'
 import { toast } from 'sonner'
 import Link from 'next/link'
 
@@ -47,6 +52,53 @@ export default function ActualGrossReportPage() {
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<Row[]>([])
   const [search, setSearch] = useState('')
+  const [exportingId, setExportingId] = useState<string | null>(null)
+
+  // 导出某订单的「订单核算单」（义乌绮陌图片格式：收/支明细 + 毛利）
+  const exportSettlementInvoice = async (orderId: string) => {
+    setExportingId(orderId)
+    try {
+      const order = await getBudgetOrderById(orderId)
+      if (!order) { toast.error('订单不存在'); return }
+      const sb = createClient()
+      const [{ data: receipts }, { data: expenses }, { data: ship }] = await Promise.all([
+        sb.from('actual_invoices')
+          .select('invoice_date, total_amount, currency, exchange_rate, supplier_name, invoice_no')
+          .eq('budget_order_id', orderId).eq('invoice_type', 'customer_statement').eq('status', 'paid')
+          .is('deleted_at', null).order('invoice_date', { ascending: true }),
+        sb.from('cost_items')
+          .select('cost_type, description, supplier, cost_group, quantity, unit, unit_price, amount, currency, exchange_rate, created_at')
+          .eq('budget_order_id', orderId).is('deleted_at', null)
+          .order('cost_group, supplier, created_at'),
+        sb.from('shipping_documents')
+          .select('completed_at, updated_at, status').eq('budget_order_id', orderId)
+          .eq('status', 'completed').order('updated_at', { ascending: false }).limit(1).maybeSingle(),
+      ])
+      const productName = (order.items as unknown as Record<string, unknown>[])?.[0]?.product_name as string | undefined
+      const orderWithCustomer = {
+        ...order,
+        product_name: productName || null,
+        customer_name: order.customer?.company || '',
+      }
+      const exp = (expenses && expenses.length > 0) ? expenses : synthesizeExpensesFromBudget(order)
+      const bundle = buildSettlementBundle(
+        orderWithCustomer as never,
+        receipts || [],
+        exp as never,
+        (ship?.completed_at as string | undefined) || (ship?.updated_at as string | undefined) || null,
+      )
+      exportSettlementInvoiceToExcel(bundle)
+      const warn = [
+        bundle.meta.cost_source === 'estimated' && '⚠ 支区用预算估算（该订单费用归集暂无明细）',
+        bundle.meta.receipt_source === 'pending' && '⚠ 暂无实际回款',
+      ].filter(Boolean).join(' ')
+      toast.success(`核算单 ${order.order_no} 已导出${warn ? ' (' + warn + ')' : ''}`)
+    } catch (e) {
+      toast.error(`导出失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    } finally {
+      setExportingId(null)
+    }
+  }
 
   useEffect(() => {
     async function load() {
@@ -203,6 +255,7 @@ export default function ActualGrossReportPage() {
                   <TableHead className="text-right">应付登记(¥)</TableHead>
                   <TableHead className="text-right">实际毛利(¥)</TableHead>
                   <TableHead className="text-right">毛利率%</TableHead>
+                  <TableHead className="text-center">核算单</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -223,11 +276,25 @@ export default function ActualGrossReportPage() {
                       ¥{r.gross_cny.toLocaleString()}
                     </TableCell>
                     <TableCell className="text-right">{r.margin_pct}%</TableCell>
+                    <TableCell className="text-center">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs"
+                        disabled={exportingId === r.id}
+                        onClick={() => exportSettlementInvoice(r.id)}
+                        title="导出该订单的订单核算单（收/支明细 + 毛利）"
+                      >
+                        {exportingId === r.id
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <FileSpreadsheet className="h-3.5 w-3.5" />}
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
                 {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">暂无数据</TableCell>
+                    <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">暂无数据</TableCell>
                   </TableRow>
                 )}
               </TableBody>

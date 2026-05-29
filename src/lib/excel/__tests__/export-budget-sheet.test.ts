@@ -202,6 +202,56 @@ describe('Test 3 — 决算单降级（costSource=estimated）时标注备注', 
     expect(total).toBe(30000 + 5000 + 15000 + 8000 + 3000 + 4000 + 2000)
   })
 
+  it('synthesizeCostItems 按类别明细行(lines)展开，含 数量/单位/单价', () => {
+    const order = makeOrder({
+      items: [{
+        product_name: '短裤套装', sku: 'SKU-002', qty: 1500, unit: '件', unit_price: 41.8, amount: 62700,
+        _cost_breakdown: {
+          fabric: 14813.4,   // 类别汇总（应被明细覆盖）
+          accessory: 845.25,
+          lines: {
+            fabric: [{ name: '黑纱', qty: 705.4, unit: 'kg', unit_price: 21, amount: 14813.4 }],
+            accessory: [
+              { name: '拉链', qty: 1552, unit: '条', unit_price: 0.62, amount: 962 },
+              { name: '吊牌', qty: 3381, unit: '套', unit_price: 0.25, amount: 845.25 },
+            ],
+          },
+        },
+      } as unknown as import('@/lib/types').OrderItem],
+    })
+
+    const rows = synthesizeCostItems(order)
+
+    // 面料：一行明细，带 数量/单位/单价
+    const fabricLine = rows.find(r => r.description === '黑纱')
+    expect(fabricLine).toBeDefined()
+    expect(fabricLine!.qty).toBe(705.4)
+    expect(fabricLine!.unit).toBe('kg')
+    expect(fabricLine!.unitPrice).toBe(21)
+    expect(fabricLine!.amount).toBeCloseTo(14813.4, 1)
+
+    // 辅料：两行明细分别展开，而非合并成一行汇总
+    expect(rows.filter(r => r.description === '拉链' || r.description === '吊牌')).toHaveLength(2)
+    // 不应再出现裸的"辅料"汇总行（已被明细取代）
+    expect(rows.find(r => r.description === '辅料')).toBeUndefined()
+  })
+
+  it('synthesizeCostItems 某类别无 lines 时仍退回单行汇总', () => {
+    const order = makeOrder({
+      items: [{
+        product_name: 'x', sku: 'x', qty: 1, unit: '件', unit_price: 1, amount: 1,
+        _cost_breakdown: {
+          processing: 24000,                 // 无 lines → 单行汇总
+          lines: { fabric: [{ name: '黑纱', qty: 100, unit: 'kg', unit_price: 21, amount: 2100 }] },
+          fabric: 2100,
+        },
+      } as unknown as import('@/lib/types').OrderItem],
+    })
+    const rows = synthesizeCostItems(order)
+    expect(rows.find(r => r.description === '加工费')?.amount).toBe(24000)
+    expect(rows.find(r => r.description === '黑纱')?.amount).toBe(2100)
+  })
+
   it('synthesizeCostItems 无 _cost_breakdown 时降级到汇总字段', () => {
     const order = makeOrder({
       target_purchase_price: 20000,

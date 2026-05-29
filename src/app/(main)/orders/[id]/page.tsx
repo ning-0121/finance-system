@@ -158,6 +158,35 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [editContainer, setEditContainer] = useState('') // 装柜费
   const [editLogistics, setEditLogistics] = useState('') // 物流费
   const [editExtras, setEditExtras] = useState<{ name: string; amount: string }[]>([]) // 其他费用
+  // 各成本类别下的明细行（品名/数量/单位/单价/金额）；有明细时类别总额=明细之和
+  type EditLine = { name: string; qty: string; unit: string; unitPrice: string; amount: string }
+  const [editLines, setEditLines] = useState<Record<string, EditLine[]>>({})
+  const [expandedCat, setExpandedCat] = useState<string | null>(null)
+  const emptyLine = (): EditLine => ({ name: '', qty: '', unit: '', unitPrice: '', amount: '' })
+  const lineSum = (ls: EditLine[] | undefined) =>
+    (ls || []).reduce((s, l) => s + (Number(l.amount) || (Number(l.qty) || 0) * (Number(l.unitPrice) || 0)), 0)
+  // 类别有效金额：有明细行用明细之和，否则用直接填的汇总值
+  const catValue = (key: string, lumpStr: string) => {
+    const ls = editLines[key]
+    return ls && ls.length > 0 ? lineSum(ls) : (Number(lumpStr) || 0)
+  }
+  const addLine = (key: string) =>
+    setEditLines(p => ({ ...p, [key]: [...(p[key] || []), emptyLine()] }))
+  const removeLine = (key: string, idx: number) =>
+    setEditLines(p => ({ ...p, [key]: (p[key] || []).filter((_, i) => i !== idx) }))
+  const updateLine = (key: string, idx: number, field: keyof EditLine, value: string) =>
+    setEditLines(p => {
+      const list = [...(p[key] || [])]
+      const line = { ...list[idx], [field]: value }
+      // 数量×单价 自动算金额
+      if (field === 'qty' || field === 'unitPrice') {
+        const q = Number(field === 'qty' ? value : line.qty) || 0
+        const up = Number(field === 'unitPrice' ? value : line.unitPrice) || 0
+        if (q && up) line.amount = (q * up).toFixed(2)
+      }
+      list[idx] = line
+      return { ...p, [key]: list }
+    })
 
   // 进入编辑模式时预填当前值（从items或现有字段解析）
   useEffect(() => {
@@ -179,6 +208,23 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         // 恢复其他费用
         const extras = cb.extras as unknown as { name: string; amount: number }[] | undefined
         setEditExtras(extras?.map(e => ({ name: e.name, amount: (e.amount || 0).toString() })) || [])
+        // 恢复各类别明细行
+        const savedLines = (cb as Record<string, unknown>).lines as Record<string, { name: string; qty: number; unit: string; unit_price: number; amount: number }[]> | undefined
+        if (savedLines) {
+          const restored: Record<string, EditLine[]> = {}
+          for (const [k, arr] of Object.entries(savedLines)) {
+            if (Array.isArray(arr) && arr.length > 0) {
+              restored[k] = arr.map(l => ({
+                name: l.name || '', qty: l.qty != null ? String(l.qty) : '',
+                unit: l.unit || '', unitPrice: l.unit_price != null ? String(l.unit_price) : '',
+                amount: l.amount != null ? String(l.amount) : '',
+              }))
+            }
+          }
+          setEditLines(restored)
+        } else {
+          setEditLines({})
+        }
       } else {
         setEditFabric(order.target_purchase_price.toString())
         setEditAccessory('0')
@@ -187,6 +233,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         setEditContainer(order.estimated_customs_fee.toString())
         setEditLogistics(order.other_costs.toString())
         setEditExtras([])
+        setEditLines({})
       }
     }
   }, [editMode, order])
@@ -198,13 +245,27 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 7)
     const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate
     const revenueUsd = editCurrencyMode === 'CNY' ? revenueInput : revenueInput // DB stores the input value
-    const fabric = Number(editFabric) || 0
-    const accessory = Number(editAccessory) || 0
-    const processing = Number(editProcessing) || 0
-    const forwarder = Number(editForwarder) || 0
-    const container = Number(editContainer) || 0
-    const logistics = Number(editLogistics) || 0
+    // 类别金额：有明细行时=明细之和，否则=直接填写的汇总值
+    const fabric = catValue('fabric', editFabric)
+    const accessory = catValue('accessory', editAccessory)
+    const processing = catValue('processing', editProcessing)
+    const forwarder = catValue('forwarder', editForwarder)
+    const container = catValue('container', editContainer)
+    const logistics = catValue('logistics', editLogistics)
     const extrasTotal = editExtras.reduce((s, e) => s + (Number(e.amount) || 0), 0)
+    // 明细行 → 持久化形状（数字），丢弃空行
+    const linesData: Record<string, { name: string; qty: number; unit: string; unit_price: number; amount: number }[]> = {}
+    for (const [k, arr] of Object.entries(editLines)) {
+      const cleaned = (arr || [])
+        .filter(l => l.name || Number(l.amount) || (Number(l.qty) && Number(l.unitPrice)))
+        .map(l => {
+          const qty = Number(l.qty) || 0
+          const unitPrice = Number(l.unitPrice) || 0
+          const amount = Number(l.amount) || qty * unitPrice
+          return { name: l.name || '', qty, unit: l.unit || '', unit_price: unitPrice, amount }
+        })
+      if (cleaned.length > 0) linesData[k] = cleaned
+    }
     const totalCostCny = fabric + accessory + processing + forwarder + container + logistics + extrasTotal
     const profitCny = revenueCny - totalCostCny
     const margin = revenueCny > 0 ? Math.round((profitCny / revenueCny) * 10000) / 100 : 0
@@ -219,7 +280,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
       const extrasData = editExtras.filter(e => e.name && Number(e.amount)).map(e => ({ name: e.name, amount: Number(e.amount) || 0 }))
-      const breakdownData = { fabric, accessory, processing, forwarder, container, logistics, extras: extrasData, _currency: editCurrencyMode === 'CNY' ? 'CNY_DIRECT' : 'CNY', _revenue_input: revenueInput, _revenue_currency: editCurrencyMode, _rate: rate }
+      const breakdownData = { fabric, accessory, processing, forwarder, container, logistics, extras: extrasData, lines: linesData, _currency: editCurrencyMode === 'CNY' ? 'CNY_DIRECT' : 'CNY', _revenue_input: revenueInput, _revenue_currency: editCurrencyMode, _rate: rate }
       // 保留原有产品明细，将cost breakdown存入第一个item或单独追加
       const existingItems = (order.items || []) as unknown as Record<string, unknown>[]
       const updatedItems = existingItems.length > 0
@@ -469,7 +530,15 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 7)
                       const revenueInput = Number(editRevenue) || 0
                       const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate
-                      const costTotal = [editFabric, editAccessory, editProcessing, editForwarder, editContainer, editLogistics].reduce((s, v) => s + (Number(v) || 0), 0) + editExtras.reduce((s, e) => s + (Number(e.amount) || 0), 0)
+                      const cats: { key: string; label: string; val: string; set: (v: string) => void }[] = [
+                        { key: 'fabric', label: '面料', val: editFabric, set: setEditFabric },
+                        { key: 'accessory', label: '辅料', val: editAccessory, set: setEditAccessory },
+                        { key: 'processing', label: '加工费', val: editProcessing, set: setEditProcessing },
+                        { key: 'forwarder', label: '货代费', val: editForwarder, set: setEditForwarder },
+                        { key: 'container', label: '装柜费', val: editContainer, set: setEditContainer },
+                        { key: 'logistics', label: '物流费', val: editLogistics, set: setEditLogistics },
+                      ]
+                      const costTotal = cats.reduce((s, c) => s + catValue(c.key, c.val), 0) + editExtras.reduce((s, e) => s + (Number(e.amount) || 0), 0)
                       const profitCny = revenueCny - costTotal
                       const marginPct = revenueCny > 0 ? (profitCny / revenueCny * 100).toFixed(1) : '0'
                       return <div className="space-y-3">
@@ -497,13 +566,46 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           </div>
                         )}
                         <Separator />
-                        <p className="text-[10px] text-muted-foreground font-medium">成本明细 (CNY 人民币)</p>
-                        <div className="space-y-1"><Label className="text-xs">面料 (¥)</Label><Input type="number" step="0.01" value={editFabric} onChange={e => setEditFabric(e.target.value)} /></div>
-                        <div className="space-y-1"><Label className="text-xs">辅料 (¥)</Label><Input type="number" step="0.01" value={editAccessory} onChange={e => setEditAccessory(e.target.value)} /></div>
-                        <div className="space-y-1"><Label className="text-xs">加工费 (¥)</Label><Input type="number" step="0.01" value={editProcessing} onChange={e => setEditProcessing(e.target.value)} /></div>
-                        <div className="space-y-1"><Label className="text-xs">货代费 (¥)</Label><Input type="number" step="0.01" value={editForwarder} onChange={e => setEditForwarder(e.target.value)} /></div>
-                        <div className="space-y-1"><Label className="text-xs">装柜费 (¥)</Label><Input type="number" step="0.01" value={editContainer} onChange={e => setEditContainer(e.target.value)} /></div>
-                        <div className="space-y-1"><Label className="text-xs">物流费 (¥)</Label><Input type="number" step="0.01" value={editLogistics} onChange={e => setEditLogistics(e.target.value)} /></div>
+                        <p className="text-[10px] text-muted-foreground font-medium">成本明细 (CNY 人民币) · 点 ▶ 展开可按行填 数量/单位/单价</p>
+                        {cats.map(c => {
+                          const lines = editLines[c.key] || []
+                          const hasLines = lines.length > 0
+                          const sum = lineSum(lines)
+                          const expanded = expandedCat === c.key
+                          return (
+                            <div key={c.key} className="rounded-md border border-muted">
+                              <div className="flex items-center gap-2 px-2 py-1.5">
+                                <button type="button" className="text-muted-foreground hover:text-foreground text-xs w-4 shrink-0" onClick={() => setExpandedCat(expanded ? null : c.key)}>{expanded ? '▼' : '▶'}</button>
+                                <Label className="text-xs flex-1 cursor-pointer" onClick={() => setExpandedCat(expanded ? null : c.key)}>{c.label} (¥){hasLines && <span className="text-[10px] text-primary ml-1">{lines.length}行明细</span>}</Label>
+                                {hasLines ? (
+                                  <span className="text-xs font-medium tabular-nums w-28 text-right pr-2" title="由明细自动合计">¥{sum.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                                ) : (
+                                  <Input type="number" step="0.01" value={c.val} onChange={e => c.set(e.target.value)} className="h-7 w-28 text-right text-xs" />
+                                )}
+                              </div>
+                              {expanded && (
+                                <div className="px-2 pb-2 space-y-1.5 bg-muted/30">
+                                  {hasLines && (
+                                    <div className="grid grid-cols-[1fr_56px_44px_60px_68px_22px] gap-1 text-[10px] text-muted-foreground px-0.5 pt-1">
+                                      <span>品名</span><span className="text-right">数量</span><span>单位</span><span className="text-right">单价</span><span className="text-right">金额</span><span />
+                                    </div>
+                                  )}
+                                  {lines.map((l, idx) => (
+                                    <div key={idx} className="grid grid-cols-[1fr_56px_44px_60px_68px_22px] gap-1 items-center">
+                                      <Input placeholder="品名" value={l.name} onChange={e => updateLine(c.key, idx, 'name', e.target.value)} className="h-7 text-xs" />
+                                      <Input type="number" placeholder="0" value={l.qty} onChange={e => updateLine(c.key, idx, 'qty', e.target.value)} className="h-7 text-xs text-right px-1" />
+                                      <Input placeholder="kg" value={l.unit} onChange={e => updateLine(c.key, idx, 'unit', e.target.value)} className="h-7 text-xs px-1" />
+                                      <Input type="number" step="0.01" placeholder="单价" value={l.unitPrice} onChange={e => updateLine(c.key, idx, 'unitPrice', e.target.value)} className="h-7 text-xs text-right px-1" />
+                                      <Input type="number" step="0.01" placeholder="金额" value={l.amount} onChange={e => updateLine(c.key, idx, 'amount', e.target.value)} className="h-7 text-xs text-right px-1" />
+                                      <Button type="button" size="sm" variant="ghost" className="h-6 w-6 p-0 text-red-400 hover:text-red-600" onClick={() => removeLine(c.key, idx)}>×</Button>
+                                    </div>
+                                  ))}
+                                  <Button type="button" size="sm" variant="ghost" className="h-6 text-[11px] text-primary px-1" onClick={() => addLine(c.key)}>+ 加明细行</Button>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
                         {/* 其他费用（可自定义名称） */}
                         {editExtras.map((extra, idx) => (
                           <div key={idx} className="flex gap-2 items-end">
@@ -529,7 +631,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                         {(() => {
                           const bw = validateBudgetEdit({
                             revenue: revenueInput, rate, currency: editCurrencyMode,
-                            costs: { fabric: Number(editFabric)||0, accessory: Number(editAccessory)||0, processing: Number(editProcessing)||0, forwarder: Number(editForwarder)||0, container: Number(editContainer)||0, logistics: Number(editLogistics)||0 },
+                            costs: { fabric: catValue('fabric', editFabric), accessory: catValue('accessory', editAccessory), processing: catValue('processing', editProcessing), forwarder: catValue('forwarder', editForwarder), container: catValue('container', editContainer), logistics: catValue('logistics', editLogistics) },
                           })
                           const errs = bw.filter(w => w.level === 'error')
                           const warns = bw.filter(w => w.level === 'warning')
@@ -567,12 +669,39 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                         )}
                         <Separator />
                         <p className="text-[10px] text-muted-foreground font-medium">成本明细 (CNY)</p>
-                        <div className="flex justify-between"><span className="text-muted-foreground">面料</span><span className="font-medium">¥ {(cb?.fabric ?? order.target_purchase_price).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">辅料</span><span>¥ {(cb?.accessory ?? 0).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">加工费</span><span>¥ {(cb?.processing ?? order.estimated_commission).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">货代费</span><span>¥ {(cb?.forwarder ?? order.estimated_freight).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">装柜费</span><span>¥ {(cb?.container ?? order.estimated_customs_fee).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">物流费</span><span>¥ {(cb?.logistics ?? order.other_costs).toLocaleString()}</span></div>
+                        {(() => {
+                          const readLines = (cb as Record<string, unknown> | undefined)?.lines as Record<string, { name: string; qty: number; unit: string; unit_price: number; amount: number }[]> | undefined
+                          const readCats: { key: string; label: string; fallback: number; bold?: boolean }[] = [
+                            { key: 'fabric', label: '面料', fallback: Number(order.target_purchase_price) || 0, bold: true },
+                            { key: 'accessory', label: '辅料', fallback: 0 },
+                            { key: 'processing', label: '加工费', fallback: Number(order.estimated_commission) || 0 },
+                            { key: 'forwarder', label: '货代费', fallback: Number(order.estimated_freight) || 0 },
+                            { key: 'container', label: '装柜费', fallback: Number(order.estimated_customs_fee) || 0 },
+                            { key: 'logistics', label: '物流费', fallback: Number(order.other_costs) || 0 },
+                          ]
+                          return readCats.map(rc => {
+                            const lines = readLines?.[rc.key]
+                            const catAmt = cb?.[rc.key] != null ? Number(cb[rc.key]) : rc.fallback
+                            return (
+                              <div key={rc.key}>
+                                <div className="flex justify-between">
+                                  <span className="text-muted-foreground">{rc.label}{Array.isArray(lines) && lines.length > 0 && <span className="text-[10px] text-primary ml-1">{lines.length}行</span>}</span>
+                                  <span className={rc.bold ? 'font-medium' : ''}>¥ {catAmt.toLocaleString()}</span>
+                                </div>
+                                {Array.isArray(lines) && lines.length > 0 && (
+                                  <div className="pl-3 mt-0.5 mb-1 space-y-0.5">
+                                    {lines.map((l, i) => (
+                                      <div key={i} className="flex justify-between text-[11px] text-muted-foreground/80">
+                                        <span className="truncate max-w-[150px]">· {l.name || '明细'}{(Number(l.qty) || Number(l.unit_price)) ? ` ${l.qty || 0}${l.unit || ''}×¥${l.unit_price || 0}` : ''}</span>
+                                        <span>¥ {(Number(l.amount) || 0).toLocaleString()}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })
+                        })()}
                         {(cb?.extras as unknown as { name: string; amount: number }[] | undefined)?.map((e, i) => (
                           <div key={i} className="flex justify-between"><span className="text-muted-foreground">{e.name}</span><span>¥ {e.amount.toLocaleString()}</span></div>
                         ))}

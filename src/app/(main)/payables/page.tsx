@@ -1,28 +1,33 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
-  CreditCard, AlertTriangle, Clock, CheckCircle, Search, TrendingDown, Loader2, Download,
+  CreditCard, AlertTriangle, Clock, CheckCircle, Search, Loader2, Download,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
-import { getPayableRecords } from '@/lib/supabase/queries-v2'
+import { createClient } from '@/lib/supabase/client'
+import { getSupplierPayments } from '@/lib/supabase/queries-v2'
 import Link from 'next/link'
-import type { PayableRecord } from '@/lib/types'
 import { toast } from 'sonner'
 
-// ---------- 账龄分桶 ----------
+// ============================================================
+// 应付账款 = 费用归集中「未付」的费用，按供应商汇总 + 账龄
+// 账龄按费用录入日(created_at)计算（cost_items 无到期日）。
+// 在「费用归集」勾选「已付款」后，这里会自动减少。
+// 付款执行仍在「付款（出纳）」模块，互不冲突。
+// ============================================================
+
 const agingBuckets = [
   { name: '0-30天', range: [0, 30] as [number, number], color: '#22c55e' },
   { name: '31-60天', range: [31, 60] as [number, number], color: '#f59e0b' },
@@ -30,131 +35,172 @@ const agingBuckets = [
   { name: '90天+', range: [91, Infinity] as [number, number], color: '#991b1b' },
 ]
 
-type APRow = {
+interface CostRow {
   id: string
-  orderNo: string
   supplier: string
   description: string
-  currency: string
-  amount: number
-  paidAmount: number
-  balance: number
-  dueDate: string | null
-  paymentStatus: string
-  overBudget: boolean
+  cost_type: string
+  amountCny: number
+  orderLabel: string
+  createdAt: string
   agingDays: number
-  status: 'paid' | 'partial' | 'unpaid' | 'overdue'
 }
 
-const COST_CATEGORY_LABELS: Record<string, string> = {
-  raw_material: '面料/原料', factory: '加工费', freight: '运费',
-  commission: '佣金', tax: '税务', other: '其他',
+interface SupplierAP {
+  supplier: string
+  chargeCount: number
+  totalChargeCny: number
+  paidCny: number       // 已登记付款合计（与供应商对账单口径一致）
+  unpaidCny: number     // = 费用合计 − 付款合计
+  orders: string[]
+  oldestAging: number   // FIFO：最早一笔未被付款冲抵的费用账龄
+  items: CostRow[]      // 该供应商全部费用（按日期升序）
 }
 
-function buildAPRows(records: PayableRecord[]): APRow[] {
-  const now = new Date()
-  return records.map(r => {
-    const dueDate = r.due_date ? new Date(r.due_date) : null
-    const isPastDue = dueDate ? now > dueDate : false
-    const agingDays = isPastDue && dueDate
-      ? Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24))
-      : 0
-
-    const paidAmount = r.paid_amount || 0
-    const balance = r.amount - paidAmount
-
-    let status: APRow['status'] = 'unpaid'
-    if (paidAmount >= r.amount) status = 'paid'
-    else if (paidAmount > 0) status = 'partial'
-    else if (isPastDue) status = 'overdue'
-
-    return {
-      id: r.id,
-      orderNo: r.order_no || '-',
-      supplier: r.supplier_name,
-      description: r.description,
-      currency: r.currency,
-      amount: r.amount,
-      paidAmount,
-      balance,
-      dueDate: r.due_date,
-      paymentStatus: r.payment_status,
-      overBudget: r.over_budget,
-      agingDays,
-      status,
-    }
-  })
-}
-
-function downloadCSV(rows: APRow[]) {
-  const headers = ['供应商', '订单号', '描述', '货币', '应付金额', '已付金额', '余额', '到期日', '账龄(天)', '状态']
-  const statusLabel: Record<string, string> = { paid: '已付', partial: '部分付', unpaid: '未付', overdue: '逾期' }
-  const lines = rows.map(r => [
-    r.supplier, r.orderNo, r.description, r.currency,
-    r.amount, r.paidAmount, r.balance,
-    r.dueDate || '', r.agingDays, statusLabel[r.status] || r.status,
-  ].join(','))
-  const csv = [headers.join(','), ...lines].join('\n')
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `AP账龄报表_${new Date().toISOString().substring(0, 10)}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
-  toast.success('CSV已下载')
+function daysSince(dateStr: string): number {
+  const d = new Date(dateStr)
+  if (isNaN(d.getTime())) return 0
+  return Math.max(0, Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24)))
 }
 
 export default function PayablesPage() {
   const [search, setSearch] = useState('')
-  const [tab, setTab] = useState('all')
+  const [tab, setTab] = useState('unpaid')
   const [loading, setLoading] = useState(true)
-  const [rows, setRows] = useState<APRow[]>([])
+  const [rows, setRows] = useState<CostRow[]>([])
+  const [paidBySupplier, setPaidBySupplier] = useState<Record<string, number>>({})
+  const [expanded, setExpanded] = useState<string | null>(null)
 
   useEffect(() => {
     async function load() {
+      setLoading(true)
       try {
-        const records = await getPayableRecords()
-        setRows(buildAPRows(records))
-      } catch (err) { console.error('加载应付数据失败:', err) }
+        const supabase = createClient()
+        const [costRes, syncedRes, payList] = await Promise.all([
+          supabase
+            .from('cost_items')
+            .select('id, description, amount, currency, exchange_rate, supplier, cost_type, budget_order_id, created_at, budget_orders(order_no)')
+            .is('deleted_at', null)
+            .order('created_at', { ascending: true }),
+          supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null),
+          getSupplierPayments(),
+        ])
+
+        const syncMap = new Map<string, string>()
+        ;(syncedRes.data || []).forEach((s: Record<string, unknown>) => {
+          if (s.budget_order_id) {
+            const internal = s.style_no ? `${s.style_no} | ` : ''
+            syncMap.set(s.budget_order_id as string, `${internal}${(s.order_no as string) || ''}`)
+          }
+        })
+
+        const list: CostRow[] = (costRes.data || []).map((c: Record<string, unknown>) => {
+          const boId = c.budget_order_id as string | null
+          const bo = c.budget_orders as { order_no?: string } | null
+          const orderLabel = boId ? (syncMap.get(boId) || bo?.order_no || '') : ''
+          const amt = Number(c.amount) || 0
+          const rate = Number(c.exchange_rate) || 1
+          return {
+            id: c.id as string,
+            supplier: (c.supplier as string) || '未指定供应商',
+            description: (c.description as string) || '',
+            cost_type: (c.cost_type as string) || '',
+            amountCny: Math.round(amt * rate * 100) / 100,
+            orderLabel,
+            createdAt: c.created_at as string,
+            agingDays: daysSince(c.created_at as string),
+          }
+        })
+        const payMap: Record<string, number> = {}
+        payList.forEach(p => { payMap[p.supplier_name] = (payMap[p.supplier_name] || 0) + (Number(p.amount) || 0) })
+        setRows(list)
+        setPaidBySupplier(payMap)
+      } catch (err) {
+        console.error('加载应付失败:', err)
+        toast.error('加载失败')
+      }
       setLoading(false)
     }
     load()
   }, [])
 
-  const unpaid = rows.filter(r => r.status !== 'paid')
-  const overdue = rows.filter(r => r.status === 'overdue')
-  const totalBalance = unpaid.reduce((s, r) => s + r.balance, 0)
-  const overdueBalance = overdue.reduce((s, r) => s + r.balance, 0)
-  const overBudgetCount = rows.filter(r => r.overBudget && r.status !== 'paid').length
-  const payRate = rows.length > 0
-    ? Math.round((rows.filter(r => r.status === 'paid').length / rows.length) * 100)
-    : 0
+  // 按供应商聚合：未付 = 费用合计 − 已登记付款（与供应商对账单一致）
+  const suppliers = useMemo<SupplierAP[]>(() => {
+    const map = new Map<string, SupplierAP>()
+    for (const r of rows) {
+      let s = map.get(r.supplier)
+      if (!s) {
+        s = { supplier: r.supplier, chargeCount: 0, totalChargeCny: 0, paidCny: 0, unpaidCny: 0, orders: [], oldestAging: 0, items: [] }
+        map.set(r.supplier, s)
+      }
+      s.chargeCount += 1
+      s.totalChargeCny += r.amountCny
+      s.items.push(r)
+      if (r.orderLabel && !s.orders.includes(r.orderLabel)) s.orders.push(r.orderLabel)
+    }
+    // 只有付款、没有费用的供应商也纳入（显示为多付/预付）
+    for (const sup of Object.keys(paidBySupplier)) {
+      if (!map.has(sup)) map.set(sup, { supplier: sup, chargeCount: 0, totalChargeCny: 0, paidCny: 0, unpaidCny: 0, orders: [], oldestAging: 0, items: [] })
+    }
+    return Array.from(map.values())
+      .map(s => {
+        const paid = paidBySupplier[s.supplier] || 0
+        const unpaid = s.totalChargeCny - paid
+        // FIFO 账龄：付款先冲抵最早的费用，找出第一笔未被完全冲抵的费用
+        let remaining = paid
+        let oldestAging = 0
+        for (const c of s.items) {  // items 已按日期升序
+          if (remaining >= c.amountCny) { remaining -= c.amountCny; continue }
+          oldestAging = c.agingDays
+          break
+        }
+        return {
+          ...s,
+          paidCny: Math.round(paid * 100) / 100,
+          totalChargeCny: Math.round(s.totalChargeCny * 100) / 100,
+          unpaidCny: Math.round(unpaid * 100) / 100,
+          oldestAging,
+        }
+      })
+      .sort((a, b) => b.unpaidCny - a.unpaidCny)
+  }, [rows, paidBySupplier])
+
+  const hasUnpaid = (s: SupplierAP) => s.unpaidCny > 0.005
+  const withUnpaid = suppliers.filter(hasUnpaid)
+  const totalUnpaid = withUnpaid.reduce((s, r) => s + r.unpaidCny, 0)
+  const totalPaid = suppliers.reduce((s, r) => s + r.paidCny, 0)
+  const overdue60 = withUnpaid.filter(s => s.oldestAging > 60)
+  const overdue60Amount = overdue60.reduce((s, r) => s + r.unpaidCny, 0)
 
   const agingData = agingBuckets.map(bucket => {
-    const items = unpaid.filter(r => r.agingDays >= bucket.range[0] && r.agingDays <= bucket.range[1])
-    return {
-      name: bucket.name,
-      amount: items.reduce((s, r) => s + r.balance, 0),
-      color: bucket.color,
-      count: items.length,
-    }
+    const items = withUnpaid.filter(s => s.oldestAging >= bucket.range[0] && s.oldestAging <= bucket.range[1])
+    return { name: bucket.name, amount: items.reduce((s, r) => s + r.unpaidCny, 0), color: bucket.color, count: items.length }
   })
 
-  const filtered = rows.filter(r => {
-    const matchTab = tab === 'all' || r.status === tab
-    const matchSearch = !search
-      || r.supplier.toLowerCase().includes(search.toLowerCase())
-      || r.orderNo.toLowerCase().includes(search.toLowerCase())
-      || r.description.toLowerCase().includes(search.toLowerCase())
-    return matchTab && matchSearch
-  })
+  const filtered = useMemo(() => {
+    let base = suppliers
+    if (tab === 'unpaid') base = suppliers.filter(hasUnpaid)
+    else if (tab === 'overdue') base = suppliers.filter(s => s.oldestAging > 60 && hasUnpaid(s))
+    else if (tab === 'cleared') base = suppliers.filter(s => !hasUnpaid(s) && (s.paidCny > 0 || s.totalChargeCny > 0))
+    if (search) base = base.filter(s => s.supplier.toLowerCase().includes(search.toLowerCase()))
+    return base
+  }, [suppliers, tab, search])
 
-  const statusConfig: Record<string, { label: string; variant: 'default' | 'secondary' | 'outline' | 'destructive' }> = {
-    paid: { label: '已付', variant: 'default' },
-    partial: { label: '部分付', variant: 'secondary' },
-    unpaid: { label: '未付', variant: 'outline' },
-    overdue: { label: '逾期', variant: 'destructive' },
+  const exportCsv = () => {
+    const headers = ['供应商', '费用笔数', '费用合计(¥)', '已付(¥)', '未付(¥)', '最长账龄(天)', '关联订单']
+    const lines = filtered.map(s => [
+      s.supplier, s.chargeCount, s.totalChargeCny, s.paidCny, s.unpaidCny, s.oldestAging,
+      `"${s.orders.join(' / ')}"`,
+    ].join(','))
+    const csv = [headers.join(','), ...lines].join('\n')
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `应付账款_未付汇总_${new Date().toISOString().substring(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('CSV已下载')
   }
 
   if (loading) {
@@ -163,88 +209,57 @@ export default function PayablesPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <Header title="应付账款管理" subtitle="基于决算确认自动生成 · 账龄追踪 · 付款控制" />
+      <Header title="应付账款管理" subtitle="费用归集（应付）− 已登记付款 = 实际未付 · 与供应商对账单同口径 · 在对账单「登记付款」后自动减少" />
 
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
 
         {/* KPI */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-blue-50"><CreditCard className="h-4 w-4 text-blue-600" /></div>
-                <div>
-                  <p className="text-xs text-muted-foreground">应付总额</p>
-                  <p className="text-xl font-bold">¥{totalBalance.toLocaleString()}</p>
-                </div>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-blue-50"><CreditCard className="h-4 w-4 text-blue-600" /></div>
+              <div><p className="text-xs text-muted-foreground">应付总额（未付）</p><p className="text-xl font-bold">¥{totalUnpaid.toLocaleString()}</p></div>
+            </CardContent>
+          </Card>
+          <Card className={overdue60Amount > 0 ? 'border-red-200' : ''}>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className={`p-2 rounded-lg ${overdue60Amount > 0 ? 'bg-red-50' : 'bg-gray-50'}`}>
+                <AlertTriangle className={`h-4 w-4 ${overdue60Amount > 0 ? 'text-red-600' : 'text-gray-400'}`} />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">超60天应付</p>
+                <p className={`text-xl font-bold ${overdue60Amount > 0 ? 'text-red-600' : ''}`}>¥{overdue60Amount.toLocaleString()}</p>
+                <p className="text-xs text-muted-foreground">{overdue60.length} 个供应商</p>
               </div>
             </CardContent>
           </Card>
-
-          <Card className={overdueBalance > 0 ? 'border-red-200' : ''}>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className={`p-2 rounded-lg ${overdueBalance > 0 ? 'bg-red-50' : 'bg-gray-50'}`}>
-                  <AlertTriangle className={`h-4 w-4 ${overdueBalance > 0 ? 'text-red-600' : 'text-gray-400'}`} />
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">逾期应付</p>
-                  <p className={`text-xl font-bold ${overdueBalance > 0 ? 'text-red-600' : ''}`}>
-                    ¥{overdueBalance.toLocaleString()}
-                  </p>
-                  <p className="text-xs text-muted-foreground">{overdue.length} 笔</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className={overBudgetCount > 0 ? 'border-amber-200' : ''}>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className={`p-2 rounded-lg ${overBudgetCount > 0 ? 'bg-amber-50' : 'bg-gray-50'}`}>
-                  <TrendingDown className={`h-4 w-4 ${overBudgetCount > 0 ? 'text-amber-600' : 'text-gray-400'}`} />
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">超预算笔数</p>
-                  <p className={`text-xl font-bold ${overBudgetCount > 0 ? 'text-amber-600' : ''}`}>
-                    {overBudgetCount}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
           <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-green-50"><CheckCircle className="h-4 w-4 text-green-600" /></div>
-                <div>
-                  <p className="text-xs text-muted-foreground">付款率</p>
-                  <p className="text-xl font-bold text-green-600">{payRate}%</p>
-                  <p className="text-xs text-muted-foreground">{rows.filter(r => r.status === 'paid').length}/{rows.length} 笔</p>
-                </div>
-              </div>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-amber-50"><Clock className="h-4 w-4 text-amber-600" /></div>
+              <div><p className="text-xs text-muted-foreground">待付供应商</p><p className="text-xl font-bold">{withUnpaid.length}</p></div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-green-50"><CheckCircle className="h-4 w-4 text-green-600" /></div>
+              <div><p className="text-xs text-muted-foreground">已付累计</p><p className="text-xl font-bold text-green-600">¥{totalPaid.toLocaleString()}</p></div>
             </CardContent>
           </Card>
         </div>
 
-        {/* 账龄分布图 */}
-        {unpaid.length > 0 && (
+        {/* 账龄分布 */}
+        {withUnpaid.length > 0 && (
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">账龄分布（未付款）</CardTitle>
-            </CardHeader>
+            <CardHeader className="pb-2"><CardTitle className="text-base">账龄分布（按最长未付费用 · 录入日起算）</CardTitle></CardHeader>
             <CardContent>
               <ResponsiveContainer width="100%" height={180}>
                 <BarChart data={agingData} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="name" tick={{ fontSize: 12 }} />
                   <YAxis tick={{ fontSize: 12 }} tickFormatter={v => `¥${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip formatter={(v) => [`¥${Number(v).toLocaleString()}`, '应付金额']} />
+                  <Tooltip formatter={(v) => [`¥${Number(v).toLocaleString()}`, '未付金额']} />
                   <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
-                    {agingData.map((entry, i) => (
-                      <Cell key={i} fill={entry.color} />
-                    ))}
+                    {agingData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
@@ -252,7 +267,7 @@ export default function PayablesPage() {
                 {agingData.map(b => (
                   <div key={b.name} className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: b.color }} />
-                    {b.name}: {b.count} 笔 · ¥{b.amount.toLocaleString()}
+                    {b.name}: {b.count} 个供应商 · ¥{b.amount.toLocaleString()}
                   </div>
                 ))}
               </div>
@@ -264,32 +279,18 @@ export default function PayablesPage() {
         <div className="flex flex-wrap gap-3 items-center">
           <div className="relative flex-1 min-w-[200px] max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="搜索供应商 / 订单号..."
-              className="pl-9"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
+            <Input placeholder="搜索供应商..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
-
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList>
-              <TabsTrigger value="all">全部 ({rows.length})</TabsTrigger>
-              <TabsTrigger value="overdue">逾期 ({overdue.length})</TabsTrigger>
-              <TabsTrigger value="unpaid">未付</TabsTrigger>
-              <TabsTrigger value="partial">部分付</TabsTrigger>
-              <TabsTrigger value="paid">已付</TabsTrigger>
+              <TabsTrigger value="unpaid">待付 ({withUnpaid.length})</TabsTrigger>
+              <TabsTrigger value="overdue">超60天 ({overdue60.length})</TabsTrigger>
+              <TabsTrigger value="cleared">已付清</TabsTrigger>
+              <TabsTrigger value="all">全部 ({suppliers.length})</TabsTrigger>
             </TabsList>
           </Tabs>
-
-          <Button
-            variant="outline"
-            size="sm"
-            className="ml-auto"
-            onClick={() => downloadCSV(filtered)}
-          >
-            <Download className="h-4 w-4 mr-1" />
-            导出CSV
+          <Button variant="outline" size="sm" className="ml-auto" onClick={exportCsv} disabled={filtered.length === 0}>
+            <Download className="h-4 w-4 mr-1" />导出CSV
           </Button>
         </div>
 
@@ -299,71 +300,106 @@ export default function PayablesPage() {
             {filtered.length === 0 ? (
               <div className="text-center py-16 text-muted-foreground">
                 <Clock className="h-10 w-10 mx-auto mb-3 opacity-30" />
-                <p>{rows.length === 0 ? '暂无应付记录' : '无匹配记录'}</p>
-                {rows.length === 0 && (
-                  <p className="text-xs mt-1">
-                    确认订单决算后自动生成应付记录，或前往{' '}
-                    <Link href="/orders" className="text-blue-500 underline">订单管理</Link>
-                  </p>
-                )}
+                <p>{rows.length === 0 ? '暂无费用记录' : '当前筛选下无供应商'}</p>
+                <p className="text-xs mt-1">
+                  应付 = {' '}
+                  <Link href="/costs" className="text-blue-500 underline">费用归集</Link>
+                  {' '}的费用 − 在供应商对账单「登记付款」的金额
+                </p>
               </div>
             ) : (
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/50">
                     <TableHead>供应商</TableHead>
-                    <TableHead>订单号</TableHead>
-                    <TableHead>描述</TableHead>
-                    <TableHead className="text-right">应付金额</TableHead>
-                    <TableHead className="text-right">余额</TableHead>
-                    <TableHead>到期日</TableHead>
-                    <TableHead>账龄</TableHead>
+                    <TableHead className="text-center">费用笔数</TableHead>
+                    <TableHead className="text-right">费用合计(¥)</TableHead>
+                    <TableHead className="text-right">已付(¥)</TableHead>
+                    <TableHead className="text-right">未付(¥)</TableHead>
+                    <TableHead>关联订单</TableHead>
+                    <TableHead>最长账龄</TableHead>
                     <TableHead>状态</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filtered.map(r => {
-                    const cfg = statusConfig[r.status]
+                  {filtered.map(s => {
+                    const isExpanded = expanded === s.supplier
+                    const unpaidShown = hasUnpaid(s)
                     return (
-                      <TableRow key={r.id} className={r.overBudget ? 'bg-amber-50/30' : ''}>
-                        <TableCell className="font-medium">
-                          <div className="flex items-center gap-1.5">
-                            {r.supplier}
-                            {r.overBudget && (
-                              <Badge variant="outline" className="text-[9px] text-amber-600 border-amber-400 px-1 py-0">超预算</Badge>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {r.orderNo !== '-' ? (
-                            <Link href={`/orders/${r.orderNo}`} className="text-blue-500 hover:underline text-sm">
-                              {r.orderNo}
-                            </Link>
-                          ) : '-'}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground max-w-[200px] truncate">{r.description}</TableCell>
-                        <TableCell className="text-right font-medium">
-                          {r.currency} {r.amount.toLocaleString()}
-                        </TableCell>
-                        <TableCell className={`text-right font-semibold ${r.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          {r.balance > 0 ? `${r.currency} ${r.balance.toLocaleString()}` : '已结清'}
-                        </TableCell>
-                        <TableCell className={`text-sm ${r.status === 'overdue' ? 'text-red-600 font-medium' : 'text-muted-foreground'}`}>
-                          {r.dueDate || '—'}
-                        </TableCell>
-                        <TableCell>
-                          {r.agingDays > 0 ? (
-                            <span className={`text-xs font-medium ${r.agingDays > 90 ? 'text-red-700' : r.agingDays > 60 ? 'text-red-500' : r.agingDays > 30 ? 'text-amber-600' : 'text-muted-foreground'}`}>
-                              {r.agingDays}天
-                            </span>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">未到期</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={cfg.variant}>{cfg.label}</Badge>
-                        </TableCell>
-                      </TableRow>
+                      <React.Fragment key={s.supplier}>
+                        <TableRow
+                          className={`cursor-pointer hover:bg-muted/50 ${s.oldestAging > 60 && unpaidShown ? 'bg-red-50/40' : ''}`}
+                          onClick={() => setExpanded(isExpanded ? null : s.supplier)}
+                        >
+                          <TableCell className="font-medium">
+                            <span className="mr-1 text-muted-foreground">{isExpanded ? '▼' : '▶'}</span>
+                            {s.supplier}
+                          </TableCell>
+                          <TableCell className="text-center">{s.chargeCount}</TableCell>
+                          <TableCell className="text-right text-sm">¥{s.totalChargeCny.toLocaleString()}</TableCell>
+                          <TableCell className="text-right text-sm text-green-600">¥{s.paidCny.toLocaleString()}</TableCell>
+                          <TableCell className={`text-right font-semibold ${unpaidShown ? 'text-red-600' : 'text-green-600'}`}>
+                            {unpaidShown ? `¥${s.unpaidCny.toLocaleString()}` : (s.unpaidCny < -0.005 ? `多付 ¥${Math.abs(s.unpaidCny).toLocaleString()}` : '已结清')}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex gap-1 flex-wrap">
+                              {s.orders.slice(0, 3).map(o => <Badge key={o} variant="outline" className="text-[10px]">{o}</Badge>)}
+                              {s.orders.length > 3 && <span className="text-[10px] text-muted-foreground">+{s.orders.length - 3}</span>}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            {unpaidShown ? (
+                              <span className={`text-xs font-medium ${s.oldestAging > 90 ? 'text-red-700' : s.oldestAging > 60 ? 'text-red-500' : s.oldestAging > 30 ? 'text-amber-600' : 'text-muted-foreground'}`}>
+                                {s.oldestAging}天
+                              </span>
+                            ) : <span className="text-xs text-muted-foreground">—</span>}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={!unpaidShown ? 'default' : 'secondary'} className={!unpaidShown ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}>
+                              {!unpaidShown ? '已付清' : '未付清'}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                        {isExpanded && (
+                          <TableRow>
+                            <TableCell colSpan={8} className="p-0 bg-slate-50">
+                              {s.items.length > 0 ? (
+                                <table className="w-full text-xs border-t border-slate-200">
+                                  <thead className="bg-slate-100 border-b border-slate-200">
+                                    <tr>
+                                      <th className="pl-10 pr-3 py-2 text-left font-semibold text-slate-600">费用类型</th>
+                                      <th className="px-3 py-2 text-left font-semibold text-slate-600">描述</th>
+                                      <th className="px-3 py-2 text-left font-semibold text-slate-500">关联订单</th>
+                                      <th className="px-3 py-2 text-right font-semibold text-slate-600">金额(¥)</th>
+                                      <th className="px-3 py-2 text-left font-semibold text-slate-600">录入日</th>
+                                      <th className="px-3 py-2 text-right font-semibold text-slate-600">账龄</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {s.items.map(it => (
+                                      <tr key={it.id} className="border-t border-slate-100 hover:bg-white">
+                                        <td className="pl-10 pr-3 py-1.5 text-muted-foreground">{it.cost_type}</td>
+                                        <td className="px-3 py-1.5">{it.description}</td>
+                                        <td className="px-3 py-1.5 text-slate-500">{it.orderLabel || '—'}</td>
+                                        <td className="px-3 py-1.5 text-right tabular-nums">¥{it.amountCny.toLocaleString()}</td>
+                                        <td className="px-3 py-1.5 text-muted-foreground">{new Date(it.createdAt).toLocaleDateString('zh-CN')}</td>
+                                        <td className={`px-3 py-1.5 text-right ${it.agingDays > 60 ? 'text-red-600' : 'text-muted-foreground'}`}>{it.agingDays}天</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              ) : (
+                                <div className="px-10 py-3 text-xs text-muted-foreground">该供应商无费用记录（仅有付款）。</div>
+                              )}
+                              <div className="flex justify-end gap-6 px-10 py-2 border-t border-slate-200 bg-white/60 text-xs">
+                                <span>费用合计 <b className="tabular-nums">¥{s.totalChargeCny.toLocaleString()}</b></span>
+                                <span className="text-green-700">已登记付款 <b className="tabular-nums">−¥{s.paidCny.toLocaleString()}</b></span>
+                                <span className={unpaidShown ? 'text-red-600' : 'text-green-700'}>实际未付 <b className="tabular-nums">¥{s.unpaidCny.toLocaleString()}</b></span>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </React.Fragment>
                     )
                   })}
                 </TableBody>

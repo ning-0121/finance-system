@@ -13,11 +13,14 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
-import { Search, Download, DollarSign, FileText, Clock, CheckCircle, Lock, Loader2, AlertTriangle, Edit } from 'lucide-react'
+import { Search, Download, DollarSign, FileText, Clock, CheckCircle, Lock, Loader2, AlertTriangle, Edit, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { Label } from '@/components/ui/label'
 import { createClient } from '@/lib/supabase/client'
 import { exportCostSummaryReport } from '@/lib/excel/export-professional'
 import { exportSupplierStatementToExcel } from '@/lib/excel/export-supplier-statement'
+import { getSupplierPayments, createSupplierPayment, deleteSupplierPayment } from '@/lib/supabase/queries-v2'
+import type { SupplierPayment } from '@/lib/types'
 
 interface SupplierLine {
   supplier: string
@@ -42,8 +45,8 @@ const STATUS_CONFIG: Record<ReportStatus, { label: string; color: string }> = {
 
 export default function SupplierReportPage() {
   const [lines, setLines] = useState<SupplierLine[]>([])
-  const [allCostDetails, setAllCostDetails] = useState<{ supplier: string; description: string; amount: number; currency: string; cost_type: string; order_no: string; internal_no: string; metronome_no: string; created_at: string; is_paid: boolean }[]>([])
-  const [paidMapState, setPaidMapState] = useState<Record<string, number>>({})
+  const [allCostDetails, setAllCostDetails] = useState<{ supplier: string; description: string; amount: number; currency: string; cost_type: string; order_no: string; internal_no: string; metronome_no: string; created_at: string; is_paid: boolean; unit: string; qty: number | null; unit_price: number | null }[]>([])
+  const [payments, setPayments] = useState<SupplierPayment[]>([])
   const [expandedSupplier, setExpandedSupplier] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -60,6 +63,14 @@ export default function SupplierReportPage() {
   const [editAmount, setEditAmount] = useState('')
   const [editReason, setEditReason] = useState('')
   const [processing, setProcessing] = useState(false)
+
+  // 登记供应商付款
+  const [payDialogOpen, setPayDialogOpen] = useState(false)
+  const [paySupplier, setPaySupplier] = useState('')
+  const [payAmount, setPayAmount] = useState('')
+  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10))
+  const [payNote, setPayNote] = useState('')
+  const [paySaving, setPaySaving] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -85,16 +96,16 @@ export default function SupplierReportPage() {
       }
 
       // 没有快照或是草稿 → 从实时数据自动汇总
-      // 加载费用、已付款 + 同步订单（获取内部订单号）
-      const [costRes, payRes, syncedRes] = await Promise.all([
-        supabase.from('cost_items').select('id, description, amount, currency, cost_type, supplier, source_module, budget_order_id, created_at, budget_orders(order_no, quote_no)').order('created_at', { ascending: false }),
-        supabase.from('payable_records').select('supplier_name, amount, payment_status').eq('payment_status', 'paid'),
+      // 加载费用（含 数量/单位/单价）+ 供应商付款 + 同步订单（获取内部订单号）
+      const [costRes, payList, syncedRes] = await Promise.all([
+        supabase.from('cost_items').select('id, description, amount, currency, cost_type, supplier, source_module, quantity, unit, unit_price, budget_order_id, created_at, budget_orders(order_no, quote_no)').is('deleted_at', null).order('created_at', { ascending: false }),
+        getSupplierPayments(),
         // F7: 节拍器同步订单 — 用于把 cost_items 关联到内部订单号 (style_no)
         supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null),
       ])
       const costItems = costRes.data
-      const paidRecords = payRes.data
       const syncedOrders = syncedRes.data || []
+      setPayments(payList)
 
       // budget_order_id → { internal_no (style_no), metronome_no (order_no) }
       const syncMap = new Map<string, { internal_no: string; metronome_no: string }>()
@@ -107,24 +118,14 @@ export default function SupplierReportPage() {
         }
       })
 
-      // 按供应商汇总已付金额（来源1：payable_records + 来源2：cost_items标记为paid）
+      // 付款（已登记的供应商付款）按供应商汇总 — 对账单的「已付」以此为准
       const paidMap = new Map<string, number>()
-      paidRecords?.forEach(p => {
-        const name = p.supplier_name as string
-        paidMap.set(name, (paidMap.get(name) || 0) + (p.amount as number || 0))
+      payList.forEach(p => {
+        paidMap.set(p.supplier_name, (paidMap.get(p.supplier_name) || 0) + (Number(p.amount) || 0))
       })
-      // 费用中标记为已付的也算已付
-      costItems?.forEach(c => {
-        if ((c.source_module as string) === 'paid') {
-          const name = (c.supplier as string) || '未指定'
-          paidMap.set(name, (paidMap.get(name) || 0) + (c.amount as number || 0))
-        }
-      })
-      // 保存到 state 供 useMemo 重算用
-      setPaidMapState(Object.fromEntries(paidMap))
 
       if (costItems?.length) {
-        // 保存明细（用于导出）
+        // 保存明细（用于导出 + 展开台账）
         setAllCostDetails(costItems.map(item => {
           const budgetOrderId = item.budget_order_id as string
           const sync = budgetOrderId ? syncMap.get(budgetOrderId) : null
@@ -141,35 +142,40 @@ export default function SupplierReportPage() {
             metronome_no: sync?.metronome_no || '',
             created_at: item.created_at as string,
             is_paid: (item.source_module as string) === 'paid',
+            unit: (item.unit as string) || '',
+            qty: item.quantity != null ? Number(item.quantity) : null,
+            unit_price: item.unit_price != null ? Number(item.unit_price) : null,
           }
         }))
 
-        // 按供应商汇总
-        const supplierMap = new Map<string, { count: number; total: number; paid: number; currency: string; orders: Set<string> }>()
+        // 按供应商汇总（已付 = 已登记付款合计；未付 = 费用合计 − 付款合计）
+        const supplierMap = new Map<string, { count: number; total: number; currency: string; orders: Set<string> }>()
 
         for (const item of costItems) {
           const supplier = (item.supplier as string) || (item.description as string || '').split(' - ')[0] || '未指定供应商'
           const boRow = item.budget_orders as unknown as { order_no?: string } | null
           const orderNo = boRow?.order_no || ''
 
-          const existing = supplierMap.get(supplier) || { count: 0, total: 0, paid: 0, currency: (item.currency as string) || 'CNY', orders: new Set<string>() }
+          const existing = supplierMap.get(supplier) || { count: 0, total: 0, currency: (item.currency as string) || 'CNY', orders: new Set<string>() }
           existing.count++
           existing.total += Number(item.amount) || 0
-          existing.paid = paidMap.get(supplier) || 0
           if (orderNo) existing.orders.add(orderNo)
           supplierMap.set(supplier, existing)
         }
 
         const result: SupplierLine[] = Array.from(supplierMap.entries())
-          .map(([supplier, data]) => ({
-            supplier,
-            count: data.count,
-            total: Math.round(data.total * 100) / 100,
-            paid: Math.round(data.paid * 100) / 100,
-            unpaid: Math.round((data.total - data.paid) * 100) / 100,
-            currency: data.currency,
-            orders: Array.from(data.orders),
-          }))
+          .map(([supplier, data]) => {
+            const paid = paidMap.get(supplier) || 0
+            return {
+              supplier,
+              count: data.count,
+              total: Math.round(data.total * 100) / 100,
+              paid: Math.round(paid * 100) / 100,
+              unpaid: Math.round((data.total - paid) * 100) / 100,
+              currency: data.currency,
+              orders: Array.from(data.orders),
+            }
+          })
           .sort((a, b) => b.total - a.total)
 
         setLines(result)
@@ -191,6 +197,14 @@ export default function SupplierReportPage() {
       if (dateEnd && d.created_at > dateEnd + 'T23:59:59') return false
       return true
     })
+    // 已登记付款（按日期过滤）按供应商汇总
+    const payMap = new Map<string, number>()
+    for (const p of payments) {
+      const d = p.paid_at || ''
+      if (dateStart && d && d < dateStart) continue
+      if (dateEnd && d && d > dateEnd) continue
+      payMap.set(p.supplier_name, (payMap.get(p.supplier_name) || 0) + (Number(p.amount) || 0))
+    }
     const map = new Map<string, { count: number; total: number; currency: string; orders: Set<string> }>()
     for (const d of inRange) {
       const existing = map.get(d.supplier) || { count: 0, total: 0, currency: d.currency, orders: new Set<string>() }
@@ -199,9 +213,13 @@ export default function SupplierReportPage() {
       if (d.order_no) existing.orders.add(d.order_no)
       map.set(d.supplier, existing)
     }
+    // 包含「只有付款、没有当期费用」的供应商
+    for (const sup of payMap.keys()) {
+      if (!map.has(sup)) map.set(sup, { count: 0, total: 0, currency: 'CNY', orders: new Set<string>() })
+    }
     return Array.from(map.entries())
       .map(([supplier, data]) => {
-        const paid = paidMapState[supplier] || 0
+        const paid = payMap.get(supplier) || 0
         return {
           supplier,
           count: data.count,
@@ -212,8 +230,8 @@ export default function SupplierReportPage() {
           orders: Array.from(data.orders),
         }
       })
-      .sort((a, b) => b.total - a.total)
-  }, [allCostDetails, dateStart, dateEnd, paidMapState, status, lines])
+      .sort((a, b) => b.unpaid - a.unpaid)
+  }, [allCostDetails, payments, dateStart, dateEnd, status, lines])
 
   const filtered = periodAwareLines.filter(s => !search || s.supplier.toLowerCase().includes(search.toLowerCase()))
   const totalAll = filtered.reduce((s, d) => s + d.total, 0)
@@ -226,6 +244,36 @@ export default function SupplierReportPage() {
     if (dateEnd && d.created_at > dateEnd + 'T23:59:59') return false
     return true
   })
+
+  const getPaymentsForSupplier = (supplier: string) => payments.filter(p => {
+    if (p.supplier_name !== supplier) return false
+    const d = p.paid_at || ''
+    if (dateStart && d && d < dateStart) return false
+    if (dateEnd && d && d > dateEnd) return false
+    return true
+  })
+
+  // 供应商台账：费用(+) 与 付款(−) 合并、按日期排序、滚动累计余额
+  type LedgerRow = { date: string; kind: 'charge' | 'payment'; internal_no: string; description: string; unit: string; qty: number | null; unit_price: number | null; delta: number; balance: number }
+  const buildLedger = (supplier: string): LedgerRow[] => {
+    const charges = getDetails(supplier).map(d => ({
+      date: (d.created_at || '').slice(0, 10), kind: 'charge' as const,
+      internal_no: d.internal_no || d.order_no || '', description: d.description || '',
+      unit: d.unit || '', qty: d.qty, unit_price: d.unit_price, delta: d.amount || 0,
+    }))
+    const pays = getPaymentsForSupplier(supplier).map(p => ({
+      date: (p.paid_at || '').slice(0, 10), kind: 'payment' as const,
+      internal_no: '', description: p.note ? `付款 ${p.note}` : '付款',
+      unit: '', qty: null, unit_price: null, delta: -(Number(p.amount) || 0),
+    }))
+    const merged = [...charges, ...pays].sort((a, b) => {
+      if (a.date !== b.date) return (a.date || '0').localeCompare(b.date || '0')
+      if (a.kind !== b.kind) return a.kind === 'charge' ? -1 : 1
+      return 0
+    })
+    let running = 0
+    return merged.map(m => { running += m.delta; return { ...m, balance: Math.round(running * 100) / 100 } })
+  }
 
   // 保存快照
   const saveSnapshot = async (newStatus: ReportStatus) => {
@@ -308,6 +356,35 @@ export default function SupplierReportPage() {
     toast.success('已修正')
   }
 
+  // 登记供应商付款（负数流水）
+  const handleAddPayment = async () => {
+    const sup = paySupplier.trim()
+    const amt = Number(payAmount)
+    if (!sup) { toast.error('请填写供应商'); return }
+    if (!amt || amt <= 0) { toast.error('请输入有效付款金额'); return }
+    setPaySaving(true)
+    const { data, error } = await createSupplierPayment({
+      supplier_name: sup, amount: amt, paid_at: payDate || null, note: payNote.trim() || null,
+    })
+    setPaySaving(false)
+    if (error || !data) { toast.error(`登记失败: ${error || '未知错误'}`); return }
+    setPayments([...payments, data])
+    toast.success(`已登记付款 ${sup} ¥${amt.toLocaleString()}`)
+    setPayDialogOpen(false)
+    setPaySupplier(''); setPayAmount(''); setPayNote(''); setPayDate(new Date().toISOString().slice(0, 10))
+  }
+
+  const handleDeletePayment = async (id: string) => {
+    if (!confirm('确定删除这笔付款记录？对账单余额会相应回升。')) return
+    const { error } = await deleteSupplierPayment(id)
+    if (error) { toast.error(`删除失败: ${error}`); return }
+    setPayments(payments.filter(p => p.id !== id))
+    toast.success('付款记录已删除')
+  }
+
+  // 供应商候选（供登记付款下拉）
+  const supplierOptions = Array.from(new Set(allCostDetails.map(d => d.supplier).filter(Boolean))).sort()
+
   return (
     <div className="flex flex-col h-full">
       <Header title="供应商对账单" subtitle="自动汇总 → 方圆审核 → Su确认 → 锁定导出" />
@@ -339,33 +416,47 @@ export default function SupplierReportPage() {
                   <Lock className="h-4 w-4 mr-1" />锁定
                 </Button>
               )}
+              <Button size="sm" variant="outline" onClick={() => { setPaySupplier(''); setPayAmount(''); setPayNote(''); setPayDate(new Date().toISOString().slice(0, 10)); setPayDialogOpen(true) }}>
+                <Plus className="h-4 w-4 mr-1" />登记付款
+              </Button>
               {/* F5: 导出按钮去掉状态门槛 — draft 也能导 */}
-              {/* F7: 主按钮 = 详单对账（按内部订单号），财务核对依赖 */}
+              {/* 流水台账格式：费用(+) / 付款(−) / 累计余额=实际未付 */}
               <Button
                 size="sm"
                 variant="default"
                 onClick={() => {
-                  // 仅导出 已选搜索/日期范围内 + filtered 供应商的明细
+                  // 仅导出 已选搜索/日期范围内 + filtered 供应商的费用与付款
                   const supplierSet = new Set(filtered.map(f => f.supplier))
-                  const detailsToExport = allCostDetails.filter(d => {
+                  const chargesToExport = allCostDetails.filter(d => {
                     if (!supplierSet.has(d.supplier)) return false
                     if (dateStart && d.created_at < dateStart) return false
                     if (dateEnd && d.created_at > dateEnd + 'T23:59:59') return false
                     return true
-                  })
-                  if (detailsToExport.length === 0) {
-                    toast.error('当前条件下没有明细可导出')
+                  }).map(d => ({
+                    supplier: d.supplier, date: d.created_at, internal_no: d.internal_no,
+                    description: d.description, unit: d.unit, qty: d.qty, unit_price: d.unit_price, amount: d.amount,
+                  }))
+                  const paymentsToExport = payments.filter(p => {
+                    if (!supplierSet.has(p.supplier_name)) return false
+                    const dt = p.paid_at || ''
+                    if (dateStart && dt && dt < dateStart) return false
+                    if (dateEnd && dt && dt > dateEnd) return false
+                    return true
+                  }).map(p => ({ supplier: p.supplier_name, date: p.paid_at || '', amount: Number(p.amount) || 0, note: p.note || '' }))
+                  if (chargesToExport.length === 0 && paymentsToExport.length === 0) {
+                    toast.error('当前条件下没有可导出的费用或付款')
                     return
                   }
                   exportSupplierStatementToExcel(
-                    detailsToExport,
+                    chargesToExport,
+                    paymentsToExport,
                     { start: dateStart || '', end: dateEnd || '' }
                   )
-                  toast.success(`已导出 ${supplierSet.size} 个供应商共 ${detailsToExport.length} 笔明细（按内部订单号）`)
+                  toast.success(`已导出 ${supplierSet.size} 个供应商对账单（费用 ${chargesToExport.length} 笔 · 付款 ${paymentsToExport.length} 笔）`)
                 }}
                 disabled={filtered.length === 0}
               >
-                <Download className="h-4 w-4 mr-1" />导出明细对账单
+                <Download className="h-4 w-4 mr-1" />导出对账单
               </Button>
               <Button
                 size="sm"
@@ -473,7 +564,7 @@ export default function SupplierReportPage() {
                 </TableHeader>
                 <TableBody>
                   {filtered.map((s, i) => {
-                    const details = getDetails(s.supplier)
+                    const ledger = buildLedger(s.supplier)
                     const isExpanded = expandedSupplier === s.supplier
                     return (
                       <React.Fragment key={i}>
@@ -499,60 +590,64 @@ export default function SupplierReportPage() {
                             </TableCell>
                           )}
                         </TableRow>
-                        {/* 展开明细 — 独立子表，不受外层列宽干扰 */}
+                        {/* 展开流水台账：费用(+) / 付款(−) / 累计余额 */}
                         {isExpanded && (
                           <TableRow>
                             <TableCell colSpan={isLocked ? 7 : 8} className="p-0 bg-slate-50">
-                              {details.length === 0 ? (
+                              {ledger.length === 0 ? (
                                 <div className="text-center py-4 text-xs text-muted-foreground">该时间段内无记录</div>
                               ) : (
                                 <table className="w-full text-xs border-t border-slate-200">
                                   <thead className="bg-slate-100 border-b border-slate-200">
                                     <tr>
-                                      <th className="pl-10 pr-3 py-2 text-left font-semibold text-blue-700 w-32">内部订单号</th>
-                                      <th className="px-3 py-2 text-left font-semibold text-slate-500 w-32">财务订单号</th>
-                                      <th className="px-3 py-2 text-left font-semibold text-slate-600 w-24">费用类型</th>
-                                      <th className="px-3 py-2 text-right font-semibold text-slate-600 w-24">金额</th>
-                                      <th className="px-3 py-2 text-left font-semibold text-slate-600">描述</th>
-                                      <th className="px-3 py-2 text-center font-semibold text-slate-600 w-14">付款</th>
-                                      <th className="px-3 py-2 text-left font-semibold text-slate-600 w-22">日期</th>
+                                      <th className="pl-10 pr-3 py-2 text-left font-semibold text-slate-600 w-24">日期</th>
+                                      <th className="px-3 py-2 text-left font-semibold text-blue-700 w-28">内部订单号</th>
+                                      <th className="px-2 py-2 text-left font-semibold text-slate-600">摘要</th>
+                                      <th className="px-2 py-2 text-left font-semibold text-slate-600 w-12">单位</th>
+                                      <th className="px-2 py-2 text-right font-semibold text-slate-600 w-16">数量</th>
+                                      <th className="px-2 py-2 text-right font-semibold text-slate-600 w-16">单价</th>
+                                      <th className="px-2 py-2 text-right font-semibold text-slate-600 w-24">费用(+)</th>
+                                      <th className="px-2 py-2 text-right font-semibold text-slate-600 w-24">付款(−)</th>
+                                      <th className="px-3 py-2 text-right font-semibold text-slate-700 w-28">累计余额</th>
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    {details.map((d, di) => (
-                                      <tr key={di} className="border-t border-slate-100 hover:bg-white">
-                                        <td className="pl-10 pr-3 py-1.5 font-mono font-semibold text-blue-700">{d.internal_no || <span className="text-muted-foreground font-normal">—</span>}</td>
-                                        <td className="px-3 py-1.5 font-mono text-xs text-slate-500">{d.order_no || <span className="text-muted-foreground">—</span>}</td>
-                                        <td className="px-3 py-1.5 text-muted-foreground">{d.cost_type}</td>
-                                        <td className="px-3 py-1.5 text-right tabular-nums">¥{d.amount.toLocaleString()}</td>
-                                        <td className="px-3 py-1.5 text-muted-foreground">{d.description}</td>
-                                        <td className="px-3 py-1.5 text-center">
-                                          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${d.is_paid ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
-                                            {d.is_paid ? '已付' : '未付'}
-                                          </span>
-                                        </td>
-                                        <td className="px-3 py-1.5 text-muted-foreground">{new Date(d.created_at).toLocaleDateString('zh-CN')}</td>
+                                    {ledger.map((e, di) => (
+                                      <tr key={di} className={`border-t border-slate-100 hover:bg-white ${e.kind === 'payment' ? 'bg-green-50/40' : ''}`}>
+                                        <td className="pl-10 pr-3 py-1.5 text-muted-foreground">{e.date || '—'}</td>
+                                        <td className="px-3 py-1.5 font-mono text-blue-700">{e.internal_no || <span className="text-muted-foreground font-normal">—</span>}</td>
+                                        <td className="px-2 py-1.5 text-muted-foreground">{e.description}</td>
+                                        <td className="px-2 py-1.5 text-muted-foreground">{e.unit || ''}</td>
+                                        <td className="px-2 py-1.5 text-right tabular-nums">{e.qty != null ? e.qty.toLocaleString() : ''}</td>
+                                        <td className="px-2 py-1.5 text-right tabular-nums">{e.unit_price != null ? e.unit_price.toLocaleString() : ''}</td>
+                                        <td className="px-2 py-1.5 text-right tabular-nums">{e.kind === 'charge' ? `¥${e.delta.toLocaleString()}` : ''}</td>
+                                        <td className="px-2 py-1.5 text-right tabular-nums text-green-700">{e.kind === 'payment' ? `−¥${Math.abs(e.delta).toLocaleString()}` : ''}</td>
+                                        <td className="px-3 py-1.5 text-right tabular-nums font-semibold">¥{e.balance.toLocaleString()}</td>
                                       </tr>
                                     ))}
+                                    <tr className="border-t-2 border-slate-300 bg-slate-100 font-semibold">
+                                      <td className="pl-10 pr-3 py-1.5" colSpan={6}>期末应付（实际未付）</td>
+                                      <td className="px-2 py-1.5 text-right tabular-nums">¥{s.total.toLocaleString()}</td>
+                                      <td className="px-2 py-1.5 text-right tabular-nums text-green-700">−¥{s.paid.toLocaleString()}</td>
+                                      <td className={`px-3 py-1.5 text-right tabular-nums ${s.unpaid > 0 ? 'text-amber-700' : 'text-green-700'}`}>¥{s.unpaid.toLocaleString()}</td>
+                                    </tr>
                                   </tbody>
                                 </table>
                               )}
-                              <div className="flex justify-end px-4 py-1.5 border-t border-slate-200 bg-slate-50">
-                                <Button size="sm" variant="ghost" className="text-xs h-6" onClick={(e) => {
-                                  e.stopPropagation()
-                                  const period = dateStart && dateEnd ? `${dateStart}~${dateEnd}` : '全部'
-                                  const csv = ['供应商,内部订单号,节拍器订单号,财务订单号,费用类型,金额,币种,描述,付款状态,日期']
-                                  details.forEach(d => csv.push(`${d.supplier},${d.internal_no || ''},${d.metronome_no || ''},${d.order_no || ''},${d.cost_type},${d.amount},${d.currency},"${(d.description || '').replace(/"/g, '""')}",${d.is_paid ? '已付' : '未付'},${new Date(d.created_at).toLocaleDateString('zh-CN')}`))
-                                  const blob = new Blob(['\uFEFF' + csv.join('\n')], { type: 'text/csv;charset=utf-8' })
-                                  const url = URL.createObjectURL(blob)
-                                  const a = document.createElement('a')
-                                  a.href = url; a.download = `${s.supplier}_费用明细_${period}.csv`; a.click()
-                                  URL.revokeObjectURL(url)
-                                  toast.success(`已导出 ${s.supplier} 共 ${details.length} 条`)
-                                }}>
-                                  <Download className="h-3 w-3 mr-1" />导出明细 CSV
-                                </Button>
-                              </div>
+                              {/* 该供应商已登记付款（点 × 删除，余额会相应回升） */}
+                              {getPaymentsForSupplier(s.supplier).length > 0 && !isLocked && (
+                                <div className="px-10 py-2 border-t border-slate-200 bg-white/60 space-y-1">
+                                  <p className="text-[10px] text-muted-foreground">已登记付款（点 × 可删除）：</p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {getPaymentsForSupplier(s.supplier).map(p => (
+                                      <span key={p.id} className="inline-flex items-center gap-1 text-[11px] bg-green-50 border border-green-200 rounded px-1.5 py-0.5">
+                                        {p.paid_at || '—'} · ¥{Number(p.amount).toLocaleString()}{p.note ? ` · ${p.note}` : ''}
+                                        <button className="text-red-400 hover:text-red-600" onClick={(ev) => { ev.stopPropagation(); handleDeletePayment(p.id) }}><Trash2 className="h-3 w-3" /></button>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </TableCell>
                           </TableRow>
                         )}
@@ -609,6 +704,43 @@ export default function SupplierReportPage() {
           </DialogContent>
         </Dialog>
       )}
+
+      {/* 登记供应商付款弹窗 */}
+      <Dialog open={payDialogOpen} onOpenChange={setPayDialogOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>登记供应商付款</DialogTitle></DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>供应商 *</Label>
+              <Input list="supplier-pay-options" placeholder="选择或输入供应商" value={paySupplier} onChange={e => setPaySupplier(e.target.value)} />
+              <datalist id="supplier-pay-options">
+                {supplierOptions.map(o => <option key={o} value={o} />)}
+              </datalist>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>付款金额 (¥) *</Label>
+                <Input type="number" step="0.01" min={0.01} placeholder="如 200000" value={payAmount} onChange={e => setPayAmount(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>付款日期</Label>
+                <Input type="date" value={payDate} onChange={e => setPayDate(e.target.value)} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>备注</Label>
+              <Textarea placeholder="付款方式/凭证号等（可选）" value={payNote} onChange={e => setPayNote(e.target.value)} rows={2} />
+            </div>
+            <p className="text-[11px] text-muted-foreground">付款只挂供应商、不挂订单号。登记后对账单会以负数流水计入，累计余额即实际未付。</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPayDialogOpen(false)}>取消</Button>
+            <Button onClick={handleAddPayment} disabled={paySaving}>
+              {paySaving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}登记付款
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

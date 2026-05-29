@@ -7,7 +7,7 @@ import type {
   SubDocument, SubDocumentType, SubDocItem,
   ActualInvoice, ShippingDocument, InventoryReturn,
   OrderSettlement, SubSettlement, OrderLevelCost,
-  PayableRecord,
+  PayableRecord, SupplierPayment,
 } from '@/lib/types'
 
 // ============================================================
@@ -419,6 +419,77 @@ export async function getSupplierStatements(filters?: {
     return data
   } catch {
     return []
+  }
+}
+
+// ============================================================
+// 供应商付款流水（对账单负数行）
+// ============================================================
+
+export async function getSupplierPayments(filters?: {
+  supplierName?: string
+  startDate?: string
+  endDate?: string
+}): Promise<SupplierPayment[]> {
+  try {
+    const supabase = createClient()
+    let query = supabase
+      .from('supplier_payments')
+      .select('*')
+      .is('deleted_at', null)
+      .order('paid_at', { ascending: true })
+
+    if (filters?.supplierName) query = query.ilike('supplier_name', `%${filters.supplierName}%`)
+    if (filters?.startDate) query = query.gte('paid_at', filters.startDate)
+    if (filters?.endDate) query = query.lte('paid_at', filters.endDate)
+
+    const { data, error } = await query
+    if (error || !data) return []
+    return data as SupplierPayment[]
+  } catch {
+    return []
+  }
+}
+
+export async function createSupplierPayment(payment: {
+  supplier_name: string
+  amount: number
+  currency?: string
+  paid_at?: string | null
+  note?: string | null
+}): Promise<{ data: SupplierPayment | null; error: string | null }> {
+  try {
+    const supabase = createClient()
+    const { data: userData } = await supabase.auth.getUser()
+    const { data, error } = await supabase
+      .from('supplier_payments')
+      .insert({
+        supplier_name: payment.supplier_name,
+        amount: payment.amount,
+        currency: payment.currency || 'CNY',
+        paid_at: payment.paid_at || null,
+        note: payment.note || null,
+        created_by: userData?.user?.id || null,
+      })
+      .select()
+      .single()
+    if (error) return { data: null, error: error.message }
+    return { data: data as SupplierPayment, error: null }
+  } catch (e) {
+    return { data: null, error: e instanceof Error ? e.message : 'Unknown error' }
+  }
+}
+
+export async function deleteSupplierPayment(id: string): Promise<{ error: string | null }> {
+  try {
+    const supabase = createClient()
+    const { error } = await supabase
+      .from('supplier_payments')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', id)
+    return { error: error?.message || null }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Unknown error' }
   }
 }
 

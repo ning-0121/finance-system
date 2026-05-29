@@ -91,6 +91,8 @@ export interface BudgetOrder {
   ar_received_amount?: number | null
   /** 实际收款时间 */
   ar_received_at?: string | null
+  /** 实际收款银行/账户（钱打到了哪个银行） */
+  ar_received_bank?: string | null
   created_at: string
   updated_at: string
 }
@@ -262,6 +264,19 @@ export interface SubDocItem {
   unit: string
   unit_price: number
   amount: number
+}
+
+// 供应商付款流水（对账单负数行的来源；只挂供应商不挂订单）
+export interface SupplierPayment {
+  id: string
+  supplier_name: string
+  amount: number
+  currency: string
+  paid_at: string | null
+  note: string | null
+  created_by?: string | null
+  created_at: string
+  deleted_at?: string | null
 }
 
 export type InvoiceType = 'purchase_order' | 'supplier_invoice' | 'factory_contract' | 'factory_statement' | 'freight_bill' | 'commission_bill' | 'customer_statement' | 'tax_invoice' | 'other_invoice'

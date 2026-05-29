@@ -321,8 +321,10 @@ export default function CostsPage() {
         return
       }
 
-      // 把数量/单价/单位存入source_id字段（JSON格式，因为表没有独立列）
-      const detailMeta = (formQty || formUnitPrice) ? JSON.stringify({ qty: Number(formQty) || 0, unit: formUnit, unit_price: Number(formUnitPrice) || 0 }) : null
+      // 数量/单位/单价：写入真实列（订单核算单支区读取这几列）；同时保留 source_id JSON 兼容页面历史显示
+      const qtyNum = Number(formQty) || 0
+      const unitPriceNum = Number(formUnitPrice) || 0
+      const detailMeta = (formQty || formUnitPrice) ? JSON.stringify({ qty: qtyNum, unit: formUnit, unit_price: unitPriceNum }) : null
       const record = {
         budget_order_id: formOrderId || null,
         cost_type: formType,
@@ -333,6 +335,9 @@ export default function CostsPage() {
         supplier: formSupplier || null,
         source_module: formPaid ? 'paid' : null,
         source_id: detailMeta,
+        quantity: (formQty || formUnitPrice) ? qtyNum : null,
+        unit: (formQty || formUnitPrice) ? (formUnit || null) : null,
+        unit_price: (formQty || formUnitPrice) ? unitPriceNum : null,
       }
 
       let data: Record<string, unknown>
@@ -393,7 +398,9 @@ export default function CostsPage() {
           if (!line.desc) continue
           const lineAmount = Number(line.amount) || (Number(line.qty) * Number(line.unitPrice)) || 0
           if (lineAmount <= 0) { console.warn(`[费用录入] 品目"${line.desc}"金额为0，跳过`); continue }
-          const lineMeta = (line.qty || line.unitPrice) ? JSON.stringify({ qty: Number(line.qty) || 0, unit: line.unit, unit_price: Number(line.unitPrice) || 0 }) : null
+          const lineQty = Number(line.qty) || 0
+          const lineUnitPrice = Number(line.unitPrice) || 0
+          const lineMeta = (line.qty || line.unitPrice) ? JSON.stringify({ qty: lineQty, unit: line.unit, unit_price: lineUnitPrice }) : null
           const { data: lineData, error: lineErr } = await supabase.from('cost_items').insert({
             budget_order_id: formOrderId || null,
             cost_type: formType,
@@ -404,6 +411,9 @@ export default function CostsPage() {
             supplier: formSupplier || null,
             source_module: formPaid ? 'paid' : null,
             source_id: lineMeta,
+            quantity: (line.qty || line.unitPrice) ? lineQty : null,
+            unit: (line.qty || line.unitPrice) ? (line.unit || null) : null,
+            unit_price: (line.qty || line.unitPrice) ? lineUnitPrice : null,
             created_by: createdBy,
           }).select('*, budget_orders(order_no)').single()
 
