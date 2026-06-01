@@ -165,9 +165,69 @@ export default function NewBudgetOrderPage() {
     if (totalRevenue <= 0) { toast.error('请添加产品明细'); return }
 
     setSaving(true)
+
+    // ── 审计修复 C5：持久化子单据明细行，避免「保存即丢失」 ──
+    // 把子单据（含 品名/数量/单位/单价）写入 items[0]._cost_breakdown，
+    // 编码与订单编辑页 (orders/[id]) 完全一致，保证：
+    //   1) 预算表导出 (export-budget-sheet) 能展开明细行；
+    //   2) 再次进入编辑页能读回明细、且重新保存不会篡改任何标量字段。
+    // 关键不变量：每个类别的「明细之和」必须等于该类别标量（catValue 有明细时只认明细之和）。
+    // 模型对齐：编辑页里 采购价=面料(fabric)+辅料(accessory)，而本页所有子单据都计入采购价，
+    //   故 原料单→fabric，其余子单据→accessory（行名加「类型·供应商」前缀以保留语义）。
+    type BLine = { name: string; qty: number; unit: string; unit_price: number; amount: number }
+    const linesFromSubDocs = (docs: SubDocForm[]): { lines: BLine[]; total: number } => {
+      const lines: BLine[] = []
+      let total = 0
+      for (const sd of docs) {
+        const est = Number(sd.estimated_total) || 0
+        total += est
+        const label = SUB_DOC_LABELS[sd.doc_type]
+        const tag = `[${label}${sd.supplier_name ? '·' + sd.supplier_name : ''}]`
+        const realItems = sd.items.filter(it => (it.name && it.name.trim()) || Number(it.amount))
+        const itemsSum = realItems.reduce((s, it) => s + (Number(it.amount) || 0), 0)
+        // 仅当明细之和与子单据预算总额一致时，按明细逐行展开；否则用一条汇总行占位，
+        // 以严格维持「明细之和 == 类别标量」的不变量（防止再次编辑时采购价被改写）。
+        if (realItems.length > 0 && Math.abs(itemsSum - est) < 0.01) {
+          for (const it of realItems) {
+            lines.push({
+              name: `${tag} ${it.name || ''}`.trim(),
+              qty: Number(it.qty) || 0, unit: it.unit || '',
+              unit_price: Number(it.unit_price) || 0, amount: Number(it.amount) || 0,
+            })
+          }
+        } else if (est > 0) {
+          lines.push({ name: tag, qty: 0, unit: '', unit_price: 0, amount: est })
+        }
+      }
+      return { lines, total }
+    }
+    const fabricRes = linesFromSubDocs(subDocs.filter(sd => sd.doc_type === 'raw_material'))
+    const accessoryRes = linesFromSubDocs(subDocs.filter(sd => sd.doc_type !== 'raw_material'))
+    const linesData: Record<string, BLine[]> = {}
+    if (fabricRes.lines.length > 0) linesData.fabric = fabricRes.lines
+    if (accessoryRes.lines.length > 0) linesData.accessory = accessoryRes.lines
+    const isCny = currency === 'CNY'
+    const costBreakdown = {
+      fabric: fabricRes.total,
+      accessory: accessoryRes.total,
+      processing: estimatedCommission,   // 编辑页：processing → 佣金字段
+      forwarder: estimatedFreight,       // 编辑页：forwarder → 运费字段
+      container: estimatedCustomsFee,    // 编辑页：container → 报关费字段
+      logistics: otherCosts,             // 编辑页：logistics+extras → 其他费用字段
+      extras: estimatedTax > 0 ? [{ name: '预算税费', amount: estimatedTax }] : [],
+      lines: linesData,
+      _currency: isCny ? 'CNY_DIRECT' : 'CNY',
+      _revenue_input: totalRevenue,
+      _revenue_currency: isCny ? 'CNY' : 'USD',
+      _rate: Number(exchangeRate) || 1,
+    }
+    const itemsWithBreakdown = items.length > 0
+      ? [{ ...items[0], _cost_breakdown: costBreakdown }, ...items.slice(1)]
+      : [{ _cost_breakdown: costBreakdown } as unknown as OrderItem]
+
     const { error } = await createBudgetOrder({
       customer_id: customerId, order_date: orderDate, delivery_date: deliveryDate || undefined,
-      items, target_purchase_price: subDocTotal,
+      items: itemsWithBreakdown, target_purchase_price: subDocTotal,
       estimated_freight: estimatedFreight, estimated_commission: estimatedCommission,
       estimated_customs_fee: estimatedCustomsFee, other_costs: otherCosts + estimatedTax,
       total_revenue: totalRevenue, total_cost: totalCost,

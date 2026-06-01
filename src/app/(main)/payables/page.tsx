@@ -18,6 +18,7 @@ import {
 } from 'recharts'
 import { createClient } from '@/lib/supabase/client'
 import { getSupplierPayments } from '@/lib/supabase/queries-v2'
+import { normalizeSupplierName } from '@/lib/utils'
 import Link from 'next/link'
 import { toast } from 'sonner'
 
@@ -102,7 +103,7 @@ export default function PayablesPage() {
           const rate = Number(c.exchange_rate) || 1
           return {
             id: c.id as string,
-            supplier: (c.supplier as string) || '未指定供应商',
+            supplier: normalizeSupplierName(c.supplier as string) || '未指定供应商',
             description: (c.description as string) || '',
             cost_type: (c.cost_type as string) || '',
             amountCny: Math.round(amt * rate * 100) / 100,
@@ -112,7 +113,7 @@ export default function PayablesPage() {
           }
         })
         const payMap: Record<string, number> = {}
-        payList.forEach(p => { payMap[p.supplier_name] = (payMap[p.supplier_name] || 0) + (Number(p.amount) || 0) })
+        payList.forEach(p => { const k = normalizeSupplierName(p.supplier_name) || '未指定供应商'; payMap[k] = (payMap[k] || 0) + (Number(p.amount) || 0) })
         setRows(list)
         setPaidBySupplier(payMap)
       } catch (err) {

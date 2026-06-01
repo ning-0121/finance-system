@@ -67,9 +67,24 @@ export async function calculateAllFxGains(actualRate: number): Promise<FxGainRes
 }
 
 /**
- * 生成汇兑损益凭证
- * 收益: 借:应收外汇/银行存款 贷:汇兑收益
- * 损失: 借:汇兑损失 贷:应收外汇/银行存款
+ * 生成期末汇兑损益凭证（未实现汇兑损益 · 期末重估）
+ *
+ * ⚠️ 审计修复 C4（latent / 当前未接入任何流程）：
+ *   本函数计算的是「期末对未结汇的外币应收账款按期末汇率重估」产生的
+ *   *未实现* 汇兑损益（voucher_type='closing'）。重估调整的对账户应为
+ *   **应收账款 1122**（外币货币性资产随汇率变动而增减），而非银行存款——
+ *   此时尚未结汇收款，银行余额不应变动。原实现错误地借/贷 100201 银行，
+ *   会虚增/虚减银行现金且不冲销应收。现已改为 1122。
+ *
+ *   收益（期末汇率>入账汇率）: 借:应收账款1122  贷:汇兑收益5301
+ *   损失（期末汇率<入账汇率）: 借:汇兑损失5601  贷:应收账款1122
+ *
+ *   注意：本系统的复式记账层（gl-posting.ts / 本文件）目前**未被任何
+ *   生产流程调用**——应收页直接把收款写入 budget_orders 列，汇兑损益仅
+ *   在期末结账检查 (closing-engine) 中用于*展示*，并不真正过账。若未来要
+ *   启用真实过账，本函数还需：① 改走原子 RPC create_journal_atomic
+ *   （现为 header/lines 两次独立 insert，存在孤立凭证风险）；② 同步更新
+ *   gl_balances（否则试算平衡表看不到该凭证）。
  */
 export async function postFxGainLossJournal(
   gains: FxGainResult[],
@@ -90,13 +105,13 @@ export async function postFxGainLossJournal(
   const lines: { account_code: string; description: string; debit: number; credit: number }[] = []
 
   if (netGainLoss > 0) {
-    // 净收益
-    lines.push({ account_code: '100201', description: '结汇收益-银行', debit: netGainLoss, credit: 0 })
+    // 净收益：期末外币应收按更高汇率重估 → 应收增值
+    lines.push({ account_code: '1122', description: '应收账款汇兑重估(收益)', debit: netGainLoss, credit: 0 })
     lines.push({ account_code: '5301', description: '汇兑收益', debit: 0, credit: netGainLoss })
   } else {
-    // 净损失
+    // 净损失：期末外币应收按更低汇率重估 → 应收减值
     lines.push({ account_code: '5601', description: '汇兑损失', debit: Math.abs(netGainLoss), credit: 0 })
-    lines.push({ account_code: '100201', description: '结汇损失-银行', debit: 0, credit: Math.abs(netGainLoss) })
+    lines.push({ account_code: '1122', description: '应收账款汇兑重估(损失)', debit: 0, credit: Math.abs(netGainLoss) })
   }
 
   const totalDebit = sumAmounts(lines.map(l => l.debit))

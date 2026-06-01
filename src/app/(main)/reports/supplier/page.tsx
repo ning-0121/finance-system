@@ -19,6 +19,7 @@ import { Label } from '@/components/ui/label'
 import { createClient } from '@/lib/supabase/client'
 import { exportCostSummaryReport } from '@/lib/excel/export-professional'
 import { exportSupplierStatementToExcel } from '@/lib/excel/export-supplier-statement'
+import { normalizeSupplierName } from '@/lib/utils'
 import { getSupplierPayments, createSupplierPayment, deleteSupplierPayment } from '@/lib/supabase/queries-v2'
 import type { SupplierPayment } from '@/lib/types'
 
@@ -98,14 +99,16 @@ export default function SupplierReportPage() {
       // 没有快照或是草稿 → 从实时数据自动汇总
       // 加载费用（含 数量/单位/单价）+ 供应商付款 + 同步订单（获取内部订单号）
       const [costRes, payList, syncedRes] = await Promise.all([
-        supabase.from('cost_items').select('id, description, amount, currency, cost_type, supplier, source_module, quantity, unit, unit_price, budget_order_id, created_at, budget_orders(order_no, quote_no)').is('deleted_at', null).order('created_at', { ascending: false }),
+        supabase.from('cost_items').select('id, description, amount, currency, exchange_rate, cost_type, supplier, source_module, quantity, unit, unit_price, budget_order_id, created_at, budget_orders(order_no, quote_no)').is('deleted_at', null).order('created_at', { ascending: false }),
         getSupplierPayments(),
         // F7: 节拍器同步订单 — 用于把 cost_items 关联到内部订单号 (style_no)
         supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null),
       ])
       const costItems = costRes.data
       const syncedOrders = syncedRes.data || []
-      setPayments(payList)
+      // 归一化付款的供应商名（去全/半角、空格差异），保证与费用侧匹配一致
+      const normPayList = payList.map(p => ({ ...p, supplier_name: normalizeSupplierName(p.supplier_name) }))
+      setPayments(normPayList)
 
       // budget_order_id → { internal_no (style_no), metronome_no (order_no) }
       const syncMap = new Map<string, { internal_no: string; metronome_no: string }>()
@@ -120,7 +123,7 @@ export default function SupplierReportPage() {
 
       // 付款（已登记的供应商付款）按供应商汇总 — 对账单的「已付」以此为准
       const paidMap = new Map<string, number>()
-      payList.forEach(p => {
+      normPayList.forEach(p => {
         paidMap.set(p.supplier_name, (paidMap.get(p.supplier_name) || 0) + (Number(p.amount) || 0))
       })
 
@@ -131,11 +134,14 @@ export default function SupplierReportPage() {
           const sync = budgetOrderId ? syncMap.get(budgetOrderId) : null
           const bo = item.budget_orders as unknown as { order_no?: string; quote_no?: string } | null
           const quoteFallback = bo?.quote_no ? String(bo.quote_no).trim() : ''
+          // 统一折算为人民币（费用可能为外币）：金额 × 汇率。付款侧为人民币登记。
+          const rate = Number(item.exchange_rate) || 1
+          const amountCny = Math.round((Number(item.amount) || 0) * rate * 100) / 100
           return {
-            supplier: (item.supplier as string) || '未指定',
+            supplier: normalizeSupplierName(item.supplier as string) || '未指定',
             description: item.description as string,
-            amount: item.amount as number,
-            currency: (item.currency as string) || 'CNY',
+            amount: amountCny,
+            currency: 'CNY',
             cost_type: item.cost_type as string,
             order_no: bo?.order_no || '',
             internal_no: sync?.internal_no || quoteFallback,
@@ -152,13 +158,15 @@ export default function SupplierReportPage() {
         const supplierMap = new Map<string, { count: number; total: number; currency: string; orders: Set<string> }>()
 
         for (const item of costItems) {
-          const supplier = (item.supplier as string) || (item.description as string || '').split(' - ')[0] || '未指定供应商'
+          const supplier = normalizeSupplierName(item.supplier as string) || (item.description as string || '').split(' - ')[0] || '未指定供应商'
           const boRow = item.budget_orders as unknown as { order_no?: string } | null
           const orderNo = boRow?.order_no || ''
+          const rate = Number(item.exchange_rate) || 1
+          const amountCny = (Number(item.amount) || 0) * rate
 
-          const existing = supplierMap.get(supplier) || { count: 0, total: 0, currency: (item.currency as string) || 'CNY', orders: new Set<string>() }
+          const existing = supplierMap.get(supplier) || { count: 0, total: 0, currency: 'CNY', orders: new Set<string>() }
           existing.count++
-          existing.total += Number(item.amount) || 0
+          existing.total += amountCny
           if (orderNo) existing.orders.add(orderNo)
           supplierMap.set(supplier, existing)
         }
@@ -358,7 +366,7 @@ export default function SupplierReportPage() {
 
   // 登记供应商付款（负数流水）
   const handleAddPayment = async () => {
-    const sup = paySupplier.trim()
+    const sup = normalizeSupplierName(paySupplier)
     const amt = Number(payAmount)
     if (!sup) { toast.error('请填写供应商'); return }
     if (!amt || amt <= 0) { toast.error('请输入有效付款金额'); return }
@@ -368,7 +376,7 @@ export default function SupplierReportPage() {
     })
     setPaySaving(false)
     if (error || !data) { toast.error(`登记失败: ${error || '未知错误'}`); return }
-    setPayments([...payments, data])
+    setPayments([...payments, { ...data, supplier_name: normalizeSupplierName(data.supplier_name) }])
     toast.success(`已登记付款 ${sup} ¥${amt.toLocaleString()}`)
     setPayDialogOpen(false)
     setPaySupplier(''); setPayAmount(''); setPayNote(''); setPayDate(new Date().toISOString().slice(0, 10))
