@@ -13,6 +13,8 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
 import { notifyPaymentReminder } from '@/lib/wecom/notifications'
+import { postCostRecognition } from '@/lib/accounting/gl-posting'
+import type { BudgetOrder } from '@/lib/types'
 
 const INVOICE_TYPE_TO_COST_CATEGORY: Record<string, string> = {
   purchase_order: 'raw_material', supplier_invoice: 'raw_material',
@@ -112,6 +114,20 @@ export async function POST(
     }
 
     const r = rpcResult as { settlement_id: string; settlement_status: string; settled_at: string; payables_created: number }
+
+    // 3b. 结转成本凭证（借 主营业务成本/销售费用 / 贷 应付账款）
+    //     非阻塞、幂等（postCostRecognition 内按 (settlement, orderId) 自检）；
+    //     过账失败不回滚已确认的决算与应付，仅记录告警。
+    try {
+      const { data: bo } = await supabase
+        .from('budget_orders')
+        .select('id, order_no, order_date, target_purchase_price, estimated_commission, estimated_freight, estimated_customs_fee, other_costs, items')
+        .eq('id', budgetOrderId)
+        .single()
+      if (bo) await postCostRecognition(bo as unknown as BudgetOrder)
+    } catch (err) {
+      console.error('[GL] 结转成本过账失败（决算已确认，不影响业务）:', err)
+    }
 
     // 4. 企业微信通知（非阻塞、非关键，失败也不影响 confirm 结果）
     if (invoices?.length) {

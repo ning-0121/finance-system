@@ -161,6 +161,11 @@ export default function ReceivablesPage() {
     } else {
       toast.success('收款信息已保存')
     }
+    // 同步收款凭证（增量、非阻塞；失败不影响收款保存，GL 可后续重过账）
+    fetch('/api/gl/post-receipt', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderId: receiptDialog.id }),
+    }).catch(err => console.error('[GL] 收款过账失败:', err))
     setReceiptDialog(null)
     setReceiptAmount('')
     setReceiptDate('')

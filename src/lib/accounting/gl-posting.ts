@@ -93,11 +93,54 @@ async function createJournal(params: {
 }
 
 /**
+ * 幂等防重复过账：查询某业务单据是否已有未作废的凭证。
+ * DB 层「故意」不对 (source_type, source_id) 设唯一索引（多次回款/付款合法），
+ * 因此「一次性」事件（确认收入、结转成本）必须由应用层在过账前自检，避免重复记账。
+ */
+async function alreadyPosted(sourceType: string, sourceId: string): Promise<boolean> {
+  const supabase = await createClient()
+  const { data } = await supabase
+    .from('journal_entries')
+    .select('id')
+    .eq('source_type', sourceType)
+    .eq('source_id', sourceId)
+    .neq('status', 'voided')
+    .limit(1)
+  return !!(data && data.length > 0)
+}
+
+/**
+ * 已过账的「净收款」CNY（针对某订单的全部 receipt 凭证）：
+ *   净 = Σ(银行借方) − Σ(银行贷方)，用于增量收款过账时计算 delta。
+ */
+async function netPostedReceiptCny(orderId: string): Promise<number> {
+  const supabase = await createClient()
+  const { data: entries } = await supabase
+    .from('journal_entries')
+    .select('id')
+    .eq('source_type', 'receipt')
+    .eq('source_id', orderId)
+    .eq('status', 'posted')
+  const ids = (entries || []).map(e => e.id as string)
+  if (ids.length === 0) return 0
+  const { data: lines } = await supabase
+    .from('journal_lines')
+    .select('debit, credit, account_code, journal_id')
+    .in('journal_id', ids)
+    .in('account_code', ['100201', '100202'])
+  return sumAmounts((lines || []).map(l => (Number(l.debit) || 0) - (Number(l.credit) || 0)))
+}
+
+/**
  * 订单确认收入凭证
  * 借: 应收账款    (收入CNY)
  * 贷: 主营业务收入 (收入CNY)
  */
 export async function postRevenueRecognition(order: BudgetOrder) {
+  // 幂等：一张订单只确认一次收入
+  if (await alreadyPosted('budget_order', order.id)) {
+    return { journalId: null, voucherNo: null, skipped: true as const }
+  }
   const rate = safeRate(order.exchange_rate, order.currency, `gl-posting revenue ${order.id}`)
   const revenueCny = mulAmount(order.total_revenue, rate)
   const revenueAccount = order.currency === 'CNY' ? '500102' : '500101'
@@ -122,6 +165,10 @@ export async function postRevenueRecognition(order: BudgetOrder) {
  * 贷: 应付账款                      (总成本)
  */
 export async function postCostRecognition(order: BudgetOrder) {
+  // 幂等：一张订单只结转一次成本
+  if (await alreadyPosted('settlement', order.id)) {
+    return { journalId: null, voucherNo: null, skipped: true as const }
+  }
   const bd = (order.items as unknown as Record<string, unknown>[])?.[0]
   const cb = bd?._cost_breakdown as Record<string, number | string> | undefined
 
@@ -220,6 +267,94 @@ export async function postPaymentMade(params: {
       { account_code: '100201', description: `银行付款-${params.orderNo}`, debit: 0, credit: params.amountCny, order_id: params.orderId },
     ],
   })
+}
+
+/**
+ * 收款同步过账（增量）— 应收收款采用「累计金额」模型（budget_orders.ar_received_amount），
+ * 每次保存把 GL 与累计收款对齐，只过账差额，天然幂等：
+ *   delta = 累计收款CNY − 已过账净收款CNY
+ *   delta>0：借 银行 / 贷 应收（新增收款）
+ *   delta<0：借 应收 / 贷 银行（收款修正/冲回）
+ * 注：本版按订单预算汇率折算，应收可整洁核销；已实现汇兑损益留待期末重估处理。
+ */
+export async function postOrderReceiptSync(orderId: string) {
+  const supabase = await createClient()
+  const { data: order } = await supabase
+    .from('budget_orders')
+    .select('id, order_no, currency, exchange_rate, ar_received_amount, ar_received_bank, customer_id, customers(company)')
+    .eq('id', orderId)
+    .single()
+  if (!order) throw new Error('订单不存在，无法过账收款')
+
+  const rate = safeRate(order.exchange_rate as number, order.currency as string, `gl-posting receipt ${orderId}`)
+  const receivedCcy = Number(order.ar_received_amount) || 0
+  const newCumulativeCny = mulAmount(receivedCcy, rate)
+  const alreadyCny = await netPostedReceiptCny(orderId)
+  const delta = Math.round((newCumulativeCny - alreadyCny) * 100) / 100
+
+  if (Math.abs(delta) < 0.01) {
+    return { journalId: null, voucherNo: null, skipped: true as const, delta: 0 }
+  }
+
+  const bankCode = order.currency === 'CNY' ? '100201' : '100202'
+  const cust = order.customers as unknown as { company?: string } | null
+  const customerName = cust?.company || ''
+  const lines: JournalLine[] = delta > 0
+    ? [
+        { account_code: bankCode, description: `收款-${customerName}`, debit: delta, credit: 0, customer_id: order.customer_id as string, order_id: orderId },
+        { account_code: '1122', description: `核销应收-${order.order_no}`, debit: 0, credit: delta, customer_id: order.customer_id as string, order_id: orderId },
+      ]
+    : [
+        { account_code: '1122', description: `应收回冲-${order.order_no}`, debit: -delta, credit: 0, customer_id: order.customer_id as string, order_id: orderId },
+        { account_code: bankCode, description: `收款冲回-${customerName}`, debit: 0, credit: -delta, customer_id: order.customer_id as string, order_id: orderId },
+      ]
+
+  const res = await createJournal({
+    periodCode: getPeriodCode(),
+    date: new Date().toISOString().substring(0, 10),
+    description: `收款 ${order.order_no} ${customerName}`,
+    sourceType: 'receipt',
+    sourceId: orderId,
+    lines,
+  })
+  return { ...res, skipped: false as const, delta }
+}
+
+/**
+ * 供应商付款过账 — supplier_payments 每行一笔付款（登记口径为人民币）：
+ *   借 应付账款 2202 / 贷 银行存款 100201
+ * 幂等：按 (supplier_payment, paymentId) 自检，重复触发不重记。
+ */
+export async function postSupplierPayment(paymentId: string) {
+  if (await alreadyPosted('supplier_payment', paymentId)) {
+    return { journalId: null, voucherNo: null, skipped: true as const }
+  }
+  const supabase = await createClient()
+  const { data: pay } = await supabase
+    .from('supplier_payments')
+    .select('id, supplier_name, amount, currency, paid_at, deleted_at')
+    .eq('id', paymentId)
+    .single()
+  if (!pay) throw new Error('付款记录不存在，无法过账')
+  if (pay.deleted_at) return { journalId: null, voucherNo: null, skipped: true as const }
+
+  // 登记付款为人民币口径（登记入口仅收人民币金额）；如未来扩展外币付款需带汇率。
+  const amountCny = mulAmount(Number(pay.amount) || 0, 1)
+  if (amountCny <= 0) return { journalId: null, voucherNo: null, skipped: true as const }
+  const supplierName = (pay.supplier_name as string) || '未指定供应商'
+
+  const res = await createJournal({
+    periodCode: getPeriodCode((pay.paid_at as string) || undefined),
+    date: ((pay.paid_at as string) || new Date().toISOString()).substring(0, 10),
+    description: `付款 ${supplierName}`,
+    sourceType: 'supplier_payment',
+    sourceId: paymentId,
+    lines: [
+      { account_code: '2202', description: `付-${supplierName}`, debit: amountCny, credit: 0, supplier_name: supplierName },
+      { account_code: '100201', description: `银行付款-${supplierName}`, debit: 0, credit: amountCny, supplier_name: supplierName },
+    ],
+  })
+  return { ...res, skipped: false as const }
 }
 
 /**

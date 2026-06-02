@@ -85,6 +85,14 @@ export default function ApprovalsPage() {
     }
     await createApprovalLog(log)
 
+    // 审批通过 → 确认收入凭证（非阻塞；失败不影响审批结果，GL 可后续重过账）
+    if (action === 'approve') {
+      fetch('/api/gl/post-revenue', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: order.id }),
+      }).catch(err => console.error('[GL] 确认收入过账失败:', err))
+    }
+
     setOrders(prev => prev.filter(o => o.id !== order.id))
     setShowDialog(null)
     setComment('')
