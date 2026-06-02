@@ -2,7 +2,7 @@
 // 对标金蝶/用友的自动凭证生成
 import { createClient } from '@/lib/supabase/server'
 import type { BudgetOrder } from '@/lib/types'
-import { safeRate, sumAmounts, mulAmount } from './utils'
+import { requireRate, sumAmounts, mulAmount } from './utils'
 
 interface JournalLine {
   account_code: string
@@ -141,7 +141,7 @@ export async function postRevenueRecognition(order: BudgetOrder) {
   if (await alreadyPosted('budget_order', order.id)) {
     return { journalId: null, voucherNo: null, skipped: true as const }
   }
-  const rate = safeRate(order.exchange_rate, order.currency, `gl-posting revenue ${order.id}`)
+  const rate = requireRate(order.exchange_rate, order.currency, `确认收入 ${order.order_no}`)
   const revenueCny = mulAmount(order.total_revenue, rate)
   const revenueAccount = order.currency === 'CNY' ? '500102' : '500101'
 
@@ -286,7 +286,7 @@ export async function postOrderReceiptSync(orderId: string) {
     .single()
   if (!order) throw new Error('订单不存在，无法过账收款')
 
-  const rate = safeRate(order.exchange_rate as number, order.currency as string, `gl-posting receipt ${orderId}`)
+  const rate = requireRate(order.exchange_rate as number, order.currency as string, `收款过账 ${order.order_no}`)
   const receivedCcy = Number(order.ar_received_amount) || 0
   const newCumulativeCny = mulAmount(receivedCcy, rate)
   const alreadyCny = await netPostedReceiptCny(orderId)

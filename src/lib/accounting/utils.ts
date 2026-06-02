@@ -33,6 +33,24 @@ export function safeRate(
 }
 
 /**
+ * 严格取汇率：用于「会写入总账」的关键过账路径。
+ * CNY 返回 1；外币缺失/为 0 时**抛错**（而非伪造 7），避免把臆测汇率写进账本造成
+ * 看似合理实则错误的静默误账。配合非阻塞过账：抛错→该笔不过账并记录告警，
+ * 待补填汇率后可幂等重过账。展示/报表等非记账路径仍用 safeRate。
+ */
+export function requireRate(
+  rate: number | null | undefined,
+  currency: string | null | undefined,
+  context?: string
+): number {
+  if (!currency || currency === 'CNY') return 1
+  if (rate == null || rate === 0) {
+    throw new Error(`[汇率缺失] ${context ?? '过账'}: 货币=${currency} 缺少有效汇率，已拒绝过账以防错账。请先在预算单补填汇率后重试。`)
+  }
+  return rate
+}
+
+/**
  * 安全除法：分母为 0、NaN、Infinity 时返回 0，避免 NaN/Infinity 污染报表。
  */
 export function safeDivide(numerator: number, denominator: number): number {

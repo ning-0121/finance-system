@@ -257,13 +257,15 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     const linesData: Record<string, { name: string; qty: number; unit: string; unit_price: number; amount: number }[]> = {}
     for (const [k, arr] of Object.entries(editLines)) {
       const cleaned = (arr || [])
-        .filter(l => l.name || Number(l.amount) || (Number(l.qty) && Number(l.unitPrice)))
         .map(l => {
           const qty = Number(l.qty) || 0
           const unitPrice = Number(l.unitPrice) || 0
           const amount = Number(l.amount) || qty * unitPrice
           return { name: l.name || '', qty, unit: l.unit || '', unit_price: unitPrice, amount }
         })
+        // 只持久化「有实际金额」的明细行：丢弃仅有名称、金额为 0 的占位行，
+        // 避免导出对账单/预算表时出现 ¥0 噪声行。
+        .filter(l => l.amount > 0)
       if (cleaned.length > 0) linesData[k] = cleaned
     }
     const totalCostCny = fabric + accessory + processing + forwarder + container + logistics + extrasTotal

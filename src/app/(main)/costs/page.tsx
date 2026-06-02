@@ -124,8 +124,14 @@ export default function CostsPage() {
 
         if (data && data.length > 0) {
           setCostItems(data.map((r: Record<string, unknown>) => {
+            // 明细优先读真实列（quantity/unit/unit_price，与订单核算单口径一致）；
+            // 真实列缺失再退回历史 source_id JSON，兼容回填/历史数据两种来源。
             let detailMeta: { qty: number; unit: string; unit_price: number } | undefined
-            try { if (r.source_id) detailMeta = JSON.parse(r.source_id as string) } catch { /* not json */ }
+            if (r.quantity != null || r.unit_price != null) {
+              detailMeta = { qty: Number(r.quantity) || 0, unit: (r.unit as string) || '', unit_price: Number(r.unit_price) || 0 }
+            } else {
+              try { if (r.source_id) detailMeta = JSON.parse(r.source_id as string) } catch { /* not json */ }
+            }
             return {
               id: r.id as string,
               budget_order_id: r.budget_order_id as string | null,
