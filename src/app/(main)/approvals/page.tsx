@@ -85,12 +85,13 @@ export default function ApprovalsPage() {
     }
     await createApprovalLog(log)
 
-    // 审批通过 → 确认收入凭证（非阻塞；失败不影响审批结果，GL 可后续重过账）
+    // 审批通过 → GL 受控灰度：入队生成「确认收入」草稿凭证（非阻塞；
+    // 失败进异常中心，不影响审批结果，可后续重试/复核过账）
     if (action === 'approve') {
-      fetch('/api/gl/post-revenue', {
+      fetch('/api/gl/queue', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId: order.id }),
-      }).catch(err => console.error('[GL] 确认收入过账失败:', err))
+        body: JSON.stringify({ businessEvent: 'order_approved', sourceType: 'budget_order', sourceId: order.id }),
+      }).catch(err => console.error('[GL] 确认收入入队失败:', err))
     }
 
     setOrders(prev => prev.filter(o => o.id !== order.id))

@@ -42,6 +42,7 @@ const ROLE_CONFIG: Record<string, { label: string; sections: string[] }> = {
 const MODULES = [
   { key: 'closing', label: '月结管理', icon: Clock, href: '/control-center/closing', desc: '期间关闭检查' },
   { key: 'audit', label: '财务稽核', icon: FileSearch, href: '/control-center/audit', desc: '异常检测与处理' },
+  { key: 'gl-review', label: 'GL 复核', icon: FileSearch, href: '/control-center/gl-review', desc: '草稿凭证复核 / 过账失败重试' },
   { key: 'freeze', label: '冻结管理', icon: Lock, href: '/control-center/freeze', desc: '实体冻结/解冻' },
   { key: 'trust', label: '信任评分', icon: Shield, href: '/control-center/trust', desc: '多维度信任管理' },
   { key: 'timeline', label: '操作时间线', icon: Activity, href: '/control-center/timeline', desc: '全局审计追踪' },

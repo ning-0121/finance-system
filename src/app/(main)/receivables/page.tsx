@@ -161,11 +161,12 @@ export default function ReceivablesPage() {
     } else {
       toast.success('收款信息已保存')
     }
-    // 同步收款凭证（增量、非阻塞；失败不影响收款保存，GL 可后续重过账）
-    fetch('/api/gl/post-receipt', {
+    // 回款保存 → GL 受控灰度：入队生成「银行/应收」增量草稿凭证（非阻塞；
+    // 失败进异常中心，不影响收款保存，可后续重试/复核过账）
+    fetch('/api/gl/queue', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderId: receiptDialog.id }),
-    }).catch(err => console.error('[GL] 收款过账失败:', err))
+      body: JSON.stringify({ businessEvent: 'receipt_saved', sourceType: 'receipt', sourceId: receiptDialog.id }),
+    }).catch(err => console.error('[GL] 收款入队失败:', err))
     setReceiptDialog(null)
     setReceiptAmount('')
     setReceiptDate('')

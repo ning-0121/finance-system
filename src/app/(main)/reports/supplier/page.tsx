@@ -377,11 +377,12 @@ export default function SupplierReportPage() {
     setPaySaving(false)
     if (error || !data) { toast.error(`登记失败: ${error || '未知错误'}`); return }
     setPayments([...payments, { ...data, supplier_name: normalizeSupplierName(data.supplier_name) }])
-    // 付款过账（借 应付 / 贷 银行）非阻塞；失败不影响付款登记，GL 可后续重过账
-    fetch('/api/gl/post-payment', {
+    // 付款登记 → GL 受控灰度：入队生成「应付/银行」草稿凭证（非阻塞；
+    // 失败进异常中心，不影响付款登记，可后续重试/复核过账）
+    fetch('/api/gl/queue', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paymentId: data.id }),
-    }).catch(err => console.error('[GL] 付款过账失败:', err))
+      body: JSON.stringify({ businessEvent: 'payment_registered', sourceType: 'supplier_payment', sourceId: data.id }),
+    }).catch(err => console.error('[GL] 付款入队失败:', err))
     toast.success(`已登记付款 ${sup} ¥${amt.toLocaleString()}`)
     setPayDialogOpen(false)
     setPaySupplier(''); setPayAmount(''); setPayNote(''); setPayDate(new Date().toISOString().slice(0, 10))
