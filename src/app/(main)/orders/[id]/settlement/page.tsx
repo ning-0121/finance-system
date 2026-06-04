@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useState, useEffect } from 'react'
+import { use, useState, useEffect, useMemo, Fragment } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -18,7 +18,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { ArrowLeft, Plus, Loader2, Package, TrendingUp, TrendingDown, CheckCircle, Warehouse, Download } from 'lucide-react'
+import { ArrowLeft, Plus, Loader2, Package, TrendingUp, TrendingDown, CheckCircle, Warehouse, Download, ChevronRight, ChevronDown } from 'lucide-react'
 import { toast } from 'sonner'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
@@ -57,6 +57,9 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
   const [invoiceReceipts, setInvoiceReceipts] = useState<Array<{ invoice_date: string|null; total_amount: number; currency: string; exchange_rate: number|null; supplier_name: string|null; invoice_no: string|null }>>([])
   const [invoiceExpenses, setInvoiceExpenses] = useState<Array<{ cost_type: string; description: string|null; supplier: string|null; cost_group: string|null; quantity: number|null; unit: string|null; unit_price: number|null; amount: number; currency: string; exchange_rate: number|null; created_at: string }>>([])
   const [shipCompletedAt, setShipCompletedAt] = useState<string | null>(null)
+
+  // 预算vs决算对比：默认展开面料/辅料（最需要核对送货数量的两类）
+  const [cmpExpanded, setCmpExpanded] = useState<Record<string, boolean>>({ fabric: true, accessory: true })
 
   // 入库表单
   const [returnType, setReturnType] = useState('raw_material')
@@ -207,6 +210,59 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
     setReturnValue('')
   }
 
+  // ── 预算 vs 决算 成本对比（按品名汇总数量，便于与供应商核对送货件数/公斤数）──
+  const costComparison = useMemo(() => {
+    const cb = (order?.items as unknown as Record<string, unknown>[])?.[0]?._cost_breakdown as Record<string, unknown> | undefined
+    const bnum = (k: string, fb: number) => (cb?.[k] != null ? Number(cb[k]) : fb)
+    const cats = [
+      { key: 'fabric', label: '面料', budget: bnum('fabric', Number(order?.target_purchase_price) || 0) },
+      { key: 'accessory', label: '辅料', budget: bnum('accessory', 0) },
+      { key: 'processing', label: '加工费', budget: bnum('processing', Number(order?.estimated_commission) || 0) },
+      { key: 'forwarder', label: '货代费', budget: bnum('forwarder', Number(order?.estimated_freight) || 0) },
+      { key: 'container', label: '装柜费', budget: bnum('container', Number(order?.estimated_customs_fee) || 0) },
+      { key: 'logistics', label: '物流费', budget: bnum('logistics', Number(order?.other_costs) || 0) },
+    ]
+    const CT2CAT: Record<string, string> = {
+      fabric: 'fabric', accessory: 'accessory', processing: 'processing', commission: 'processing',
+      freight: 'forwarder', container: 'container', customs: 'container', logistics: 'logistics',
+      procurement: 'fabric', other: 'logistics',
+    }
+    // 按类别 → 品名 聚合决算实际：数量按单位累加，金额折人民币累加
+    type Item = { units: Map<string, number>; amount: number }
+    const actual: Record<string, { amount: number; items: Map<string, Item> }> = {}
+    for (const e of invoiceExpenses) {
+      const key = CT2CAT[e.cost_type] || 'logistics'
+      const rate = e.currency === 'CNY' ? 1 : (Number(e.exchange_rate) || 1)
+      const amt = (Number(e.amount) || 0) * rate
+      const slot = (actual[key] ||= { amount: 0, items: new Map() })
+      slot.amount += amt
+      const name = (e.description || '').trim() || '(未命名)'
+      const it = slot.items.get(name) || { units: new Map(), amount: 0 }
+      it.amount += amt
+      if (e.quantity != null) {
+        const u = e.unit || ''
+        it.units.set(u, (it.units.get(u) || 0) + Number(e.quantity))
+      }
+      slot.items.set(name, it)
+    }
+    const r2 = (n: number) => Math.round(n * 100) / 100
+    const rows = cats.map(c => {
+      const a = actual[c.key] || { amount: 0, items: new Map<string, Item>() }
+      const items = [...a.items.entries()].map(([name, v]) => {
+        const totalQty = [...v.units.values()].reduce((s, x) => s + x, 0)
+        const qtyLabel = [...v.units.entries()]
+          .filter(([, q]) => q)
+          .map(([u, q]) => `${Math.round(q * 100) / 100}${u || ''}`).join(' + ') || '—'
+        return { name, qtyLabel, amount: r2(v.amount), price: totalQty > 0 ? Math.round((v.amount / totalQty) * 100) / 100 : null }
+      }).sort((x, y) => y.amount - x.amount)
+      return { ...c, actual: r2(a.amount), diff: r2(a.amount - c.budget), items }
+    })
+    const totalBudget = r2(rows.reduce((s, r) => s + r.budget, 0))
+    const totalActual = r2(rows.reduce((s, r) => s + r.actual, 0))
+    const hasActual = rows.some(r => r.items.length > 0)
+    return { rows, totalBudget, totalActual, totalDiff: r2(totalActual - totalBudget), hasActual }
+  }, [order, invoiceExpenses])
+
   if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
 
   const totalReturnCredit = returns.filter(r => r.accounting_treatment === 'reduce_cost').reduce((s, r) => s + r.total_value, 0)
@@ -308,6 +364,83 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
             )}
           </div>
         </div>
+
+        {/* 预算 vs 决算 成本对比（按品名汇总数量，便于与供应商核对送货件数/公斤数） */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Package className="h-4 w-4 text-primary" />
+              预算 vs 决算 · 成本对比
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              决算数量按「品名」汇总（如 面料黑色总公斤、吊牌总件数），可直接与供应商送货核对；金额已折人民币。
+              {!costComparison.hasActual && <span className="text-amber-600"> · 当前订单暂无费用归集明细</span>}
+            </p>
+          </CardHeader>
+          <CardContent className="p-0 overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="min-w-[160px]">成本类别 / 品名</TableHead>
+                  <TableHead className="text-right">决算数量(汇总)</TableHead>
+                  <TableHead className="text-right">单价(约)</TableHead>
+                  <TableHead className="text-right">预算金额</TableHead>
+                  <TableHead className="text-right">决算金额</TableHead>
+                  <TableHead className="text-right">差异</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {costComparison.rows.map(c => {
+                  const open = !!cmpExpanded[c.key]
+                  const canExpand = c.items.length > 0
+                  return (
+                    <Fragment key={c.key}>
+                      <TableRow
+                        className={canExpand ? 'cursor-pointer hover:bg-muted/40' : ''}
+                        onClick={() => canExpand && setCmpExpanded(p => ({ ...p, [c.key]: !p[c.key] }))}
+                      >
+                        <TableCell className="font-medium">
+                          <span className="inline-flex items-center gap-1">
+                            {canExpand ? (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />) : <span className="w-3.5 inline-block" />}
+                            {c.label}
+                            {canExpand && <span className="text-[10px] text-muted-foreground">({c.items.length}个品名)</span>}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right text-muted-foreground">—</TableCell>
+                        <TableCell className="text-right text-muted-foreground">—</TableCell>
+                        <TableCell className="text-right">¥{c.budget.toLocaleString()}</TableCell>
+                        <TableCell className="text-right font-medium">¥{c.actual.toLocaleString()}</TableCell>
+                        <TableCell className={`text-right font-semibold ${c.diff > 0.005 ? 'text-red-600' : c.diff < -0.005 ? 'text-green-600' : 'text-muted-foreground'}`}>
+                          {c.diff > 0 ? '+' : ''}¥{c.diff.toLocaleString()}
+                        </TableCell>
+                      </TableRow>
+                      {open && c.items.map((it, i) => (
+                        <TableRow key={`${c.key}-${i}`} className="bg-muted/20">
+                          <TableCell className="pl-8 text-xs text-muted-foreground">· {it.name}</TableCell>
+                          <TableCell className="text-right text-xs font-medium text-foreground">{it.qtyLabel}</TableCell>
+                          <TableCell className="text-right text-xs text-muted-foreground">{it.price != null ? `¥${it.price}` : '—'}</TableCell>
+                          <TableCell className="text-right text-xs text-muted-foreground/60">—</TableCell>
+                          <TableCell className="text-right text-xs">¥{it.amount.toLocaleString()}</TableCell>
+                          <TableCell className="text-right text-xs text-muted-foreground/60">—</TableCell>
+                        </TableRow>
+                      ))}
+                    </Fragment>
+                  )
+                })}
+                <TableRow className="bg-muted/50 font-semibold border-t-2">
+                  <TableCell>合计</TableCell>
+                  <TableCell className="text-right">—</TableCell>
+                  <TableCell className="text-right">—</TableCell>
+                  <TableCell className="text-right">¥{costComparison.totalBudget.toLocaleString()}</TableCell>
+                  <TableCell className="text-right">¥{costComparison.totalActual.toLocaleString()}</TableCell>
+                  <TableCell className={`text-right ${costComparison.totalDiff > 0.005 ? 'text-red-600' : costComparison.totalDiff < -0.005 ? 'text-green-600' : ''}`}>
+                    {costComparison.totalDiff > 0 ? '+' : ''}¥{costComparison.totalDiff.toLocaleString()}
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
 
         <Tabs defaultValue="inventory">
           <TabsList>
