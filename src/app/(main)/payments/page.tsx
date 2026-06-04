@@ -274,10 +274,11 @@ export default function PaymentsPage() {
             </div>
             <div className="space-y-2">
               <Label>关联订单（可选）</Label>
-              <Select value={newOrderId} onValueChange={v => setNewOrderId(v || '')}>
-                <SelectTrigger><SelectValue placeholder="选择订单" /></SelectTrigger>
+              {/* Radix Select 不允许空字符串值，用哨兵值 __none__ 表示「不关联」并映射回空 */}
+              <Select value={newOrderId || '__none__'} onValueChange={v => setNewOrderId(v === '__none__' ? '' : (v || ''))}>
+                <SelectTrigger><SelectValue placeholder="不关联" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">不关联</SelectItem>
+                  <SelectItem value="__none__">不关联（仅记到供应商）</SelectItem>
                   {orders.map(o => (
                     <SelectItem key={o.id} value={o.id}>{o.order_no} - {o.customer?.company || ''}</SelectItem>
                   ))}
