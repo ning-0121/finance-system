@@ -70,7 +70,6 @@ export default function PayablesPage() {
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<CostRow[]>([])
   const [paidBySupplier, setPaidBySupplier] = useState<Record<string, number>>({})
-  const [expanded, setExpanded] = useState<string | null>(null)
 
   useEffect(() => {
     async function load() {
@@ -324,17 +323,16 @@ export default function PayablesPage() {
                 </TableHeader>
                 <TableBody>
                   {filtered.map(s => {
-                    const isExpanded = expanded === s.supplier
                     const unpaidShown = hasUnpaid(s)
                     return (
                       <React.Fragment key={s.supplier}>
                         <TableRow
                           className={`cursor-pointer hover:bg-muted/50 ${s.oldestAging > 60 && unpaidShown ? 'bg-red-50/40' : ''}`}
-                          onClick={() => setExpanded(isExpanded ? null : s.supplier)}
+                          onClick={() => { window.location.href = `/payables/${encodeURIComponent(s.supplier)}` }}
                         >
-                          <TableCell className="font-medium">
-                            <span className="mr-1 text-muted-foreground">{isExpanded ? '▼' : '▶'}</span>
+                          <TableCell className="font-medium text-primary hover:underline">
                             {s.supplier}
+                            <span className="ml-1 text-[10px] text-muted-foreground">查看明细 →</span>
                           </TableCell>
                           <TableCell className="text-center">{s.chargeCount}</TableCell>
                           <TableCell className="text-right text-sm">¥{s.totalChargeCny.toLocaleString()}</TableCell>
@@ -361,45 +359,6 @@ export default function PayablesPage() {
                             </Badge>
                           </TableCell>
                         </TableRow>
-                        {isExpanded && (
-                          <TableRow>
-                            <TableCell colSpan={8} className="p-0 bg-slate-50">
-                              {s.items.length > 0 ? (
-                                <table className="w-full text-xs border-t border-slate-200">
-                                  <thead className="bg-slate-100 border-b border-slate-200">
-                                    <tr>
-                                      <th className="pl-10 pr-3 py-2 text-left font-semibold text-slate-600">费用类型</th>
-                                      <th className="px-3 py-2 text-left font-semibold text-slate-600">描述</th>
-                                      <th className="px-3 py-2 text-left font-semibold text-slate-500">关联订单</th>
-                                      <th className="px-3 py-2 text-right font-semibold text-slate-600">金额(¥)</th>
-                                      <th className="px-3 py-2 text-left font-semibold text-slate-600">录入日</th>
-                                      <th className="px-3 py-2 text-right font-semibold text-slate-600">账龄</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {s.items.map(it => (
-                                      <tr key={it.id} className="border-t border-slate-100 hover:bg-white">
-                                        <td className="pl-10 pr-3 py-1.5 text-muted-foreground">{it.cost_type}</td>
-                                        <td className="px-3 py-1.5">{it.description}</td>
-                                        <td className="px-3 py-1.5 text-slate-500">{it.orderLabel || '—'}</td>
-                                        <td className="px-3 py-1.5 text-right tabular-nums">¥{it.amountCny.toLocaleString()}</td>
-                                        <td className="px-3 py-1.5 text-muted-foreground">{new Date(it.createdAt).toLocaleDateString('zh-CN')}</td>
-                                        <td className={`px-3 py-1.5 text-right ${it.agingDays > 60 ? 'text-red-600' : 'text-muted-foreground'}`}>{it.agingDays}天</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              ) : (
-                                <div className="px-10 py-3 text-xs text-muted-foreground">该供应商无费用记录（仅有付款）。</div>
-                              )}
-                              <div className="flex justify-end gap-6 px-10 py-2 border-t border-slate-200 bg-white/60 text-xs">
-                                <span>费用合计 <b className="tabular-nums">¥{s.totalChargeCny.toLocaleString()}</b></span>
-                                <span className="text-green-700">已登记付款 <b className="tabular-nums">−¥{s.paidCny.toLocaleString()}</b></span>
-                                <span className={unpaidShown ? 'text-red-600' : 'text-green-700'}>实际未付 <b className="tabular-nums">¥{s.unpaidCny.toLocaleString()}</b></span>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )}
                       </React.Fragment>
                     )
                   })}
