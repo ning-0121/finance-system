@@ -1,26 +1,18 @@
 'use client'
 
-import React, { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Header } from '@/components/layout/Header'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@/components/ui/table'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
-  CreditCard, AlertTriangle, Clock, CheckCircle, Search, Loader2, Download,
+  CreditCard, AlertTriangle, Clock, CheckCircle, Search, Loader2, Download, X,
 } from 'lucide-react'
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
-} from 'recharts'
 import { createClient } from '@/lib/supabase/client'
 import { getSupplierPayments } from '@/lib/supabase/queries-v2'
 import { normalizeSupplierName } from '@/lib/utils'
-import Link from 'next/link'
 import { toast } from 'sonner'
+import { SupplierPayableDetail } from './SupplierPayableDetail'
 
 // ============================================================
 // 应付账款 = 费用归集中「未付」的费用，按供应商汇总 + 账龄
@@ -28,13 +20,6 @@ import { toast } from 'sonner'
 // 在「费用归集」勾选「已付款」后，这里会自动减少。
 // 付款执行仍在「付款（出纳）」模块，互不冲突。
 // ============================================================
-
-const agingBuckets = [
-  { name: '0-30天', range: [0, 30] as [number, number], color: '#22c55e' },
-  { name: '31-60天', range: [31, 60] as [number, number], color: '#f59e0b' },
-  { name: '61-90天', range: [61, 90] as [number, number], color: '#ef4444' },
-  { name: '90天+', range: [91, Infinity] as [number, number], color: '#991b1b' },
-]
 
 interface CostRow {
   id: string
@@ -70,6 +55,20 @@ export default function PayablesPage() {
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<CostRow[]>([])
   const [paidBySupplier, setPaidBySupplier] = useState<Record<string, number>>({})
+  // 左右分栏多标签：右侧像浏览器标签一样同时打开多个供应商
+  const [openTabs, setOpenTabs] = useState<string[]>([])
+  const [activeTab, setActiveTab] = useState<string | null>(null)
+  const openSupplier = (name: string) => {
+    setOpenTabs(prev => prev.includes(name) ? prev : [...prev, name])
+    setActiveTab(name)
+  }
+  const closeTab = (name: string) => {
+    setOpenTabs(prev => {
+      const next = prev.filter(t => t !== name)
+      setActiveTab(cur => (cur === name ? (next[next.length - 1] || null) : cur))
+      return next
+    })
+  }
 
   useEffect(() => {
     async function load() {
@@ -172,11 +171,6 @@ export default function PayablesPage() {
   const overdue60 = withUnpaid.filter(s => s.oldestAging > 60)
   const overdue60Amount = overdue60.reduce((s, r) => s + r.unpaidCny, 0)
 
-  const agingData = agingBuckets.map(bucket => {
-    const items = withUnpaid.filter(s => s.oldestAging >= bucket.range[0] && s.oldestAging <= bucket.range[1])
-    return { name: bucket.name, amount: items.reduce((s, r) => s + r.unpaidCny, 0), color: bucket.color, count: items.length }
-  })
-
   const filtered = useMemo(() => {
     let base = suppliers
     if (tab === 'unpaid') base = suppliers.filter(hasUnpaid)
@@ -209,12 +203,11 @@ export default function PayablesPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <Header title="应付账款管理" subtitle="费用归集（应付）− 已登记付款 = 实际未付 · 与供应商对账单同口径 · 在对账单「登记付款」后自动减少" />
+      <Header title="应付账款管理" subtitle="左侧选供应商，右侧像网页标签一样可同时打开多个对比 · 费用归集 − 已登记付款 = 实际未付" />
 
-      <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
-
-        {/* KPI */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* 顶部 KPI（紧凑） */}
+      <div className="px-4 md:px-6 pt-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Card>
             <CardContent className="p-4 flex items-center gap-3">
               <div className="p-2 rounded-lg bg-blue-50"><CreditCard className="h-4 w-4 text-blue-600" /></div>
@@ -246,127 +239,97 @@ export default function PayablesPage() {
             </CardContent>
           </Card>
         </div>
+      </div>
 
-        {/* 账龄分布 */}
-        {withUnpaid.length > 0 && (
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base">账龄分布（按最长未付费用 · 录入日起算）</CardTitle></CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={180}>
-                <BarChart data={agingData} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} tickFormatter={v => `¥${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip formatter={(v) => [`¥${Number(v).toLocaleString()}`, '未付金额']} />
-                  <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
-                    {agingData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="flex flex-wrap gap-3 mt-2">
-                {agingData.map(b => (
-                  <div key={b.name} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: b.color }} />
-                    {b.name}: {b.count} 个供应商 · ¥{b.amount.toLocaleString()}
+      {/* 左右分栏：左供应商列表 + 右多标签明细（像浏览器标签同时打开多个） */}
+      <div className="flex-1 flex overflow-hidden mt-3 border-t min-h-0">
+        {/* 左：供应商列表 */}
+        <div className="w-80 shrink-0 border-r flex flex-col bg-muted/10">
+          <div className="p-3 space-y-2 border-b">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input placeholder="搜索供应商..." className="pl-9 h-9" value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+            <Tabs value={tab} onValueChange={setTab}>
+              <TabsList className="w-full grid grid-cols-4 h-8">
+                <TabsTrigger value="unpaid" className="text-xs px-1">待付({withUnpaid.length})</TabsTrigger>
+                <TabsTrigger value="overdue" className="text-xs px-1">超60天({overdue60.length})</TabsTrigger>
+                <TabsTrigger value="cleared" className="text-xs px-1">已付清</TabsTrigger>
+                <TabsTrigger value="all" className="text-xs px-1">全部({suppliers.length})</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>共 {filtered.length} 家</span>
+              <button onClick={exportCsv} disabled={filtered.length === 0} className="text-primary disabled:opacity-40 inline-flex items-center gap-1"><Download className="h-3 w-3" />导出CSV</button>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {filtered.length === 0 ? (
+              <div className="text-center py-16 text-muted-foreground text-sm">
+                <Clock className="h-8 w-8 mx-auto mb-2 opacity-30" />
+                <p>{rows.length === 0 ? '暂无费用记录' : '当前筛选下无供应商'}</p>
+              </div>
+            ) : filtered.map(s => {
+              const unpaidShown = hasUnpaid(s)
+              const isActive = activeTab === s.supplier
+              const isOpen = openTabs.includes(s.supplier)
+              return (
+                <button
+                  key={s.supplier}
+                  onClick={() => openSupplier(s.supplier)}
+                  className={`w-full text-left px-3 py-2.5 border-b border-border/60 hover:bg-muted/50 transition ${isActive ? 'bg-primary/10 border-l-2 border-l-primary' : isOpen ? 'bg-muted/30' : ''}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-sm truncate">{s.supplier}</span>
+                    <span className={`text-sm font-semibold shrink-0 ${unpaidShown ? 'text-red-600' : 'text-green-600'}`}>
+                      {unpaidShown ? `¥${s.unpaidCny.toLocaleString()}` : (s.unpaidCny < -0.005 ? '多付' : '已结清')}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-0.5 text-[11px] text-muted-foreground">
+                    <span>{s.chargeCount}笔 · {s.orders.length}单</span>
+                    {unpaidShown && <span className={s.oldestAging > 60 ? 'text-red-500 font-medium' : ''}>{s.oldestAging}天</span>}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* 右：多标签明细 */}
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {openTabs.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
+              <CreditCard className="h-10 w-10 opacity-30 mb-3" />
+              <p className="text-sm">从左侧点击供应商查看应付明细</p>
+              <p className="text-xs mt-1">可点击多个，像浏览器标签一样同时打开对比</p>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-1 border-b px-2 py-1.5 overflow-x-auto bg-muted/20">
+                {openTabs.map(name => (
+                  <div
+                    key={name}
+                    onClick={() => setActiveTab(name)}
+                    className={`group flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-md text-sm cursor-pointer whitespace-nowrap shrink-0 ${activeTab === name ? 'bg-background border shadow-sm font-medium' : 'hover:bg-background/60 text-muted-foreground'}`}
+                  >
+                    <span className="truncate max-w-[140px]">{name}</span>
+                    <span
+                      onClick={(e) => { e.stopPropagation(); closeTab(name) }}
+                      className="rounded p-0.5 hover:bg-muted text-muted-foreground hover:text-foreground"
+                    ><X className="h-3 w-3" /></span>
                   </div>
                 ))}
               </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* 过滤栏 */}
-        <div className="flex flex-wrap gap-3 items-center">
-          <div className="relative flex-1 min-w-[200px] max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input placeholder="搜索供应商..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
-          </div>
-          <Tabs value={tab} onValueChange={setTab}>
-            <TabsList>
-              <TabsTrigger value="unpaid">待付 ({withUnpaid.length})</TabsTrigger>
-              <TabsTrigger value="overdue">超60天 ({overdue60.length})</TabsTrigger>
-              <TabsTrigger value="cleared">已付清</TabsTrigger>
-              <TabsTrigger value="all">全部 ({suppliers.length})</TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <Button variant="outline" size="sm" className="ml-auto" onClick={exportCsv} disabled={filtered.length === 0}>
-            <Download className="h-4 w-4 mr-1" />导出CSV
-          </Button>
-        </div>
-
-        {/* 明细表格 */}
-        <Card>
-          <CardContent className="p-0 overflow-x-auto">
-            {filtered.length === 0 ? (
-              <div className="text-center py-16 text-muted-foreground">
-                <Clock className="h-10 w-10 mx-auto mb-3 opacity-30" />
-                <p>{rows.length === 0 ? '暂无费用记录' : '当前筛选下无供应商'}</p>
-                <p className="text-xs mt-1">
-                  应付 = {' '}
-                  <Link href="/costs" className="text-blue-500 underline">费用归集</Link>
-                  {' '}的费用 − 在供应商对账单「登记付款」的金额
-                </p>
+              <div className="flex-1 overflow-y-auto min-w-0">
+                {openTabs.map(name => (
+                  <div key={name} className={activeTab === name ? '' : 'hidden'}>
+                    <SupplierPayableDetail supplierName={name} />
+                  </div>
+                ))}
               </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/50">
-                    <TableHead>供应商</TableHead>
-                    <TableHead className="text-center">费用笔数</TableHead>
-                    <TableHead className="text-right">费用合计(¥)</TableHead>
-                    <TableHead className="text-right">已付(¥)</TableHead>
-                    <TableHead className="text-right">未付(¥)</TableHead>
-                    <TableHead>关联订单</TableHead>
-                    <TableHead>最长账龄</TableHead>
-                    <TableHead>状态</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map(s => {
-                    const unpaidShown = hasUnpaid(s)
-                    return (
-                      <React.Fragment key={s.supplier}>
-                        <TableRow
-                          className={`cursor-pointer hover:bg-muted/50 ${s.oldestAging > 60 && unpaidShown ? 'bg-red-50/40' : ''}`}
-                          onClick={() => { window.location.href = `/payables/${encodeURIComponent(s.supplier)}` }}
-                        >
-                          <TableCell className="font-medium text-primary hover:underline">
-                            {s.supplier}
-                            <span className="ml-1 text-[10px] text-muted-foreground">查看明细 →</span>
-                          </TableCell>
-                          <TableCell className="text-center">{s.chargeCount}</TableCell>
-                          <TableCell className="text-right text-sm">¥{s.totalChargeCny.toLocaleString()}</TableCell>
-                          <TableCell className="text-right text-sm text-green-600">¥{s.paidCny.toLocaleString()}</TableCell>
-                          <TableCell className={`text-right font-semibold ${unpaidShown ? 'text-red-600' : 'text-green-600'}`}>
-                            {unpaidShown ? `¥${s.unpaidCny.toLocaleString()}` : (s.unpaidCny < -0.005 ? `多付 ¥${Math.abs(s.unpaidCny).toLocaleString()}` : '已结清')}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex gap-1 flex-wrap">
-                              {s.orders.slice(0, 3).map(o => <Badge key={o} variant="outline" className="text-[10px]">{o}</Badge>)}
-                              {s.orders.length > 3 && <span className="text-[10px] text-muted-foreground">+{s.orders.length - 3}</span>}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            {unpaidShown ? (
-                              <span className={`text-xs font-medium ${s.oldestAging > 90 ? 'text-red-700' : s.oldestAging > 60 ? 'text-red-500' : s.oldestAging > 30 ? 'text-amber-600' : 'text-muted-foreground'}`}>
-                                {s.oldestAging}天
-                              </span>
-                            ) : <span className="text-xs text-muted-foreground">—</span>}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={!unpaidShown ? 'default' : 'secondary'} className={!unpaidShown ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}>
-                              {!unpaidShown ? '已付清' : '未付清'}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      </React.Fragment>
-                    )
-                  })}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
+            </>
+          )}
+        </div>
       </div>
     </div>
   )
