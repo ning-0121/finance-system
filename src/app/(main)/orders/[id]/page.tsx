@@ -82,6 +82,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [activeTab, setActiveTab] = useState('budget')
   const [syncedInfo, setSyncedInfo] = useState<{ orderNo: string; internalNo: string; quantity: number; quantityUnit: string } | null>(null)
   const [attachments, setAttachments] = useState<{ id: string; file_name: string; file_type: string; file_url: string | null; created_at: string }[]>([])
+  // 费用归集（cost_items）实际明细：预算未录明细时回退展示公斤数/单价，供核对
+  const [costDetail, setCostDetail] = useState<Record<string, { name: string; qty: number; unit: string; unit_price: number; amount: number }[]>>({})
 
   useEffect(() => {
     async function load() {
@@ -96,6 +98,44 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         const { data: synced } = await supabase.from('synced_orders').select('order_no, style_no, quantity, quantity_unit').eq('budget_order_id', id).limit(1)
         if (synced?.length) {
           setSyncedInfo({ orderNo: synced[0].order_no as string, internalNo: synced[0].style_no as string || '', quantity: synced[0].quantity as number || 0, quantityUnit: synced[0].quantity_unit as string || '件' })
+        }
+
+        // 加载费用归集明细（含公斤数/单价）→ 预算未录明细时按类别回退展示，供财务核对
+        const { data: ci } = await supabase
+          .from('cost_items')
+          .select('cost_type, description, amount, currency, exchange_rate, quantity, unit, unit_price, source_id')
+          .eq('budget_order_id', id)
+          .is('deleted_at', null)
+        if (ci?.length) {
+          // cost_type → 预算 6 类别键
+          const CT2CAT: Record<string, string> = {
+            fabric: 'fabric', accessory: 'accessory', processing: 'processing', commission: 'processing',
+            freight: 'forwarder', container: 'container', customs: 'container', logistics: 'logistics',
+            procurement: 'fabric', other: 'logistics',
+          }
+          const map: Record<string, { name: string; qty: number; unit: string; unit_price: number; amount: number }[]> = {}
+          for (const row of ci as Record<string, unknown>[]) {
+            const key = CT2CAT[(row.cost_type as string) || ''] || 'logistics'
+            // 数量/单位/单价：优先真实列，缺失时回退解析 source_id JSON（兼容历史数据）
+            let qty = row.quantity != null ? Number(row.quantity) : null
+            let unit = (row.unit as string) || ''
+            let price = row.unit_price != null ? Number(row.unit_price) : null
+            if (qty == null && typeof row.source_id === 'string') {
+              try {
+                const j = JSON.parse(row.source_id as string)
+                if (j && typeof j === 'object') {
+                  qty = j.qty ?? j.quantity ?? null
+                  unit = unit || j.unit || ''
+                  price = price ?? j.unit_price ?? j.price ?? null
+                }
+              } catch { /* source_id 非 JSON，忽略 */ }
+            }
+            const cur = (row.currency as string) || 'CNY'
+            const rate = cur === 'CNY' ? 1 : (Number(row.exchange_rate) || 1)
+            const amountCny = Math.round((Number(row.amount) || 0) * rate * 100) / 100
+            ;(map[key] ||= []).push({ name: (row.description as string) || '', qty: qty ?? 0, unit, unit_price: price ?? 0, amount: amountCny })
+          }
+          setCostDetail(map)
         }
 
         // 加载关联附件
@@ -683,17 +723,35 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           ]
                           return readCats.map(rc => {
                             const lines = readLines?.[rc.key]
+                            const hasPlanned = Array.isArray(lines) && lines.length > 0
+                            // 预算未录明细时，回退展示费用归集（实际）的公斤数/单价，供核对
+                            const actual = costDetail[rc.key]
+                            const showActual = !hasPlanned && Array.isArray(actual) && actual.length > 0
                             const catAmt = cb?.[rc.key] != null ? Number(cb[rc.key]) : rc.fallback
                             return (
                               <div key={rc.key}>
                                 <div className="flex justify-between">
-                                  <span className="text-muted-foreground">{rc.label}{Array.isArray(lines) && lines.length > 0 && <span className="text-[10px] text-primary ml-1">{lines.length}行</span>}</span>
+                                  <span className="text-muted-foreground">
+                                    {rc.label}
+                                    {hasPlanned && <span className="text-[10px] text-primary ml-1">{lines!.length}行</span>}
+                                    {showActual && <span className="text-[10px] text-amber-600 ml-1">实际归集{actual!.length}行</span>}
+                                  </span>
                                   <span className={rc.bold ? 'font-medium' : ''}>¥ {catAmt.toLocaleString()}</span>
                                 </div>
-                                {Array.isArray(lines) && lines.length > 0 && (
+                                {hasPlanned && (
                                   <div className="pl-3 mt-0.5 mb-1 space-y-0.5">
-                                    {lines.map((l, i) => (
+                                    {lines!.map((l, i) => (
                                       <div key={i} className="flex justify-between text-[11px] text-muted-foreground/80">
+                                        <span className="truncate max-w-[150px]">· {l.name || '明细'}{(Number(l.qty) || Number(l.unit_price)) ? ` ${l.qty || 0}${l.unit || ''}×¥${l.unit_price || 0}` : ''}</span>
+                                        <span>¥ {(Number(l.amount) || 0).toLocaleString()}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {showActual && (
+                                  <div className="pl-3 mt-0.5 mb-1 space-y-0.5 border-l-2 border-amber-200">
+                                    {actual!.map((l, i) => (
+                                      <div key={i} className="flex justify-between text-[11px] text-amber-700/90">
                                         <span className="truncate max-w-[150px]">· {l.name || '明细'}{(Number(l.qty) || Number(l.unit_price)) ? ` ${l.qty || 0}${l.unit || ''}×¥${l.unit_price || 0}` : ''}</span>
                                         <span>¥ {(Number(l.amount) || 0).toLocaleString()}</span>
                                       </div>
