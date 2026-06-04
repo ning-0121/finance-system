@@ -538,10 +538,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           <TabsContent value="budget" className="space-y-4 mt-4">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm">基本信息</CardTitle>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs text-muted-foreground">基本信息</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3 text-sm">
+                <CardContent className="space-y-1.5 text-xs">
                   {syncedInfo && (
                     <>
                       <div className="flex justify-between"><span className="text-muted-foreground">内部单号</span><span className="font-bold text-primary">{syncedInfo.internalNo}</span></div>
@@ -560,7 +560,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               <Card>
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm">成本构成</CardTitle>
+                    <CardTitle className="text-base font-semibold">成本构成</CardTitle>
                     {(order.status === 'draft' || order.status === 'rejected') && !editMode && (
                       <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setEditMode(true)}>编辑</Button>
                     )}
@@ -698,6 +698,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       const isCnyDirect = order.currency === 'CNY' || cb?._revenue_currency === 'CNY'
                       const rate = isCnyDirect ? 1 : (order.exchange_rate || 1)
                       const revenueCny = isCnyDirect ? order.total_revenue : order.total_revenue * rate
+                      // 实际归集合计（费用归集已录入的实际成本，与预算成本分开显示）
+                      const totalActualCost = Object.values(costDetail).flat().reduce((s, l) => s + (Number(l.amount) || 0), 0)
                       return <>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">合同金额</span>
@@ -710,7 +712,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           <div className="flex justify-between"><span className="text-muted-foreground">收款方式</span><span className="font-medium text-green-600">人民币直收</span></div>
                         )}
                         <Separator />
-                        <p className="text-[10px] text-muted-foreground font-medium">成本明细 (CNY)</p>
+                        <p className="text-xs text-foreground font-semibold">成本明细 (CNY)</p>
                         {(() => {
                           const readLines = (cb as Record<string, unknown> | undefined)?.lines as Record<string, { name: string; qty: number; unit: string; unit_price: number; amount: number }[]> | undefined
                           const readCats: { key: string; label: string; fallback: number; bold?: boolean }[] = [
@@ -728,20 +730,29 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                             const actual = costDetail[rc.key]
                             const showActual = !hasPlanned && Array.isArray(actual) && actual.length > 0
                             const catAmt = cb?.[rc.key] != null ? Number(cb[rc.key]) : rc.fallback
+                            // 实际归集行的合计（用于与预算分开显示，保证「明细加总=该数」）
+                            const actualSum = showActual ? actual!.reduce((s, l) => s + (Number(l.amount) || 0), 0) : 0
                             return (
                               <div key={rc.key}>
-                                <div className="flex justify-between">
+                                <div className="flex justify-between items-baseline gap-2">
                                   <span className="text-muted-foreground">
                                     {rc.label}
-                                    {hasPlanned && <span className="text-[10px] text-primary ml-1">{lines!.length}行</span>}
-                                    {showActual && <span className="text-[10px] text-amber-600 ml-1">实际归集{actual!.length}行</span>}
+                                    {hasPlanned && <span className="text-[11px] text-primary ml-1">{lines!.length}行</span>}
+                                    {showActual && <span className="text-[11px] text-amber-600 ml-1">实际归集{actual!.length}行</span>}
                                   </span>
-                                  <span className={rc.bold ? 'font-medium' : ''}>¥ {catAmt.toLocaleString()}</span>
+                                  {showActual ? (
+                                    <span className="text-right whitespace-nowrap">
+                                      <span className="text-[11px] text-muted-foreground/70">预算¥{catAmt.toLocaleString()} · 实际 </span>
+                                      <span className="font-semibold text-amber-700">¥{actualSum.toLocaleString()}</span>
+                                    </span>
+                                  ) : (
+                                    <span className={rc.bold ? 'font-medium' : ''}>¥ {catAmt.toLocaleString()}</span>
+                                  )}
                                 </div>
                                 {hasPlanned && (
                                   <div className="pl-3 mt-0.5 mb-1 space-y-0.5">
                                     {lines!.map((l, i) => (
-                                      <div key={i} className="flex justify-between text-[11px] text-muted-foreground/80">
+                                      <div key={i} className="flex justify-between text-xs text-muted-foreground">
                                         <span className="truncate max-w-[150px]">· {l.name || '明细'}{(Number(l.qty) || Number(l.unit_price)) ? ` ${l.qty || 0}${l.unit || ''}×¥${l.unit_price || 0}` : ''}</span>
                                         <span>¥ {(Number(l.amount) || 0).toLocaleString()}</span>
                                       </div>
@@ -751,8 +762,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                                 {showActual && (
                                   <div className="pl-3 mt-0.5 mb-1 space-y-0.5 border-l-2 border-amber-200">
                                     {actual!.map((l, i) => (
-                                      <div key={i} className="flex justify-between text-[11px] text-amber-700/90">
-                                        <span className="truncate max-w-[150px]">· {l.name || '明细'}{(Number(l.qty) || Number(l.unit_price)) ? ` ${l.qty || 0}${l.unit || ''}×¥${l.unit_price || 0}` : ''}</span>
+                                      <div key={i} className="flex justify-between text-xs text-amber-700">
+                                        <span className="truncate max-w-[160px]">· {l.name || '明细'}{(Number(l.qty) || Number(l.unit_price)) ? ` ${l.qty || 0}${l.unit || ''}×¥${l.unit_price || 0}` : ''}</span>
                                         <span>¥ {(Number(l.amount) || 0).toLocaleString()}</span>
                                       </div>
                                     ))}
@@ -766,7 +777,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           <div key={i} className="flex justify-between"><span className="text-muted-foreground">{e.name}</span><span>¥ {e.amount.toLocaleString()}</span></div>
                         ))}
                         <Separator />
-                        <div className="flex justify-between font-semibold"><span>成本合计</span><span>¥ {order.total_cost.toLocaleString()}</span></div>
+                        <div className="flex justify-between font-semibold text-sm"><span>预算成本合计</span><span>¥ {order.total_cost.toLocaleString()}</span></div>
+                        {totalActualCost > 0 && (
+                          <div className="flex justify-between text-amber-700 text-sm"><span>实际归集合计</span><span className="font-semibold">¥ {totalActualCost.toLocaleString()}</span></div>
+                        )}
                       </>
                     })()
                   )}
