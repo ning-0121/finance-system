@@ -157,8 +157,12 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
     return [...map.entries()].map(([key, v]) => {
       const totalQty = [...v.units.values()].reduce((s, x) => s + x, 0)
       const qtyLabel = [...v.units.entries()].filter(([, q]) => q).map(([u, q]) => `${r2(q)}${u || ''}`).join(' + ') || '—'
-      return { key, name: v.name, cost_type: v.cost_type, qtyLabel, amount: r2(v.amount), price: totalQty > 0 ? r2(v.amount / totalQty) : null, rows: v.rows }
-    }).sort((a, b) => b.amount - a.amount)
+      // rows 已按 created_at 升序：第一笔=最早送货日，最后一笔=最近送货日
+      const dates = v.rows.map(r => r.createdAt).filter(Boolean).sort()
+      const firstDate = dates[0] || ''
+      const lastDate = dates[dates.length - 1] || ''
+      return { key, name: v.name, cost_type: v.cost_type, qtyLabel, amount: r2(v.amount), price: totalQty > 0 ? r2(v.amount / totalQty) : null, rows: v.rows, firstDate, lastDate }
+    }).sort((a, b) => (a.firstDate || '').localeCompare(b.firstDate || ''))  // 按最早送货日期排序
   }, [lines])
 
   // 未付明细（FIFO：付款先冲抵最早费用，剩下的就是仍欠的）
@@ -241,14 +245,15 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm flex items-center gap-2"><Package className="h-4 w-4 text-primary" />按品名汇总（核对供应商送货）</CardTitle>
-                <p className="text-xs text-muted-foreground">同一品名跨多笔/多单累加数量（如 黑色总公斤、吊牌总件数）；点开看每一笔。</p>
+                <p className="text-xs text-muted-foreground">按「送货日期」排序；同一品名跨多笔/多单累加数量（如 黑色总公斤、吊牌总件数）；点开看每一笔。</p>
               </CardHeader>
               <CardContent className="p-0 overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="min-w-[180px]">品名</TableHead>
+                      <TableHead className="min-w-[160px]">品名</TableHead>
                       <TableHead>类型</TableHead>
+                      <TableHead>送货日期</TableHead>
                       <TableHead className="text-right">数量合计</TableHead>
                       <TableHead className="text-right">单价(约)</TableHead>
                       <TableHead className="text-right">金额(¥)</TableHead>
@@ -257,6 +262,11 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
                   <TableBody>
                     {byItem.map(it => {
                       const open = !!expandedItem[it.key]
+                      const dRange = it.firstDate
+                        ? (it.firstDate === it.lastDate
+                            ? new Date(it.firstDate).toLocaleDateString('zh-CN')
+                            : `${new Date(it.firstDate).toLocaleDateString('zh-CN')} ~ ${new Date(it.lastDate).toLocaleDateString('zh-CN')}`)
+                        : '—'
                       return (
                         <Fragment key={it.key}>
                           <TableRow className="cursor-pointer hover:bg-muted/40" onClick={() => setExpandedItem(p => ({ ...p, [it.key]: !p[it.key] }))}>
@@ -268,16 +278,19 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
                               </span>
                             </TableCell>
                             <TableCell><span className="text-xs text-muted-foreground">{COST_TYPE_LABEL[it.cost_type] || it.cost_type}</span></TableCell>
+                            <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{dRange}</TableCell>
                             <TableCell className="text-right font-medium">{it.qtyLabel}</TableCell>
                             <TableCell className="text-right text-muted-foreground">{it.price != null ? `¥${it.price}` : '—'}</TableCell>
                             <TableCell className="text-right font-medium">¥{it.amount.toLocaleString()}</TableCell>
                           </TableRow>
                           {open && it.rows.map(r => (
                             <TableRow key={r.id} className="bg-muted/20">
-                              <TableCell className="pl-9 text-xs text-muted-foreground">
+                              <TableCell className="pl-9 text-xs">
+                                <span className="text-[10px] text-muted-foreground">单号 </span>
                                 <span className="text-foreground font-medium">{r.orderLabel || '无单号'}</span>
                               </TableCell>
-                              <TableCell className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleDateString('zh-CN')}</TableCell>
+                              <TableCell />
+                              <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{new Date(r.createdAt).toLocaleDateString('zh-CN')}</TableCell>
                               <TableCell className="text-right text-xs">{r.qty != null ? `${r.qty}${r.unit || ''}` : '—'}</TableCell>
                               <TableCell className="text-right text-xs text-muted-foreground">{r.unit_price != null ? `¥${r.unit_price}` : '—'}</TableCell>
                               <TableCell className="text-right text-xs">¥{r.amountCny.toLocaleString()}</TableCell>
@@ -286,7 +299,7 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
                         </Fragment>
                       )
                     })}
-                    {byItem.length === 0 && <TableRow><TableCell colSpan={5} className="text-center py-10 text-muted-foreground">暂无费用明细</TableCell></TableRow>}
+                    {byItem.length === 0 && <TableRow><TableCell colSpan={6} className="text-center py-10 text-muted-foreground">暂无费用明细</TableCell></TableRow>}
                   </TableBody>
                 </Table>
               </CardContent>
