@@ -57,6 +57,8 @@ export interface SettlementHeader {
   quantity_unit: string    // 件
   contract_amount: number  // 79608（合同金额，按订单货币）
   contract_currency: string // USD
+  contract_cny: number     // 合同金额折人民币（无实际回款时用于预估毛利，避免收合计=0导致假亏损）
+  order_rate: number       // 订单汇率
   completed_at: string     // 2026年3月20日
 }
 
@@ -181,6 +183,10 @@ export function buildSettlementBundle(
       quantity_unit: '件',
       contract_amount: Number(order.total_revenue || 0),
       contract_currency: order.currency || 'USD',
+      contract_cny: order.currency === 'CNY'
+        ? Number(order.total_revenue || 0)
+        : new Decimal(order.total_revenue || 0).mul(orderRate).toDecimalPlaces(2).toNumber(),
+      order_rate: orderRate,
       completed_at: fmtCnDate(completedAt),
     },
     receipts: receiptRows,
@@ -269,9 +275,12 @@ export function buildSettlementRows(b: SettlementBundle): { rows: Cell[][]; merg
 
   const shouDataStart = rows.length
   const receiptsToRender = b.receipts.length > 0 ? b.receipts : [{
-    date: '（待回款）', description: '美金货款',
-    usd: b.header.contract_amount, rate: 0, cny: 0,
-    note: b.meta.receipt_source === 'pending' ? '⚠ 尚无实际回款，按合同金额预填' : '',
+    date: '（待回款）', description: '美金货款（按合同预估）',
+    usd: b.header.contract_currency === 'CNY' ? 0 : b.header.contract_amount,
+    rate: b.header.contract_currency === 'CNY' ? 0 : b.header.order_rate,
+    // 用合同金额折人民币填入「收」，避免收合计=0 → 毛利显示为巨额假亏损
+    cny: b.header.contract_cny,
+    note: b.meta.receipt_source === 'pending' ? '⚠ 尚无实际回款，按合同金额预估（毛利为预估值）' : '',
   }]
   for (const r of receiptsToRender) {
     const rIdx = rows.length
