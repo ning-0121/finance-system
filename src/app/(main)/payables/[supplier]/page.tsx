@@ -60,6 +60,7 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
   const [lines, setLines] = useState<Line[]>([])
   const [payments, setPayments] = useState<SupplierPayment[]>([])
   const [expandedItem, setExpandedItem] = useState<Record<string, boolean>>({})
+  const [tab, setTab] = useState('byitem')
 
   useEffect(() => {
     async function load() {
@@ -71,7 +72,7 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
         const [costRes, syncedRes, payList] = await Promise.all([
           supabase
             .from('cost_items')
-            .select('id, cost_type, description, supplier, amount, currency, exchange_rate, quantity, unit, unit_price, source_id, budget_order_id, created_at, budget_orders(order_no)')
+            .select('id, cost_type, description, supplier, amount, currency, exchange_rate, quantity, unit, unit_price, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
             .is('deleted_at', null)
             .ilike('supplier', like)
             .order('created_at', { ascending: true }),
@@ -79,20 +80,20 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
           getSupplierPayments({ supplierName }),
         ])
 
+        // 内部订单号 = synced_orders.style_no（不是节拍器 QM 号）
         const syncMap = new Map<string, string>()
         ;(syncedRes.data || []).forEach((s: Record<string, unknown>) => {
-          if (s.budget_order_id) {
-            const internal = s.style_no ? `${s.style_no} | ` : ''
-            syncMap.set(s.budget_order_id as string, `${internal}${(s.order_no as string) || ''}`)
-          }
+          if (s.budget_order_id && s.style_no) syncMap.set(s.budget_order_id as string, String(s.style_no))
         })
 
         const ls: Line[] = (costRes.data || [])
           .filter((c: Record<string, unknown>) => normalizeSupplierName(c.supplier as string) === supplierName)
           .map((c: Record<string, unknown>) => {
             const boId = c.budget_order_id as string | null
-            const bo = c.budget_orders as { order_no?: string } | null
-            const orderLabel = boId ? (syncMap.get(boId) || bo?.order_no || '') : ''
+            const bo = c.budget_orders as { order_no?: string; quote_no?: string } | null
+            // 内部订单号：优先 style_no，回退报价号 quote_no，再回退财务单号（均非 QM 号）
+            const quoteFallback = bo?.quote_no ? String(bo.quote_no).trim() : ''
+            const orderLabel = boId ? (syncMap.get(boId) || quoteFallback || bo?.order_no || '') : ''
             const rate = (c.currency as string) === 'CNY' ? 1 : (Number(c.exchange_rate) || 1)
             // 数量/单位/单价：优先真实列，缺失回退 source_id JSON
             let qty = c.quantity != null ? Number(c.quantity) : null
@@ -160,6 +161,18 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
     }).sort((a, b) => b.amount - a.amount)
   }, [lines])
 
+  // 未付明细（FIFO：付款先冲抵最早费用，剩下的就是仍欠的）
+  const unpaidLines = useMemo(() => {
+    let remaining = summary.paid
+    const out: (Line & { unpaidPortion: number })[] = []
+    for (const l of lines) {
+      if (remaining >= l.amountCny) { remaining -= l.amountCny; continue }
+      out.push({ ...l, unpaidPortion: r2(l.amountCny - remaining) })
+      remaining = 0
+    }
+    return out
+  }, [lines, summary.paid])
+
   if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
 
   const isCleared = summary.unpaid <= 0.005
@@ -175,41 +188,52 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
           </Link>
         </div>
 
-        {/* 对账三角：产生总额 − 已付 = 应付 */}
+        {/* 对账三角：产生总额 − 已付 = 应付（三块均可点击查看明细） */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card>
+          <Card
+            className={`cursor-pointer transition hover:shadow-md hover:border-primary/40 ${tab === 'all' ? 'border-primary ring-1 ring-primary/30' : ''}`}
+            onClick={() => setTab('all')}
+          >
             <CardContent className="p-5">
               <p className="text-xs text-muted-foreground">产生总金额（费用合计）</p>
               <p className="text-2xl font-bold mt-1">¥{summary.totalCharge.toLocaleString()}</p>
-              <p className="text-[11px] text-muted-foreground mt-1">{summary.count} 笔费用 · {summary.orderCount} 个关联订单</p>
+              <p className="text-[11px] text-muted-foreground mt-1">{summary.count} 笔费用 · {summary.orderCount} 个关联订单 · <span className="text-primary">点击看明细 →</span></p>
             </CardContent>
           </Card>
-          <Card>
+          <Card
+            className={`cursor-pointer transition hover:shadow-md hover:border-primary/40 ${tab === 'payments' ? 'border-primary ring-1 ring-primary/30' : ''}`}
+            onClick={() => setTab('payments')}
+          >
             <CardContent className="p-5">
               <p className="text-xs text-muted-foreground">已付金额（已登记付款）</p>
               <p className="text-2xl font-bold mt-1 text-green-600">−¥{summary.paid.toLocaleString()}</p>
-              <p className="text-[11px] text-muted-foreground mt-1">{payments.length} 笔付款</p>
+              <p className="text-[11px] text-muted-foreground mt-1">{payments.length} 笔付款 · <span className="text-primary">点击看明细 →</span></p>
             </CardContent>
           </Card>
-          <Card className={isCleared ? 'border-green-200 bg-green-50/40' : 'border-red-200 bg-red-50/40'}>
+          <Card
+            className={`cursor-pointer transition hover:shadow-md ${tab === 'unpaid' ? 'ring-1 ring-primary/40' : ''} ${isCleared ? 'border-green-200 bg-green-50/40' : 'border-red-200 bg-red-50/40'}`}
+            onClick={() => setTab('unpaid')}
+          >
             <CardContent className="p-5">
               <p className="text-xs text-muted-foreground">应付余额（实际未付）</p>
               <p className={`text-2xl font-bold mt-1 ${isCleared ? 'text-green-700' : 'text-red-600'}`}>
                 {isCleared && summary.unpaid < -0.005 ? `多付 ¥${Math.abs(summary.unpaid).toLocaleString()}` : `¥${summary.unpaid.toLocaleString()}`}
               </p>
-              <p className="text-[11px] mt-1">
+              <p className="text-[11px] mt-1 flex items-center gap-2">
                 {isCleared ? <Badge className="bg-green-100 text-green-700">已结清</Badge>
                   : <span className={summary.oldestAging > 60 ? 'text-red-600 font-medium' : 'text-muted-foreground'}>最长账龄 {summary.oldestAging} 天</span>}
+                <span className="text-primary">点击看明细 →</span>
               </p>
             </CardContent>
           </Card>
         </div>
 
-        <Tabs defaultValue="byitem">
+        <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
             <TabsTrigger value="byitem">按品名汇总 ({byItem.length})</TabsTrigger>
             <TabsTrigger value="all">全部费用明细 ({lines.length})</TabsTrigger>
             <TabsTrigger value="payments">付款记录 ({payments.length})</TabsTrigger>
+            <TabsTrigger value="unpaid">未付明细 ({unpaidLines.length})</TabsTrigger>
           </TabsList>
 
           {/* 按品名汇总 */}
@@ -250,7 +274,9 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
                           </TableRow>
                           {open && it.rows.map(r => (
                             <TableRow key={r.id} className="bg-muted/20">
-                              <TableCell className="pl-9 text-xs text-muted-foreground">{r.orderLabel || '—'}</TableCell>
+                              <TableCell className="pl-9 text-xs text-muted-foreground">
+                                <span className="text-foreground font-medium">{r.orderLabel || '无单号'}</span>
+                              </TableCell>
                               <TableCell className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleDateString('zh-CN')}</TableCell>
                               <TableCell className="text-right text-xs">{r.qty != null ? `${r.qty}${r.unit || ''}` : '—'}</TableCell>
                               <TableCell className="text-right text-xs text-muted-foreground">{r.unit_price != null ? `¥${r.unit_price}` : '—'}</TableCell>
@@ -276,12 +302,12 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
                     <TableRow>
                       <TableHead>类型</TableHead>
                       <TableHead className="min-w-[140px]">品名/描述</TableHead>
-                      <TableHead>关联订单</TableHead>
+                      <TableHead>内部订单号</TableHead>
                       <TableHead className="text-right">数量</TableHead>
                       <TableHead>单位</TableHead>
                       <TableHead className="text-right">单价</TableHead>
                       <TableHead className="text-right">金额(¥)</TableHead>
-                      <TableHead>录入日</TableHead>
+                      <TableHead>日期</TableHead>
                       <TableHead className="text-right">账龄</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -338,6 +364,54 @@ export default function SupplierPayableDetailPage({ params }: { params: Promise<
                       <TableRow className="bg-muted/50 font-semibold border-t-2">
                         <TableCell className="text-right">已付合计</TableCell>
                         <TableCell className="text-right text-green-700">¥{summary.paid.toLocaleString()}</TableCell>
+                        <TableCell />
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* 未付明细（应付余额）— FIFO 冲抵后仍欠的费用 */}
+          <TabsContent value="unpaid" className="mt-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">未付明细（应付余额 ¥{summary.unpaid.toLocaleString()}）</CardTitle>
+                <p className="text-xs text-muted-foreground">已登记付款按「先冲抵最早费用」抵扣后，下列为仍未付清的费用。</p>
+              </CardHeader>
+              <CardContent className="p-0 overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>日期</TableHead>
+                      <TableHead>内部订单号</TableHead>
+                      <TableHead>类型</TableHead>
+                      <TableHead className="min-w-[140px]">品名/描述</TableHead>
+                      <TableHead className="text-right">数量</TableHead>
+                      <TableHead className="text-right">单价</TableHead>
+                      <TableHead className="text-right">未付金额(¥)</TableHead>
+                      <TableHead className="text-right">账龄</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {unpaidLines.map(l => (
+                      <TableRow key={l.id}>
+                        <TableCell className="text-xs text-muted-foreground">{new Date(l.createdAt).toLocaleDateString('zh-CN')}</TableCell>
+                        <TableCell className="text-sm font-medium">{l.orderLabel || '—'}</TableCell>
+                        <TableCell><span className="text-xs text-muted-foreground">{COST_TYPE_LABEL[l.cost_type] || l.cost_type}</span></TableCell>
+                        <TableCell className="text-sm">{l.description}</TableCell>
+                        <TableCell className="text-right text-sm tabular-nums">{l.qty != null ? `${l.qty}${l.unit || ''}` : '—'}</TableCell>
+                        <TableCell className="text-right text-sm tabular-nums">{l.unit_price != null ? `¥${l.unit_price}` : '—'}</TableCell>
+                        <TableCell className="text-right text-sm tabular-nums font-semibold text-red-600">¥{l.unpaidPortion.toLocaleString()}</TableCell>
+                        <TableCell className={`text-right text-xs ${l.agingDays > 60 ? 'text-red-600' : 'text-muted-foreground'}`}>{l.agingDays}天</TableCell>
+                      </TableRow>
+                    ))}
+                    {unpaidLines.length === 0 && <TableRow><TableCell colSpan={8} className="text-center py-10 text-muted-foreground">已全部付清 🎉</TableCell></TableRow>}
+                    {unpaidLines.length > 0 && (
+                      <TableRow className="bg-red-50/50 font-semibold border-t-2">
+                        <TableCell colSpan={6} className="text-right">应付余额合计</TableCell>
+                        <TableCell className="text-right text-red-600">¥{summary.unpaid.toLocaleString()}</TableCell>
                         <TableCell />
                       </TableRow>
                     )}
