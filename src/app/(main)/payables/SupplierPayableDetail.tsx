@@ -61,24 +61,30 @@ export function SupplierPayableDetail({ supplierName }: { supplierName: string }
       try {
         const supabase = createClient()
         const like = `%${escapeIlike(supplierName)}%`
-        const [costRes, syncedRes, payList] = await Promise.all([
+        // 1) 先取该供应商的费用 + 付款（费用用 ilike 缩到本供应商，避免全表）
+        const [costRes, payList] = await Promise.all([
           supabase
             .from('cost_items')
             .select('id, cost_type, description, supplier, amount, currency, exchange_rate, quantity, unit, unit_price, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
             .is('deleted_at', null)
             .ilike('supplier', like)
             .order('created_at', { ascending: true }),
-          supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null),
           getSupplierPayments({ supplierName }),
         ])
 
-        const syncMap = new Map<string, string>()
-        ;(syncedRes.data || []).forEach((s: Record<string, unknown>) => {
-          if (s.budget_order_id && s.style_no) syncMap.set(s.budget_order_id as string, String(s.style_no))
-        })
+        const costData = (costRes.data || []).filter((c: Record<string, unknown>) => normalizeSupplierName(c.supplier as string) === supplierName)
 
-        const ls: Line[] = (costRes.data || [])
-          .filter((c: Record<string, unknown>) => normalizeSupplierName(c.supplier as string) === supplierName)
+        // 2) 只为相关订单取 synced_orders（按 budget_order_id 过滤，避免拉全表 → 修卡顿）
+        const boIds = [...new Set(costData.map((c: Record<string, unknown>) => c.budget_order_id as string).filter(Boolean))]
+        const syncMap = new Map<string, string>()
+        if (boIds.length > 0) {
+          const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, style_no').in('budget_order_id', boIds)
+          ;(synced || []).forEach((s: Record<string, unknown>) => {
+            if (s.budget_order_id && s.style_no) syncMap.set(s.budget_order_id as string, String(s.style_no))
+          })
+        }
+
+        const ls: Line[] = costData
           .map((c: Record<string, unknown>) => {
             const boId = c.budget_order_id as string | null
             const bo = c.budget_orders as { order_no?: string; quote_no?: string } | null

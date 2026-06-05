@@ -75,28 +75,20 @@ export default function PayablesPage() {
       setLoading(true)
       try {
         const supabase = createClient()
-        const [costRes, syncedRes, payList] = await Promise.all([
+        // 列表只做「按供应商汇总」，不需要内部订单号标签 → 去掉全表 synced_orders 拉取（修卡顿）
+        const [costRes, payList] = await Promise.all([
           supabase
             .from('cost_items')
             .select('id, description, amount, currency, exchange_rate, supplier, cost_type, budget_order_id, created_at, budget_orders(order_no)')
             .is('deleted_at', null)
             .order('created_at', { ascending: true }),
-          supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null),
           getSupplierPayments(),
         ])
-
-        const syncMap = new Map<string, string>()
-        ;(syncedRes.data || []).forEach((s: Record<string, unknown>) => {
-          if (s.budget_order_id) {
-            const internal = s.style_no ? `${s.style_no} | ` : ''
-            syncMap.set(s.budget_order_id as string, `${internal}${(s.order_no as string) || ''}`)
-          }
-        })
 
         const list: CostRow[] = (costRes.data || []).map((c: Record<string, unknown>) => {
           const boId = c.budget_order_id as string | null
           const bo = c.budget_orders as { order_no?: string } | null
-          const orderLabel = boId ? (syncMap.get(boId) || bo?.order_no || '') : ''
+          const orderLabel = boId ? (bo?.order_no || boId) : ''
           const amt = Number(c.amount) || 0
           const rate = Number(c.exchange_rate) || 1
           return {
