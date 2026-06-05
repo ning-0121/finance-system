@@ -13,6 +13,7 @@ import { getSupplierPayments } from '@/lib/supabase/queries-v2'
 import { normalizeSupplierName } from '@/lib/utils'
 import { toast } from 'sonner'
 import { SupplierPayableDetail } from './SupplierPayableDetail'
+import type { SupplierPayment } from '@/lib/types'
 
 // ============================================================
 // 应付账款 = 费用归集中「未付」的费用，按供应商汇总 + 账龄
@@ -30,6 +31,10 @@ interface CostRow {
   orderLabel: string
   createdAt: string
   agingDays: number
+  // 供右侧明细「零再请求」复用的字段
+  qty: number | null
+  unit: string
+  unit_price: number | null
 }
 
 interface SupplierAP {
@@ -55,6 +60,7 @@ export default function PayablesPage() {
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<CostRow[]>([])
   const [paidBySupplier, setPaidBySupplier] = useState<Record<string, number>>({})
+  const [allPayments, setAllPayments] = useState<SupplierPayment[]>([])
   // 左右分栏多标签：右侧像浏览器标签一样同时打开多个供应商
   const [openTabs, setOpenTabs] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
@@ -75,22 +81,44 @@ export default function PayablesPage() {
       setLoading(true)
       try {
         const supabase = createClient()
-        // 列表只做「按供应商汇总」，不需要内部订单号标签 → 去掉全表 synced_orders 拉取（修卡顿）
+        // 一次性把右侧明细需要的字段也查全（含 数量/单位/单价/source_id），
+        // 右侧标签直接复用，零再请求（修卡顿核心）。
         const [costRes, payList] = await Promise.all([
           supabase
             .from('cost_items')
-            .select('id, description, amount, currency, exchange_rate, supplier, cost_type, budget_order_id, created_at, budget_orders(order_no)')
+            .select('id, description, amount, currency, exchange_rate, supplier, cost_type, quantity, unit, unit_price, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
             .is('deleted_at', null)
             .order('created_at', { ascending: true }),
           getSupplierPayments(),
         ])
 
+        // 内部订单号：仅按出现过的订单取 synced_orders（一次，非每标签）
+        const boIds = [...new Set((costRes.data || []).map((c: Record<string, unknown>) => c.budget_order_id as string).filter(Boolean))]
+        const syncMap = new Map<string, string>()
+        if (boIds.length > 0) {
+          const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, style_no').in('budget_order_id', boIds)
+          ;(synced || []).forEach((s: Record<string, unknown>) => {
+            if (s.budget_order_id && s.style_no) syncMap.set(s.budget_order_id as string, String(s.style_no))
+          })
+        }
+
         const list: CostRow[] = (costRes.data || []).map((c: Record<string, unknown>) => {
           const boId = c.budget_order_id as string | null
-          const bo = c.budget_orders as { order_no?: string } | null
-          const orderLabel = boId ? (bo?.order_no || boId) : ''
+          const bo = c.budget_orders as { order_no?: string; quote_no?: string } | null
+          const quoteFallback = bo?.quote_no ? String(bo.quote_no).trim() : ''
+          const orderLabel = boId ? (syncMap.get(boId) || quoteFallback || bo?.order_no || '') : ''
           const amt = Number(c.amount) || 0
           const rate = Number(c.exchange_rate) || 1
+          // 数量/单位/单价：优先真实列，缺失回退 source_id JSON
+          let qty = c.quantity != null ? Number(c.quantity) : null
+          let unit = (c.unit as string) || ''
+          let price = c.unit_price != null ? Number(c.unit_price) : null
+          if (qty == null && typeof c.source_id === 'string') {
+            try {
+              const j = JSON.parse(c.source_id as string)
+              if (j && typeof j === 'object') { qty = j.qty ?? j.quantity ?? null; unit = unit || j.unit || ''; price = price ?? j.unit_price ?? j.price ?? null }
+            } catch { /* not json */ }
+          }
           return {
             id: c.id as string,
             supplier: normalizeSupplierName(c.supplier as string) || '未指定供应商',
@@ -100,12 +128,14 @@ export default function PayablesPage() {
             orderLabel,
             createdAt: c.created_at as string,
             agingDays: daysSince(c.created_at as string),
+            qty, unit, unit_price: price,
           }
         })
         const payMap: Record<string, number> = {}
         payList.forEach(p => { const k = normalizeSupplierName(p.supplier_name) || '未指定供应商'; payMap[k] = (payMap[k] || 0) + (Number(p.amount) || 0) })
         setRows(list)
         setPaidBySupplier(payMap)
+        setAllPayments((payList || []).map(p => ({ ...p, supplier_name: normalizeSupplierName(p.supplier_name) || '未指定供应商' })))
       } catch (err) {
         console.error('加载应付失败:', err)
         toast.error('加载失败')
@@ -155,6 +185,18 @@ export default function PayablesPage() {
       })
       .sort((a, b) => b.unpaidCny - a.unpaidCny)
   }, [rows, paidBySupplier])
+
+  // 供右侧标签「零再请求」复用：供应商 → 该供应商的费用明细 / 付款
+  const supplierMap = useMemo(() => {
+    const m = new Map<string, SupplierAP>()
+    suppliers.forEach(s => m.set(s.supplier, s))
+    return m
+  }, [suppliers])
+  const paymentsBySupplier = useMemo(() => {
+    const m: Record<string, SupplierPayment[]> = {}
+    for (const p of allPayments) { (m[p.supplier_name] ||= []).push(p) }
+    return m
+  }, [allPayments])
 
   const hasUnpaid = (s: SupplierAP) => s.unpaidCny > 0.005
   const withUnpaid = suppliers.filter(hasUnpaid)
@@ -315,7 +357,7 @@ export default function PayablesPage() {
               <div className="flex-1 overflow-y-auto min-w-0">
                 {openTabs.map(name => (
                   <div key={name} className={activeTab === name ? '' : 'hidden'}>
-                    <SupplierPayableDetail supplierName={name} />
+                    <SupplierPayableDetail supplierName={name} lines={supplierMap.get(name)?.items || []} payments={paymentsBySupplier[name] || []} />
                   </div>
                 ))}
               </div>

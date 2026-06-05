@@ -22,8 +22,9 @@ import { getSupplierPayments } from '@/lib/supabase/queries-v2'
 import { normalizeSupplierName, escapeIlike } from '@/lib/utils'
 import type { SupplierPayment } from '@/lib/types'
 
-interface Line {
+export interface Line {
   id: string
+  supplier?: string
   cost_type: string
   description: string
   orderLabel: string
@@ -48,14 +49,27 @@ function daysSince(s: string): number {
 }
 const r2 = (n: number) => Math.round(n * 100) / 100
 
-export function SupplierPayableDetail({ supplierName }: { supplierName: string }) {
-  const [loading, setLoading] = useState(true)
-  const [lines, setLines] = useState<Line[]>([])
-  const [payments, setPayments] = useState<SupplierPayment[]>([])
+export function SupplierPayableDetail({
+  supplierName,
+  lines: linesProp,
+  payments: paymentsProp,
+}: {
+  supplierName: string
+  lines?: Line[]
+  payments?: SupplierPayment[]
+}) {
+  // 预加载模式：父级（应付工作台）已把数据查好传进来 → 零再请求，点开即显示
+  const preloaded = linesProp !== undefined
+  const [loading, setLoading] = useState(!preloaded)
+  const [fetchedLines, setFetchedLines] = useState<Line[]>([])
+  const [fetchedPayments, setFetchedPayments] = useState<SupplierPayment[]>([])
+  const lines = preloaded ? linesProp! : fetchedLines
+  const payments = preloaded ? (paymentsProp || []) : fetchedPayments
   const [expandedItem, setExpandedItem] = useState<Record<string, boolean>>({})
   const [tab, setTab] = useState('byitem')
 
   useEffect(() => {
+    if (preloaded) return  // 已有预加载数据，不查库
     async function load() {
       setLoading(true)
       try {
@@ -111,15 +125,15 @@ export function SupplierPayableDetail({ supplierName }: { supplierName: string }
               agingDays: daysSince(c.created_at as string),
             }
           })
-        setLines(ls)
-        setPayments((payList || []).filter(p => normalizeSupplierName(p.supplier_name) === supplierName))
+        setFetchedLines(ls)
+        setFetchedPayments((payList || []).filter(p => normalizeSupplierName(p.supplier_name) === supplierName))
       } catch (e) {
         console.error('加载供应商应付明细失败:', e)
       }
       setLoading(false)
     }
     load()
-  }, [supplierName])
+  }, [supplierName, preloaded])
 
   const summary = useMemo(() => {
     const totalCharge = r2(lines.reduce((s, l) => s + l.amountCny, 0))
