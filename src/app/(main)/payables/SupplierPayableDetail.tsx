@@ -28,6 +28,8 @@ export interface Line {
   cost_type: string
   description: string
   orderLabel: string
+  color: string | null
+  rollCount: number | null
   qty: number | null
   unit: string
   unit_price: number | null
@@ -79,7 +81,7 @@ export function SupplierPayableDetail({
         const [costRes, payList] = await Promise.all([
           supabase
             .from('cost_items')
-            .select('id, cost_type, description, supplier, amount, currency, exchange_rate, quantity, unit, unit_price, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
+            .select('id, cost_type, description, supplier, amount, currency, exchange_rate, quantity, unit, unit_price, color, roll_count, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
             .is('deleted_at', null)
             .ilike('supplier', like)
             .order('created_at', { ascending: true }),
@@ -119,6 +121,8 @@ export function SupplierPayableDetail({
               cost_type: (c.cost_type as string) || '',
               description: (c.description as string) || '',
               orderLabel,
+              color: (c.color as string) || null,
+              rollCount: c.roll_count != null ? Number(c.roll_count) : null,
               qty, unit, unit_price: price,
               amountCny: r2((Number(c.amount) || 0) * rate),
               createdAt: c.created_at as string,
@@ -179,6 +183,16 @@ export function SupplierPayableDetail({
       remaining = 0
     }
     return out
+  }, [lines, summary.paid])
+
+  // 每笔费用的已付/未付（FIFO：付款先冲抵最早费用）
+  const allocatedLines = useMemo(() => {
+    let remaining = summary.paid
+    return lines.map(l => {
+      const paid = Math.min(remaining, l.amountCny)
+      remaining = Math.max(0, remaining - l.amountCny)
+      return { ...l, paidPortion: r2(paid), unpaidPortion: r2(l.amountCny - paid) }
+    })
   }, [lines, summary.paid])
 
   if (loading) return <div className="flex items-center justify-center py-20"><Loader2 className="h-7 w-7 animate-spin text-muted-foreground" /></div>
@@ -298,44 +312,47 @@ export function SupplierPayableDetail({
           </Card>
         </TabsContent>
 
-        {/* 全部费用明细 */}
+        {/* 全部费用明细：日期/内部订单号/品名/颜色/匹数/数量/单价/金额/已付款/未付 */}
         <TabsContent value="all" className="mt-4">
           <Card>
             <CardContent className="p-0 overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>类型</TableHead>
-                    <TableHead className="min-w-[140px]">品名/描述</TableHead>
+                    <TableHead className="whitespace-nowrap">日期</TableHead>
                     <TableHead>内部订单号</TableHead>
+                    <TableHead className="min-w-[120px]">品名</TableHead>
+                    <TableHead>颜色</TableHead>
+                    <TableHead className="text-right">匹数</TableHead>
                     <TableHead className="text-right">数量</TableHead>
-                    <TableHead>单位</TableHead>
                     <TableHead className="text-right">单价</TableHead>
                     <TableHead className="text-right">金额(¥)</TableHead>
-                    <TableHead>日期</TableHead>
-                    <TableHead className="text-right">账龄</TableHead>
+                    <TableHead className="text-right">已付款</TableHead>
+                    <TableHead className="text-right">未付</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {lines.map(l => (
+                  {allocatedLines.map(l => (
                     <TableRow key={l.id}>
-                      <TableCell><span className="text-xs text-muted-foreground">{COST_TYPE_LABEL[l.cost_type] || l.cost_type}</span></TableCell>
+                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{new Date(l.createdAt).toLocaleDateString('zh-CN')}</TableCell>
+                      <TableCell className="text-xs">{l.orderLabel || '—'}</TableCell>
                       <TableCell className="text-sm">{l.description}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{l.orderLabel || '—'}</TableCell>
-                      <TableCell className="text-right text-sm tabular-nums">{l.qty != null ? l.qty : '—'}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{l.unit || '—'}</TableCell>
+                      <TableCell className="text-sm">{l.color || '—'}</TableCell>
+                      <TableCell className="text-right text-sm tabular-nums">{l.rollCount != null ? l.rollCount : '—'}</TableCell>
+                      <TableCell className="text-right text-sm tabular-nums">{l.qty != null ? `${l.qty}${l.unit || ''}` : '—'}</TableCell>
                       <TableCell className="text-right text-sm tabular-nums">{l.unit_price != null ? `¥${l.unit_price}` : '—'}</TableCell>
                       <TableCell className="text-right text-sm tabular-nums font-medium">¥{l.amountCny.toLocaleString()}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{new Date(l.createdAt).toLocaleDateString('zh-CN')}</TableCell>
-                      <TableCell className={`text-right text-xs ${l.agingDays > 60 ? 'text-red-600' : 'text-muted-foreground'}`}>{l.agingDays}天</TableCell>
+                      <TableCell className="text-right text-sm tabular-nums text-green-700">{l.paidPortion > 0 ? `¥${l.paidPortion.toLocaleString()}` : '—'}</TableCell>
+                      <TableCell className={`text-right text-sm tabular-nums ${l.unpaidPortion > 0.005 ? 'text-red-600 font-medium' : 'text-muted-foreground'}`}>{l.unpaidPortion > 0.005 ? `¥${l.unpaidPortion.toLocaleString()}` : '已付清'}</TableCell>
                     </TableRow>
                   ))}
-                  {lines.length === 0 && <TableRow><TableCell colSpan={9} className="text-center py-10 text-muted-foreground">暂无费用明细</TableCell></TableRow>}
+                  {lines.length === 0 && <TableRow><TableCell colSpan={10} className="text-center py-10 text-muted-foreground">暂无费用明细</TableCell></TableRow>}
                   {lines.length > 0 && (
                     <TableRow className="bg-muted/50 font-semibold border-t-2">
-                      <TableCell colSpan={6} className="text-right">费用合计</TableCell>
+                      <TableCell colSpan={7} className="text-right">合计</TableCell>
                       <TableCell className="text-right">¥{summary.totalCharge.toLocaleString()}</TableCell>
-                      <TableCell colSpan={2} />
+                      <TableCell className="text-right text-green-700">¥{summary.paid.toLocaleString()}</TableCell>
+                      <TableCell className="text-right text-red-600">¥{summary.unpaid.toLocaleString()}</TableCell>
                     </TableRow>
                   )}
                 </TableBody>

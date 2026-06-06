@@ -35,6 +35,8 @@ interface CostRow {
   qty: number | null
   unit: string
   unit_price: number | null
+  color: string | null
+  rollCount: number | null
 }
 
 interface SupplierAP {
@@ -86,7 +88,7 @@ export default function PayablesPage() {
         const [costRes, payList] = await Promise.all([
           supabase
             .from('cost_items')
-            .select('id, description, amount, currency, exchange_rate, supplier, cost_type, quantity, unit, unit_price, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
+            .select('id, description, amount, currency, exchange_rate, supplier, cost_type, quantity, unit, unit_price, color, roll_count, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
             .is('deleted_at', null)
             .order('created_at', { ascending: true }),
           getSupplierPayments(),
@@ -129,6 +131,8 @@ export default function PayablesPage() {
             createdAt: c.created_at as string,
             agingDays: daysSince(c.created_at as string),
             qty, unit, unit_price: price,
+            color: (c.color as string) || null,
+            rollCount: c.roll_count != null ? Number(c.roll_count) : null,
           }
         })
         const payMap: Record<string, number> = {}

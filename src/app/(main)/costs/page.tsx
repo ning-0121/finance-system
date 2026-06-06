@@ -52,6 +52,8 @@ interface CostRecord {
   exchange_rate: number
   is_paid: boolean
   detail_meta?: { qty: number; unit: string; unit_price: number }
+  color?: string | null
+  roll_count?: number | null
   created_at: string
 }
 
@@ -77,6 +79,8 @@ export default function CostsPage() {
   const [formQty, setFormQty] = useState('')
   const [formUnitPrice, setFormUnitPrice] = useState('')
   const [formUnit, setFormUnit] = useState('件')
+  const [formColor, setFormColor] = useState('')       // 颜色（面料等）
+  const [formRollCount, setFormRollCount] = useState('') // 匹数
   const [formAmount, setFormAmount] = useState('')
   const [formCurrency, setFormCurrency] = useState('CNY')
   const [formRate, setFormRate] = useState('1')
@@ -144,6 +148,8 @@ export default function CostsPage() {
               exchange_rate: r.exchange_rate as number,
               is_paid: r.source_module === 'paid',
               detail_meta: detailMeta,
+              color: (r.color as string) || null,
+              roll_count: r.roll_count != null ? Number(r.roll_count) : null,
               created_at: r.created_at as string,
             }
           }))
@@ -320,6 +326,8 @@ export default function CostsPage() {
         setFormQty('')
         setFormUnitPrice('')
         setFormUnit('件')
+        setFormColor('')
+        setFormRollCount('')
         setFormAmount('')
         setFormOrderId('')
         setFormPaid(false)
@@ -344,6 +352,8 @@ export default function CostsPage() {
         quantity: (formQty || formUnitPrice) ? qtyNum : null,
         unit: (formQty || formUnitPrice) ? (formUnit || null) : null,
         unit_price: (formQty || formUnitPrice) ? unitPriceNum : null,
+        color: formColor.trim() || null,
+        roll_count: formRollCount ? Number(formRollCount) : null,
       }
 
       let data: Record<string, unknown>
@@ -476,6 +486,8 @@ export default function CostsPage() {
     setFormQty('')
     setFormUnitPrice('')
     setFormUnit('件')
+    setFormColor('')
+    setFormRollCount('')
     setFormAmount('')
     setFormOrderId('')
     setFormPaid(false)
@@ -639,6 +651,8 @@ export default function CostsPage() {
                             setFormQty(item.detail_meta?.qty?.toString() || '')
                             setFormUnitPrice(item.detail_meta?.unit_price?.toString() || '')
                             setFormUnit(item.detail_meta?.unit || '件')
+                            setFormColor(item.color || '')
+                            setFormRollCount(item.roll_count != null ? String(item.roll_count) : '')
                             setFormAmount(item.amount.toString())
                             setFormCurrency(item.currency)
                             setFormRate(item.exchange_rate.toString())
@@ -834,6 +848,16 @@ export default function CostsPage() {
             <div className="space-y-2">
               <Label>费用描述 *</Label>
               <Textarea placeholder="例：拉链、面料尾款、染色费" value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={1} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">颜色（可选）</Label>
+                <Input placeholder="如：黑色 / 海军蓝" value={formColor} onChange={e => setFormColor(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">匹数（可选）</Label>
+                <Input type="number" step="0.01" placeholder="0" value={formRollCount} onChange={e => setFormRollCount(e.target.value)} />
+              </div>
             </div>
             <div className="grid grid-cols-4 gap-3">
               <div className="space-y-1">
