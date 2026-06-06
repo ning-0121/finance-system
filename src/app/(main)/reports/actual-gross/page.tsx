@@ -8,7 +8,8 @@ import { Input } from '@/components/ui/input'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { Loader2, Download, Search, FileSpreadsheet } from 'lucide-react'
+import { Loader2, Download, Search, FileSpreadsheet, Eye } from 'lucide-react'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { createClient } from '@/lib/supabase/client'
 import { getBudgetOrders, getBudgetOrderById } from '@/lib/supabase/queries'
 import type { BudgetOrder } from '@/lib/types'
@@ -16,6 +17,7 @@ import {
   buildSettlementBundle,
   exportSettlementInvoiceToExcel,
   synthesizeExpensesFromBudget,
+  type SettlementBundle,
 } from '@/lib/excel/export-settlement-invoice'
 import { toast } from 'sonner'
 import Link from 'next/link'
@@ -57,50 +59,67 @@ export default function ActualGrossReportPage() {
   const [rows, setRows] = useState<Row[]>([])
   const [search, setSearch] = useState('')
   const [exportingId, setExportingId] = useState<string | null>(null)
+  const [viewingId, setViewingId] = useState<string | null>(null)
+  const [viewBundle, setViewBundle] = useState<SettlementBundle | null>(null)
 
-  // 导出某订单的「订单核算单」（义乌绮陌图片格式：收/支明细 + 毛利）
+  // 构造某订单的「订单核算单」数据（收/支明细 + 毛利），导出与页面查看共用
+  const buildBundleForOrder = async (orderId: string): Promise<SettlementBundle | null> => {
+    const order = await getBudgetOrderById(orderId)
+    if (!order) { toast.error('订单不存在'); return null }
+    const sb = createClient()
+    const [{ data: receipts }, { data: expenses }, { data: ship }] = await Promise.all([
+      sb.from('actual_invoices')
+        .select('invoice_date, total_amount, currency, exchange_rate, supplier_name, invoice_no')
+        .eq('budget_order_id', orderId).eq('invoice_type', 'customer_statement').eq('status', 'paid')
+        .is('deleted_at', null).order('invoice_date', { ascending: true }),
+      sb.from('cost_items')
+        .select('cost_type, description, supplier, cost_group, quantity, unit, unit_price, amount, currency, exchange_rate, created_at')
+        .eq('budget_order_id', orderId).is('deleted_at', null)
+        .order('cost_group, supplier, created_at'),
+      sb.from('shipping_documents')
+        .select('completed_at, updated_at, status').eq('budget_order_id', orderId)
+        .eq('status', 'completed').order('updated_at', { ascending: false }).limit(1).maybeSingle(),
+    ])
+    const productName = (order.items as unknown as Record<string, unknown>[])?.[0]?.product_name as string | undefined
+    const orderWithCustomer = { ...order, product_name: productName || null, customer_name: order.customer?.company || '' }
+    const exp = (expenses && expenses.length > 0) ? expenses : synthesizeExpensesFromBudget(order)
+    return buildSettlementBundle(
+      orderWithCustomer as never,
+      receipts || [],
+      exp as never,
+      (ship?.completed_at as string | undefined) || (ship?.updated_at as string | undefined) || null,
+    )
+  }
+
+  // 下载 Excel
   const exportSettlementInvoice = async (orderId: string) => {
     setExportingId(orderId)
     try {
-      const order = await getBudgetOrderById(orderId)
-      if (!order) { toast.error('订单不存在'); return }
-      const sb = createClient()
-      const [{ data: receipts }, { data: expenses }, { data: ship }] = await Promise.all([
-        sb.from('actual_invoices')
-          .select('invoice_date, total_amount, currency, exchange_rate, supplier_name, invoice_no')
-          .eq('budget_order_id', orderId).eq('invoice_type', 'customer_statement').eq('status', 'paid')
-          .is('deleted_at', null).order('invoice_date', { ascending: true }),
-        sb.from('cost_items')
-          .select('cost_type, description, supplier, cost_group, quantity, unit, unit_price, amount, currency, exchange_rate, created_at')
-          .eq('budget_order_id', orderId).is('deleted_at', null)
-          .order('cost_group, supplier, created_at'),
-        sb.from('shipping_documents')
-          .select('completed_at, updated_at, status').eq('budget_order_id', orderId)
-          .eq('status', 'completed').order('updated_at', { ascending: false }).limit(1).maybeSingle(),
-      ])
-      const productName = (order.items as unknown as Record<string, unknown>[])?.[0]?.product_name as string | undefined
-      const orderWithCustomer = {
-        ...order,
-        product_name: productName || null,
-        customer_name: order.customer?.company || '',
-      }
-      const exp = (expenses && expenses.length > 0) ? expenses : synthesizeExpensesFromBudget(order)
-      const bundle = buildSettlementBundle(
-        orderWithCustomer as never,
-        receipts || [],
-        exp as never,
-        (ship?.completed_at as string | undefined) || (ship?.updated_at as string | undefined) || null,
-      )
+      const bundle = await buildBundleForOrder(orderId)
+      if (!bundle) return
       exportSettlementInvoiceToExcel(bundle)
       const warn = [
         bundle.meta.cost_source === 'estimated' && '⚠ 支区用预算估算（该订单费用归集暂无明细）',
         bundle.meta.receipt_source === 'pending' && '⚠ 暂无实际回款',
       ].filter(Boolean).join(' ')
-      toast.success(`核算单 ${order.order_no} 已导出${warn ? ' (' + warn + ')' : ''}`)
+      toast.success(`核算单 ${bundle.header.order_no} 已导出${warn ? ' (' + warn + ')' : ''}`)
     } catch (e) {
       toast.error(`导出失败: ${e instanceof Error ? e.message : '未知错误'}`)
     } finally {
       setExportingId(null)
+    }
+  }
+
+  // 页面查看
+  const viewSettlementInvoice = async (orderId: string) => {
+    setViewingId(orderId)
+    try {
+      const bundle = await buildBundleForOrder(orderId)
+      if (bundle) setViewBundle(bundle)
+    } catch (e) {
+      toast.error(`加载失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    } finally {
+      setViewingId(null)
     }
   }
 
@@ -307,18 +326,14 @@ export default function ActualGrossReportPage() {
                       ¥{r.gross_cny.toLocaleString()}
                     </TableCell>
                     <TableCell className="text-right">{r.margin_pct}%</TableCell>
-                    <TableCell className="text-center">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs"
-                        disabled={exportingId === r.id}
-                        onClick={() => exportSettlementInvoice(r.id)}
-                        title="导出该订单的订单核算单（收/支明细 + 毛利）"
-                      >
-                        {exportingId === r.id
-                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          : <FileSpreadsheet className="h-3.5 w-3.5" />}
+                    <TableCell className="text-center whitespace-nowrap">
+                      <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={viewingId === r.id}
+                        onClick={() => viewSettlementInvoice(r.id)} title="页面查看订单核算单">
+                        {viewingId === r.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <><Eye className="h-3.5 w-3.5 mr-1" />查看</>}
+                      </Button>
+                      <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={exportingId === r.id}
+                        onClick={() => exportSettlementInvoice(r.id)} title="下载订单核算单 Excel">
+                        {exportingId === r.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <><Download className="h-3.5 w-3.5 mr-1" />下载</>}
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -333,6 +348,105 @@ export default function ActualGrossReportPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* 订单核算单 · 页面查看 */}
+      <Dialog open={!!viewBundle} onOpenChange={(o) => { if (!o) setViewBundle(null) }}>
+        <DialogContent className="max-w-4xl max-h-[88vh] overflow-y-auto">
+          {viewBundle && (() => {
+            const b = viewBundle
+            const r2 = (n: number) => Math.round(n * 100) / 100
+            const shou = r2(b.receipts.reduce((s, x) => s + (x.cny || 0), 0))
+            const zhi = r2(b.expenses.reduce((s, x) => s + (x.amount || 0), 0))
+            const profit = r2(shou - zhi)
+            const margin = shou > 0 ? Math.round((profit / shou) * 10000) / 100 : 0
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="text-center">订单核算单 · {b.header.order_no}</DialogTitle>
+                </DialogHeader>
+                <div className="text-xs space-y-3">
+                  {(b.meta.cost_source === 'estimated' || b.meta.receipt_source === 'pending') && (
+                    <p className="text-amber-600">
+                      {b.meta.cost_source === 'estimated' && '⚠ 支出为预算估算（该订单费用归集暂无明细）。'}
+                      {b.meta.receipt_source === 'pending' && '⚠ 暂无实际回款，收入按合同金额预填。'}
+                    </p>
+                  )}
+                  {/* 表头信息 */}
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-1 border rounded-md p-3 bg-muted/20">
+                    <div className="flex justify-between"><span className="text-muted-foreground">客户名称</span><span className="font-medium">{b.header.customer_name || '—'}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">品名</span><span>{b.header.product_name || '—'}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">数量</span><span>{b.header.quantity ? `${b.header.quantity.toLocaleString()} ${b.header.quantity_unit || ''}` : '—'}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">合同金额</span><span className="font-medium">{b.header.contract_currency === 'USD' ? '$' : '¥'}{(b.header.contract_amount || 0).toLocaleString()}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">订单完结时间</span><span>{b.header.completed_at || '—'}</span></div>
+                  </div>
+
+                  {/* 收 */}
+                  <div>
+                    <p className="font-semibold mb-1">收（回款）</p>
+                    <table className="w-full border-collapse">
+                      <thead><tr className="bg-muted/40 text-muted-foreground">
+                        <th className="border px-2 py-1 text-left">时间</th><th className="border px-2 py-1 text-left">摘要</th>
+                        <th className="border px-2 py-1 text-right">美金</th><th className="border px-2 py-1 text-right">汇率</th>
+                        <th className="border px-2 py-1 text-right">金额(¥)</th><th className="border px-2 py-1 text-left">备注</th>
+                      </tr></thead>
+                      <tbody>
+                        {b.receipts.map((x, i) => (
+                          <tr key={i}>
+                            <td className="border px-2 py-1">{x.date || '—'}</td><td className="border px-2 py-1">{x.description || '货款'}</td>
+                            <td className="border px-2 py-1 text-right">{x.usd ? x.usd.toLocaleString() : '—'}</td>
+                            <td className="border px-2 py-1 text-right">{x.rate || '—'}</td>
+                            <td className="border px-2 py-1 text-right">{(x.cny || 0).toLocaleString()}</td><td className="border px-2 py-1">{x.note || ''}</td>
+                          </tr>
+                        ))}
+                        {b.receipts.length === 0 && <tr><td className="border px-2 py-2 text-center text-muted-foreground" colSpan={6}>暂无回款</td></tr>}
+                        <tr className="font-semibold bg-muted/20"><td className="border px-2 py-1" colSpan={4}>合计</td><td className="border px-2 py-1 text-right">¥{shou.toLocaleString()}</td><td className="border px-2 py-1" /></tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* 支 */}
+                  <div>
+                    <p className="font-semibold mb-1">支（成本/费用）</p>
+                    <table className="w-full border-collapse">
+                      <thead><tr className="bg-muted/40 text-muted-foreground">
+                        <th className="border px-2 py-1 text-left">时间</th><th className="border px-2 py-1 text-left">摘要</th>
+                        <th className="border px-2 py-1 text-left">供应商</th><th className="border px-2 py-1 text-left">单位</th>
+                        <th className="border px-2 py-1 text-right">数量</th><th className="border px-2 py-1 text-right">单价</th>
+                        <th className="border px-2 py-1 text-right">金额(¥)</th><th className="border px-2 py-1 text-left">备注</th>
+                      </tr></thead>
+                      <tbody>
+                        {b.expenses.map((x, i) => (
+                          <tr key={i}>
+                            <td className="border px-2 py-1">{x.date || '—'}</td><td className="border px-2 py-1">{x.description || ''}</td>
+                            <td className="border px-2 py-1">{x.supplier || '—'}</td><td className="border px-2 py-1">{x.unit || ''}</td>
+                            <td className="border px-2 py-1 text-right">{x.quantity != null ? x.quantity : ''}</td>
+                            <td className="border px-2 py-1 text-right">{x.unit_price != null ? x.unit_price : ''}</td>
+                            <td className="border px-2 py-1 text-right">{(x.amount || 0).toLocaleString()}</td><td className="border px-2 py-1">{x.group_note || ''}</td>
+                          </tr>
+                        ))}
+                        {b.expenses.length === 0 && <tr><td className="border px-2 py-2 text-center text-muted-foreground" colSpan={8}>暂无支出</td></tr>}
+                        <tr className="font-semibold bg-muted/20"><td className="border px-2 py-1" colSpan={6}>合计</td><td className="border px-2 py-1 text-right">¥{zhi.toLocaleString()}</td><td className="border px-2 py-1" /></tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* 毛利 */}
+                  <div className="flex justify-end gap-8 border-t pt-2 text-sm">
+                    <span>毛利润 <b className={profit >= 0 ? 'text-green-700' : 'text-red-600'}>¥{profit.toLocaleString()}</b></span>
+                    <span>毛利率 <b className={profit >= 0 ? 'text-green-700' : 'text-red-600'}>{margin}%</b></span>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <Button size="sm" variant="outline" onClick={() => { const id = rows.find(r => r.order_no === b.header.order_no)?.id; if (id) exportSettlementInvoice(id) }}>
+                      <Download className="h-4 w-4 mr-1" />下载 Excel
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )
+          })()}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
