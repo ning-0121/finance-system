@@ -23,10 +23,14 @@ import Link from 'next/link'
 type Row = {
   id: string
   order_no: string
+  internalNo: string
   customer: string
   currency: string
+  rate: number
   revenue_orig: number
+  revenue_cny: number
   received_orig: number
+  received_cny: number
   received_at: string | null
   cost_cny: number
   payable_cny: number
@@ -108,10 +112,19 @@ export default function ActualGrossReportPage() {
         const approved = orders.filter(o => o.status === 'approved' || o.status === 'closed')
 
         const supabase = createClient()
-        const [{ data: costs }, { data: payables }] = await Promise.all([
+        const approvedIds = approved.map(o => o.id)
+        const [{ data: costs }, { data: payables }, syncedRes] = await Promise.all([
           supabase.from('cost_items').select('budget_order_id, amount, exchange_rate').not('budget_order_id', 'is', null),
           supabase.from('payable_records').select('budget_order_id, amount, currency').not('budget_order_id', 'is', null),
+          approvedIds.length > 0
+            ? supabase.from('synced_orders').select('budget_order_id, style_no').in('budget_order_id', approvedIds)
+            : Promise.resolve({ data: [] as Record<string, unknown>[] }),
         ])
+        // 内部订单号 = synced_orders.style_no（非 BO 财务单号、非 QM 号）
+        const internalMap = new Map<string, string>()
+        ;(syncedRes.data || []).forEach((s: Record<string, unknown>) => {
+          if (s.budget_order_id && s.style_no) internalMap.set(s.budget_order_id as string, String(s.style_no))
+        })
 
         const costByOrder = new Map<string, number>()
         costs?.forEach((r: { budget_order_id: string; amount: number; exchange_rate: number }) => {
@@ -139,10 +152,14 @@ export default function ActualGrossReportPage() {
           return {
             id: o.id,
             order_no: o.order_no,
+            internalNo: internalMap.get(o.id) || '',
             customer: o.customer?.company || '-',
             currency: o.currency || 'USD',
+            rate,
             revenue_orig: revOrig,
+            revenue_cny: Math.round(revOrig * rate * 100) / 100,
             received_orig: recOrig,
+            received_cny: Math.round(recCny * 100) / 100,
             received_at: o.ar_received_at || null,
             cost_cny: Math.round(costCny * 100) / 100,
             payable_cny: Math.round(payCny * 100) / 100,
@@ -165,17 +182,21 @@ export default function ActualGrossReportPage() {
   const filtered = useMemo(() => {
     if (!search.trim()) return rows
     const q = search.toLowerCase()
-    return rows.filter(r => r.order_no.toLowerCase().includes(q) || r.customer.toLowerCase().includes(q))
+    return rows.filter(r => r.order_no.toLowerCase().includes(q) || r.customer.toLowerCase().includes(q) || r.internalNo.toLowerCase().includes(q))
   }, [rows, search])
 
   const exportCsv = () => {
-    const headers = ['订单号', '客户', '币种', '合同销售额', '实际收款(原币)', '实际收款日', '费用归集(¥)', '应付登记(¥)', '实际毛利(¥)', '毛利率%']
+    const headers = ['内部订单号', '订单号', '客户', '币种', '汇率', '合同额(原币)', '合同额(¥)', '实际收款(原币)', '实际收款(¥)', '实际收款日', '费用归集(¥)', '应付登记(¥)', '实际毛利(¥)', '毛利率%']
     const lines = filtered.map(r => [
+      r.internalNo,
       r.order_no,
       r.customer,
       r.currency,
+      r.rate,
       r.revenue_orig,
+      r.revenue_cny,
       r.received_orig,
+      r.received_cny,
       r.received_at ? r.received_at.slice(0, 10) : '',
       r.cost_cny,
       r.payable_cny,
@@ -246,10 +267,15 @@ export default function ActualGrossReportPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>内部订单号</TableHead>
                   <TableHead>订单号</TableHead>
                   <TableHead>客户</TableHead>
-                  <TableHead className="text-right">合同销售额</TableHead>
-                  <TableHead className="text-right">实际收款</TableHead>
+                  <TableHead>币种</TableHead>
+                  <TableHead className="text-right">汇率</TableHead>
+                  <TableHead className="text-right">合同额(原币)</TableHead>
+                  <TableHead className="text-right">合同额(¥)</TableHead>
+                  <TableHead className="text-right">实际收款(原币)</TableHead>
+                  <TableHead className="text-right">实际收款(¥)</TableHead>
                   <TableHead>收款日</TableHead>
                   <TableHead className="text-right">费用归集(¥)</TableHead>
                   <TableHead className="text-right">应付登记(¥)</TableHead>
@@ -261,12 +287,17 @@ export default function ActualGrossReportPage() {
               <TableBody>
                 {filtered.map(r => (
                   <TableRow key={r.id}>
+                    <TableCell className="text-sm font-medium">{r.internalNo || '—'}</TableCell>
                     <TableCell>
                       <Link href={`/orders/${r.id}`} className="text-primary hover:underline text-sm">{r.order_no}</Link>
                     </TableCell>
                     <TableCell className="text-sm">{r.customer}</TableCell>
-                    <TableCell className="text-right text-sm">{r.currency} {r.revenue_orig.toLocaleString()}</TableCell>
-                    <TableCell className="text-right text-sm font-medium">{r.currency} {r.received_orig.toLocaleString()}</TableCell>
+                    <TableCell className="text-sm">{r.currency}</TableCell>
+                    <TableCell className="text-right text-xs text-muted-foreground">{r.currency === 'CNY' ? '—' : r.rate}</TableCell>
+                    <TableCell className="text-right text-sm">{r.currency === 'CNY' ? '—' : `${r.currency} ${r.revenue_orig.toLocaleString()}`}</TableCell>
+                    <TableCell className="text-right text-sm">¥{r.revenue_cny.toLocaleString()}</TableCell>
+                    <TableCell className="text-right text-sm">{r.currency === 'CNY' ? '—' : `${r.currency} ${r.received_orig.toLocaleString()}`}</TableCell>
+                    <TableCell className="text-right text-sm font-medium">¥{r.received_cny.toLocaleString()}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {r.received_at ? new Date(r.received_at).toLocaleDateString('zh-CN') : '—'}
                     </TableCell>
@@ -294,7 +325,7 @@ export default function ActualGrossReportPage() {
                 ))}
                 {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">暂无数据</TableCell>
+                    <TableCell colSpan={15} className="text-center py-12 text-muted-foreground">暂无数据</TableCell>
                   </TableRow>
                 )}
               </TableBody>
