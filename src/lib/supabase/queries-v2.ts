@@ -18,7 +18,7 @@ export async function getReceivablePayments(): Promise<ReceivablePayment[]> {
   try {
     const supabase = createClient()
     const { data, error } = await supabase
-      .from('receivable_payments').select('*').is('deleted_at', null)
+      .from('receivable_payments').select('*').is('voided_at', null)
       .order('received_at', { ascending: false })
     if (error || !data) return []
     return data as ReceivablePayment[]
@@ -29,7 +29,7 @@ export async function getReceivableAllocations(): Promise<ReceivablePaymentAlloc
   try {
     const supabase = createClient()
     const { data, error } = await supabase
-      .from('receivable_payment_allocations').select('*').order('created_at', { ascending: true })
+      .from('receivable_payment_allocations').select('*').is('voided_at', null).order('created_at', { ascending: true })
     if (error || !data) return []
     return data as ReceivablePaymentAllocation[]
   } catch { return [] }
@@ -58,63 +58,52 @@ export async function createReceivablePayment(p: {
       bank_account: p.bank_account?.trim() || null,
       payment_reference: p.payment_reference?.trim() || null,
       source_type: p.source_type || 'manual',
-      matched_status: 'unmatched',
       notes: p.notes?.trim() || null,
       created_by: userData?.user?.id || null,
+      updated_by: userData?.user?.id || null,
     }).select().single()
-    if (error) return { data: null, error: error.message }
+    if (error) {
+      if (/duplicate|unique/i.test(error.message)) return { data: null, error: '该回款（同客户/银行/日期/金额/流水号）已存在，请勿重复录入' }
+      return { data: null, error: error.message }
+    }
     return { data: data as ReceivablePayment, error: null }
   } catch (e) { return { data: null, error: e instanceof Error ? e.message : '未知错误' } }
 }
 
-export async function deleteReceivablePayment(id: string): Promise<{ error: string | null }> {
+// 作废整笔回款（RPC：连同分配一起 void + 回写 projection）
+export async function voidReceivablePayment(id: string, reason?: string): Promise<{ error: string | null }> {
   try {
     const supabase = createClient()
-    const { error } = await supabase.from('receivable_payments').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    const { data: userData } = await supabase.auth.getUser()
+    const { error } = await supabase.rpc('void_receivable_payment', { p_receipt_id: id, p_actor: userData?.user?.id || null, p_reason: reason || null })
     return { error: error?.message || null }
   } catch (e) { return { error: e instanceof Error ? e.message : '未知错误' } }
 }
 
-// 重算并写回某回款的匹配状态（unmatched / partially_matched / matched）
-async function refreshReceiptMatchStatus(receiptId: string) {
-  const supabase = createClient()
-  const [{ data: receipt }, { data: allocs }] = await Promise.all([
-    supabase.from('receivable_payments').select('amount_cny, matched_status').eq('id', receiptId).single(),
-    supabase.from('receivable_payment_allocations').select('amount_cny').eq('receipt_id', receiptId),
-  ])
-  if (!receipt) return
-  if ((receipt as { matched_status: string }).matched_status === 'disputed') return // 人工争议态不自动改
-  const total = Number((receipt as { amount_cny: number }).amount_cny) || 0
-  const allocated = (allocs || []).reduce((s, a) => s + (Number((a as { amount_cny: number }).amount_cny) || 0), 0)
-  const status = allocated <= 0.005 ? 'unmatched' : (allocated + 0.005 < total ? 'partially_matched' : 'matched')
-  await supabase.from('receivable_payments').update({ matched_status: status }).eq('id', receiptId)
-}
-
+// 匹配（RPC：事务内校验金额/订单/未作废 + 防超分配 + 自动状态 + 回写 projection）
 export async function allocateReceipt(a: {
   receipt_id: string; budget_order_id: string; amount_cny: number; amount_original?: number | null
 }): Promise<{ error: string | null }> {
   try {
     const supabase = createClient()
     const { data: userData } = await supabase.auth.getUser()
-    const { error } = await supabase.from('receivable_payment_allocations').insert({
-      receipt_id: a.receipt_id, budget_order_id: a.budget_order_id,
-      amount_cny: Math.round((Number(a.amount_cny) || 0) * 100) / 100,
-      amount_original: a.amount_original != null ? Number(a.amount_original) : null,
-      created_by: userData?.user?.id || null,
+    const { error } = await supabase.rpc('allocate_receivable_payment', {
+      p_receipt_id: a.receipt_id, p_budget_order_id: a.budget_order_id,
+      p_amount_cny: Math.round((Number(a.amount_cny) || 0) * 100) / 100,
+      p_amount_original: a.amount_original != null ? Number(a.amount_original) : null,
+      p_actor: userData?.user?.id || null,
     })
-    if (error) return { error: error.message }
-    await refreshReceiptMatchStatus(a.receipt_id)
-    return { error: null }
+    return { error: error?.message || null }
   } catch (e) { return { error: e instanceof Error ? e.message : '未知错误' } }
 }
 
-export async function unallocateReceipt(allocationId: string, receiptId: string): Promise<{ error: string | null }> {
+// 撤销匹配（RPC：void 分配 + 自动状态 + 回写 projection）
+export async function unallocateReceipt(allocationId: string, reason?: string): Promise<{ error: string | null }> {
   try {
     const supabase = createClient()
-    const { error } = await supabase.from('receivable_payment_allocations').delete().eq('id', allocationId)
-    if (error) return { error: error.message }
-    await refreshReceiptMatchStatus(receiptId)
-    return { error: null }
+    const { data: userData } = await supabase.auth.getUser()
+    const { error } = await supabase.rpc('unallocate_receivable_payment', { p_allocation_id: allocationId, p_actor: userData?.user?.id || null, p_reason: reason || null })
+    return { error: error?.message || null }
   } catch (e) { return { error: e instanceof Error ? e.message : '未知错误' } }
 }
 

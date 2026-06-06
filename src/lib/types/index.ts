@@ -299,13 +299,18 @@ export interface ReceivablePayment {
   source_type: 'manual' | 'bank_receipt' | 'wecom_file' | 'ocr'
   source_document_id: string | null
   matched_status: 'unmatched' | 'partially_matched' | 'matched' | 'disputed'
+  dispute_reason?: string | null
   notes: string | null
   created_by?: string | null
   created_at: string
-  deleted_at?: string | null
+  updated_at?: string
+  updated_by?: string | null
+  voided_at?: string | null
+  voided_by?: string | null
+  void_reason?: string | null
 }
 
-// 回款匹配分配：一笔回款分配到某订单的金额（多对多）
+// 回款匹配分配：一笔回款分配到某订单的金额（多对多；权威已收来源）
 export interface ReceivablePaymentAllocation {
   id: string
   receipt_id: string
@@ -314,6 +319,9 @@ export interface ReceivablePaymentAllocation {
   amount_original: number | null
   created_by?: string | null
   created_at: string
+  voided_at?: string | null
+  voided_by?: string | null
+  void_reason?: string | null
 }
 
 // 供应商付款流水（对账单负数行的来源；只挂供应商不挂订单）
