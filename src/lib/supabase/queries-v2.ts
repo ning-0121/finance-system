@@ -7,8 +7,66 @@ import type {
   SubDocument, SubDocumentType, SubDocItem,
   ActualInvoice, ShippingDocument, InventoryReturn,
   OrderSettlement, SubSettlement, OrderLevelCost,
-  PayableRecord, SupplierPayment,
+  PayableRecord, SupplierPayment, Supplier,
 } from '@/lib/types'
+
+// ============================================================
+// 供应商信息库（主数据）CRUD
+// ============================================================
+export async function getSuppliers(): Promise<Supplier[]> {
+  try {
+    const supabase = createClient()
+    const { data, error } = await supabase
+      .from('suppliers')
+      .select('*')
+      .is('deleted_at', null)
+      .order('name', { ascending: true })
+    if (error || !data) return []
+    return data as Supplier[]
+  } catch { return [] }
+}
+
+export async function upsertSupplier(s: Partial<Supplier> & { name: string }): Promise<{ data: Supplier | null; error: string | null }> {
+  try {
+    const supabase = createClient()
+    const payload = {
+      name: s.name.trim(),
+      account_no: s.account_no?.trim() || null,
+      account_name: s.account_name?.trim() || null,
+      bank_name: s.bank_name?.trim() || null,
+      contact: s.contact?.trim() || null,
+      phone: s.phone?.trim() || null,
+      attachment_url: s.attachment_url?.trim() || null,
+      notes: s.notes?.trim() || null,
+      updated_at: new Date().toISOString(),
+    }
+    if (s.id) {
+      const { data, error } = await supabase.from('suppliers').update(payload).eq('id', s.id).select().single()
+      return { data: (data as Supplier) ?? null, error: error?.message ?? null }
+    }
+    const { data: userData } = await supabase.auth.getUser()
+    const { data, error } = await supabase.from('suppliers')
+      .insert({ ...payload, created_by: userData?.user?.id || null })
+      .select().single()
+    if (error) {
+      if (/duplicate|unique/i.test(error.message)) return { data: null, error: `供应商「${payload.name}」已存在` }
+      return { data: null, error: error.message }
+    }
+    return { data: data as Supplier, error: null }
+  } catch (e) {
+    return { data: null, error: e instanceof Error ? e.message : '未知错误' }
+  }
+}
+
+export async function deleteSupplier(id: string): Promise<{ error: string | null }> {
+  try {
+    const supabase = createClient()
+    const { error } = await supabase.from('suppliers').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+    return { error: error?.message || null }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : '未知错误' }
+  }
+}
 
 // ============================================================
 // 预算子单据 CRUD

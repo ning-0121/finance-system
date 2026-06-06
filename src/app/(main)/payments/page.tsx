@@ -14,7 +14,9 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DollarSign, Clock, CheckCircle, AlertTriangle, Loader2, Search, CreditCard, Plus } from 'lucide-react'
 import { getBudgetOrders } from '@/lib/supabase/queries'
-import type { BudgetOrder } from '@/lib/types'
+import { getSuppliers } from '@/lib/supabase/queries-v2'
+import Link from 'next/link'
+import type { BudgetOrder, Supplier } from '@/lib/types'
 import { validatePayment, type ValidationWarning } from '@/lib/engines/validation-engine'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
@@ -40,17 +42,21 @@ export default function PaymentsPage() {
   const [processing, setProcessing] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [orders, setOrders] = useState<BudgetOrder[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [newSupplierId, setNewSupplierId] = useState('')
   const [newSupplier, setNewSupplier] = useState('')
   const [newDesc, setNewDesc] = useState('')
   const [newAmount, setNewAmount] = useState('')
   const [newOrderId, setNewOrderId] = useState('')
   const [newDueDate, setNewDueDate] = useState('')
+  const selectedSupplier = suppliers.find(s => s.id === newSupplierId) || null
 
   useEffect(() => {
     async function load() {
-      const [data, ordersData] = await Promise.all([getPayableRecords(), getBudgetOrders()])
+      const [data, ordersData, suppliersData] = await Promise.all([getPayableRecords(), getBudgetOrders(), getSuppliers()])
       setRecords(data)
       setOrders(ordersData)
+      setSuppliers(suppliersData)
       setLoading(false)
     }
     load()
@@ -82,6 +88,10 @@ export default function PaymentsPage() {
     setProcessing(true)
     try {
       const supabase = createClient()
+      // 银行收款信息快照（来自供应商信息库，避免手填出错）
+      const bankSnapshot = selectedSupplier
+        ? ['收款信息：', selectedSupplier.account_name && `户名 ${selectedSupplier.account_name}`, selectedSupplier.account_no && `账号 ${selectedSupplier.account_no}`, selectedSupplier.bank_name && `开户行 ${selectedSupplier.bank_name}`].filter(Boolean).join(' ')
+        : ''
       const { data, error } = await supabase.from('payable_records').insert({
         supplier_name: newSupplier,
         description: newDesc || newSupplier,
@@ -91,12 +101,13 @@ export default function PaymentsPage() {
         budget_order_id: newOrderId || null,
         order_no: orders.find(o => o.id === newOrderId)?.order_no || null,
         due_date: newDueDate || null,
+        notes: bankSnapshot || null,
       }).select().single()
       if (error) throw error
       setRecords([data as unknown as PayableRecord, ...records])
       toast.success('付款申请已创建')
       setShowCreate(false)
-      setNewSupplier(''); setNewDesc(''); setNewAmount(''); setNewOrderId(''); setNewDueDate('')
+      setNewSupplierId(''); setNewSupplier(''); setNewDesc(''); setNewAmount(''); setNewOrderId(''); setNewDueDate('')
     } catch (err) {
       toast.error(`创建失败: ${err instanceof Error ? err.message : '未知错误'}`)
     }
@@ -255,8 +266,29 @@ export default function PaymentsPage() {
           <DialogHeader><DialogTitle>新增付款申请</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>供应商名称 *</Label>
-              <Input placeholder="如：佛山永兴制衣厂" value={newSupplier} onChange={e => setNewSupplier(e.target.value)} />
+              <Label>供应商 *（从信息库选择，自动带出银行信息）</Label>
+              {suppliers.length === 0 ? (
+                <div className="text-xs text-amber-600 border border-amber-200 rounded-md p-2">
+                  供应商信息库为空。请先到 <Link href="/profiles/suppliers" className="text-primary underline">供应商信息库</Link> 建档（含账号/户名/开户行），再回来选择。
+                </div>
+              ) : (
+                <Select value={newSupplierId} onValueChange={v => { const id = v || ''; setNewSupplierId(id); setNewSupplier(suppliers.find(s => s.id === id)?.name || '') }}>
+                  <SelectTrigger><SelectValue placeholder="选择供应商" /></SelectTrigger>
+                  <SelectContent>
+                    {suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              )}
+              {selectedSupplier && (
+                <div className="text-xs bg-muted/40 rounded-md p-2 space-y-0.5 mt-1">
+                  <div className="flex justify-between"><span className="text-muted-foreground">户名</span><span className="font-medium">{selectedSupplier.account_name || '—'}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">账号</span><span className="font-mono">{selectedSupplier.account_no || '—'}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">开户行</span><span>{selectedSupplier.bank_name || '—'}</span></div>
+                  {(!selectedSupplier.account_no || !selectedSupplier.bank_name) && (
+                    <p className="text-amber-600 pt-1">该供应商银行信息不全，建议到信息库补全。</p>
+                  )}
+                </div>
+              )}
             </div>
             <div className="space-y-2">
               <Label>费用说明</Label>

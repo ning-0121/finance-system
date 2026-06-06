@@ -266,6 +266,23 @@ export interface SubDocItem {
   amount: number
 }
 
+// 供应商主数据（信息库）：录入付款/费用时选择，自动带出银行信息
+export interface Supplier {
+  id: string
+  name: string
+  account_no: string | null
+  account_name: string | null
+  bank_name: string | null
+  contact: string | null
+  phone: string | null
+  attachment_url: string | null
+  notes: string | null
+  created_by?: string | null
+  created_at: string
+  updated_at: string
+  deleted_at?: string | null
+}
+
 // 供应商付款流水（对账单负数行的来源；只挂供应商不挂订单）
 export interface SupplierPayment {
   id: string
