@@ -20,6 +20,7 @@ import { DollarSign, AlertTriangle, Search, Loader2, CheckCircle2, Pencil, Downl
 import { createClient } from '@/lib/supabase/client'
 import { getBudgetOrders, updateBudgetOrderReceivable, writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
 import { getReceivablePayments, getReceivableAllocations, createReceivablePayment, allocateReceipt, unallocateReceipt, voidReceivablePayment } from '@/lib/supabase/queries-v2'
+import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import Link from 'next/link'
 import type { BudgetOrder, ReceivablePayment, ReceivablePaymentAllocation } from '@/lib/types'
 import { Button } from '@/components/ui/button'
@@ -145,6 +146,14 @@ function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, a
 const r2 = (n: number) => Math.round(n * 100) / 100
 
 export default function ReceivablesPage() {
+  // ── 权限边界（试运行：UI 层；后续接 role-based RLS）──
+  const { user } = useCurrentUser()
+  const role = user?.role || ''
+  const canRegister = ['admin', 'finance_manager', 'finance_staff'].includes(role) // 财务员可登记回款/收款/匹配
+  const canMatch = canRegister
+  const canManage = ['admin', 'finance_manager'].includes(role)                    // 财务经理可撤销/作废/核销/修正
+  const canDispute = role === 'admin'                                              // 财务负责人/老板处理争议
+
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [receivables, setReceivables] = useState<ReceivableRow[]>([])
@@ -430,9 +439,11 @@ export default function ReceivablesPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input placeholder="搜索客户 / 内部订单号 / 客户PO..." className="pl-9 h-9" value={search} onChange={e => setSearch(e.target.value)} />
             </div>
-            <div className="flex items-center gap-2">
-              <Button size="sm" className="flex-1 h-8" onClick={() => setRegOpen(true)}><Plus className="h-4 w-4 mr-1" />登记回款</Button>
-            </div>
+            {canRegister && (
+              <div className="flex items-center gap-2">
+                <Button size="sm" className="flex-1 h-8" onClick={() => setRegOpen(true)}><Plus className="h-4 w-4 mr-1" />登记回款</Button>
+              </div>
+            )}
             <button
               onClick={() => setShowUnmatched(true)}
               className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-sm border ${showUnmatched ? 'border-primary bg-primary/10' : unmatchedReceipts.length > 0 ? 'border-amber-300 bg-amber-50 text-amber-700' : 'border-border text-muted-foreground'}`}>
@@ -473,7 +484,7 @@ export default function ReceivablesPage() {
             <div className="flex-1 overflow-y-auto p-4 md:p-5 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-semibold inline-flex items-center gap-2"><Inbox className="h-4 w-4 text-amber-600" />未匹配回款 ({unmatchedReceipts.length})</h3>
-                <Button size="sm" onClick={() => setRegOpen(true)}><Plus className="h-4 w-4 mr-1" />登记回款</Button>
+                {canRegister && <Button size="sm" onClick={() => setRegOpen(true)}><Plus className="h-4 w-4 mr-1" />登记回款</Button>}
               </div>
               <p className="text-xs text-muted-foreground">下列回款还有未分配到订单的余额。点「匹配」分配到订单（支持部分匹配、一笔配多单）；点「作废」撤销整笔回款。</p>
               <Card>
@@ -503,8 +514,9 @@ export default function ReceivablesPage() {
                             <TableCell className="text-xs text-muted-foreground">{r.payment_reference || '—'}</TableCell>
                             <TableCell className="text-xs text-muted-foreground">{r.source_type}</TableCell>
                             <TableCell className="text-right whitespace-nowrap">
-                              <Button variant="outline" size="sm" className="h-7 text-xs mr-1" onClick={() => openMatch(r)}><Link2 className="h-3 w-3 mr-1" />匹配</Button>
-                              <Button variant="ghost" size="sm" className="h-7 text-xs text-red-500" onClick={() => handleVoidReceipt(r)}><Trash2 className="h-3 w-3" /></Button>
+                              {canMatch && <Button variant="outline" size="sm" className="h-7 text-xs mr-1" onClick={() => openMatch(r)}><Link2 className="h-3 w-3 mr-1" />匹配</Button>}
+                              {(canManage || canDispute) && <Button variant="ghost" size="sm" className="h-7 text-xs text-red-500" onClick={() => handleVoidReceipt(r)}><Trash2 className="h-3 w-3" /></Button>}
+                              {!canMatch && !canManage && <span className="text-xs text-muted-foreground">只读</span>}
                             </TableCell>
                           </TableRow>
                         )
@@ -594,8 +606,8 @@ export default function ReceivablesPage() {
                                   <TableCell className="text-sm">{r.customerPO || '—'}</TableCell>
                                   <TableCell className="text-right text-sm">
                                     {r.amount.toLocaleString()}
-                                    <button className="ml-1 text-muted-foreground hover:text-primary opacity-50 hover:opacity-100" title="修正订单金额"
-                                      onClick={() => { setCorrectDialog(r); setCorrectAmount(String(r.amount)); setCorrectReason('') }}><Pencil className="h-3 w-3 inline" /></button>
+                                    {canManage && <button className="ml-1 text-muted-foreground hover:text-primary opacity-50 hover:opacity-100" title="修正订单金额"
+                                      onClick={() => { setCorrectDialog(r); setCorrectAmount(String(r.amount)); setCorrectReason('') }}><Pencil className="h-3 w-3 inline" /></button>}
                                   </TableCell>
                                   <TableCell className="text-sm">{r.currency}</TableCell>
                                   <TableCell className="text-right text-xs text-muted-foreground">{r.currency === 'CNY' ? '—' : r.rate}</TableCell>
@@ -609,10 +621,12 @@ export default function ReceivablesPage() {
                                   <TableCell><Badge variant={STATUS[r.status].variant}>{STATUS[r.status].label}</Badge></TableCell>
                                   <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate" title={r.notes}>{r.notes ? r.notes.replace(/\n/g, ' ') : '—'}</TableCell>
                                   <TableCell className="text-right whitespace-nowrap">
-                                    {r.status === 'partial' && (
+                                    {canManage && r.status === 'partial' && (
                                       <Button variant="outline" size="sm" className="h-7 text-xs border-amber-300 text-amber-700 mr-1" onClick={() => { setWriteOffDialog(r); setWriteOffReason('') }}><CheckCircle2 className="h-3 w-3 mr-1" />核销</Button>
                                     )}
-                                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => openReceipt(r)}>登记收款</Button>
+                                    {canRegister
+                                      ? <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => openReceipt(r)}>登记收款</Button>
+                                      : <span className="text-xs text-muted-foreground">只读</span>}
                                   </TableCell>
                                 </TableRow>
                                 {open && (
@@ -635,7 +649,7 @@ export default function ReceivablesPage() {
                                                   <td>{rc?.payment_reference || '—'}</td>
                                                   <td className="text-right text-green-700">¥{(Number(a.amount_cny) || 0).toLocaleString()}</td>
                                                   <td className="pl-3 text-muted-foreground">{rc ? `${rc.currency} ${rc.amount_original.toLocaleString()}` : '—'}</td>
-                                                  <td className="text-right"><button className="text-red-500 hover:underline" onClick={() => handleUnallocate(a.id)}>撤销匹配</button></td>
+                                                  <td className="text-right">{canManage ? <button className="text-red-500 hover:underline" onClick={() => handleUnallocate(a.id)}>撤销匹配</button> : <span className="text-muted-foreground">—</span>}</td>
                                                 </tr>
                                               )
                                             })}
@@ -689,8 +703,8 @@ export default function ReceivablesPage() {
                                     <TableCell className="text-xs text-muted-foreground">{rc.source_type}</TableCell>
                                     <TableCell><Badge variant={ms === 'matched' ? 'default' : ms === 'unmatched' ? 'destructive' : 'secondary'}>{msLabel}</Badge></TableCell>
                                     <TableCell className="text-right whitespace-nowrap">
-                                      {ms !== 'matched' && <Button variant="outline" size="sm" className="h-7 text-xs mr-1" onClick={() => openMatch(rc)}><Link2 className="h-3 w-3 mr-1" />匹配</Button>}
-                                      <Button variant="ghost" size="sm" className="h-7 text-xs text-red-500" onClick={() => handleVoidReceipt(rc)}><Trash2 className="h-3 w-3" /></Button>
+                                      {canMatch && ms !== 'matched' && ms !== 'disputed' && <Button variant="outline" size="sm" className="h-7 text-xs mr-1" onClick={() => openMatch(rc)}><Link2 className="h-3 w-3 mr-1" />匹配</Button>}
+                                      {((canManage && ms !== 'disputed') || canDispute) && <Button variant="ghost" size="sm" className="h-7 text-xs text-red-500" onClick={() => handleVoidReceipt(rc)}><Trash2 className="h-3 w-3" /></Button>}
                                     </TableCell>
                                   </TableRow>
                                 )
