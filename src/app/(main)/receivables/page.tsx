@@ -1,20 +1,23 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+// ============================================================
+// 应收账款 · 客户维度工作台（左客户列表 + 右多标签明细）
+// 第一维度=客户（催款 / 风险），右侧每个客户一个标签，零再请求。
+// 数据：budget_orders（已审批/已关闭）的 total_revenue / ar_received_*；
+//      内部订单号来自 synced_orders.style_no（按相关订单号精准查询，不拉全表）。
+// 金额口径：未收/逾期均按人民币(¥)汇总，同时保留原币字段。
+// ============================================================
+
+import { useState, useEffect, useMemo } from 'react'
 import { Header } from '@/components/layout/Header'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import {
-  DollarSign, AlertTriangle, Clock, Search, TrendingDown, Loader2, CheckCircle2, Pencil,
-} from 'lucide-react'
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
-} from 'recharts'
+import { DollarSign, AlertTriangle, Search, Loader2, CheckCircle2, Pencil, Download, X } from 'lucide-react'
+import { createClient } from '@/lib/supabase/client'
 import { getBudgetOrders, updateBudgetOrderReceivable, writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
 import Link from 'next/link'
 import type { BudgetOrder } from '@/lib/types'
@@ -26,98 +29,128 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'sonner'
 
+type ARStatus = 'unpaid' | 'partial' | 'paid' | 'overdue' | 'abnormal'
 type ReceivableRow = {
   id: string
   customer: string
   country: string
-  orderNo: string
+  orderNo: string       // 财务单号 BO-
+  internalNo: string    // 内部订单号 style_no
+  customerPO: string    // 客户PO
   currency: string
-  amount: number
-  paid: number
-  balance: number
+  rate: number
+  amount: number        // 合同额（原币）
+  amountCny: number
+  paid: number          // 已收（原币）
+  paidCny: number
+  balance: number       // 未收（原币）
+  balanceCny: number
   orderDate: string
-  dueDate: string
-  status: 'paid' | 'partial' | 'unpaid' | 'overdue'
-  agingDays: number
+  dueDate: string       // 应收日期
   receivedAt: string | null
   bank: string | null
+  status: ARStatus
+  agingDays: number
+  notes: string
 }
 
-const agingBuckets = [
-  { name: '0-30天', range: [0, 30], color: '#22c55e' },
-  { name: '31-60天', range: [31, 60], color: '#f59e0b' },
-  { name: '61-90天', range: [61, 90], color: '#ef4444' },
-  { name: '90天+', range: [91, Infinity], color: '#991b1b' },
-]
+type CustomerAR = {
+  customer: string
+  country: string
+  contractCny: number
+  receivedCny: number
+  unpaidCny: number
+  overdueCny: number
+  overdueCount: number
+  lastReceiptDate: string | null
+  recoveryRate: number
+  avgAgingDays: number
+  risk: '低' | '中' | '高'
+  rows: ReceivableRow[]
+}
 
-function buildReceivables(orders: BudgetOrder[]): ReceivableRow[] {
+const STATUS = {
+  paid:     { label: '已收',  variant: 'default' as const },
+  partial:  { label: '部分收', variant: 'secondary' as const },
+  unpaid:   { label: '未收',  variant: 'outline' as const },
+  overdue:  { label: '逾期',  variant: 'destructive' as const },
+  abnormal: { label: '异常',  variant: 'destructive' as const },
+}
+const RISK_COLOR: Record<CustomerAR['risk'], string> = { 低: 'bg-green-100 text-green-700', 中: 'bg-amber-100 text-amber-700', 高: 'bg-red-100 text-red-700' }
+
+function parseField(notes: string | null | undefined, label: RegExp): string {
+  if (!notes) return ''
+  const m = notes.match(label)
+  return m ? m[1].trim() : ''
+}
+
+function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>): ReceivableRow[] {
   const now = new Date()
   return orders
-    .filter(o => {
-      if (o.status !== 'approved' && o.status !== 'closed') return false
-      if (!o.total_revenue || o.total_revenue <= 0) return false
-      return true
-    })
+    .filter(o => (o.status === 'approved' || o.status === 'closed') && o.total_revenue && o.total_revenue > 0)
     .map(o => {
       const deliveryDate = o.delivery_date ? new Date(o.delivery_date) : new Date(o.order_date)
-      const dueDate = new Date(deliveryDate)
-      dueDate.setDate(dueDate.getDate() + 30)
-
+      const dueDate = new Date(deliveryDate); dueDate.setDate(dueDate.getDate() + 30)
       const isPastDue = now > dueDate
-      const agingDays = isPastDue
-        ? Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24))
-        : 0
+      const agingDays = isPastDue ? Math.floor((now.getTime() - dueDate.getTime()) / 86400000) : 0
 
+      const amount = Number(o.total_revenue) || 0
+      const rate = o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 1)
       const explicit = o.ar_received_amount != null && !Number.isNaN(Number(o.ar_received_amount))
-      const paid = explicit
-        ? Math.min(Math.max(0, Number(o.ar_received_amount)), o.total_revenue)
-        : (o.status === 'closed' ? o.total_revenue : 0)
-      const balance = o.total_revenue - paid
+      const rawPaid = explicit ? Number(o.ar_received_amount) : (o.status === 'closed' ? amount : 0)
+      const paid = Math.max(0, rawPaid)
+      const balance = amount - paid
 
-      let status: ReceivableRow['status'] = 'unpaid'
-      if (paid >= o.total_revenue) status = 'paid'
-      else if (paid > 0) status = 'partial'
+      let status: ARStatus
+      if (amount <= 0 || paid - amount > 0.01) status = 'abnormal'   // 金额异常 / 多收
+      else if (amount - paid <= 0.01) status = 'paid'
       else if (isPastDue) status = 'overdue'
+      else if (paid > 0.01) status = 'partial'
+      else status = 'unpaid'
+
+      const internalNo = syncMap.get(o.id) || parseField(o.notes, /报价单号[:：]\s*([^\n]+)/) || ''
+      const customerPO = parseField(o.notes, /PO\s*号[:：]\s*([^\n]+)/i) || parseField(o.notes, /PO[:：]\s*([^\n]+)/i) || ''
 
       return {
         id: o.id,
-        customer: o.customer?.company || '-',
+        customer: o.customer?.company || '未指定客户',
         country: o.customer?.country || '',
         orderNo: o.order_no,
-        currency: o.currency,
-        amount: o.total_revenue,
-        paid,
-        balance,
+        internalNo, customerPO,
+        currency: o.currency, rate,
+        amount, amountCny: Math.round(amount * rate * 100) / 100,
+        paid, paidCny: Math.round(paid * rate * 100) / 100,
+        balance, balanceCny: Math.round(balance * rate * 100) / 100,
         orderDate: o.order_date,
         dueDate: dueDate.toISOString().substring(0, 10),
-        status,
-        agingDays,
         receivedAt: o.ar_received_at || null,
         bank: o.ar_received_bank || null,
+        status, agingDays,
+        notes: o.notes || '',
       }
     })
 }
 
+const r2 = (n: number) => Math.round(n * 100) / 100
+
 export default function ReceivablesPage() {
   const [search, setSearch] = useState('')
-  const [tab, setTab] = useState('all')
   const [loading, setLoading] = useState(true)
   const [receivables, setReceivables] = useState<ReceivableRow[]>([])
   const [draftCount, setDraftCount] = useState(0)
+  const [openTabs, setOpenTabs] = useState<string[]>([])
+  const [activeTab, setActiveTab] = useState<string | null>(null)
 
-  // ── 登记收款 Dialog ─────────────────────────────────────────
   const [receiptDialog, setReceiptDialog] = useState<ReceivableRow | null>(null)
   const [receiptAmount, setReceiptAmount] = useState('')
   const [receiptDate, setReceiptDate] = useState('')
   const [receiptBank, setReceiptBank] = useState('')
   const [receiptSaving, setReceiptSaving] = useState(false)
 
-  // ── 核销余额 Dialog ─────────────────────────────────────────
   const [writeOffDialog, setWriteOffDialog] = useState<ReceivableRow | null>(null)
   const [writeOffReason, setWriteOffReason] = useState('')
   const [writeOffSaving, setWriteOffSaving] = useState(false)
 
-  // ── 修正订单金额 Dialog ──────────────────────────────────────
   const [correctDialog, setCorrectDialog] = useState<ReceivableRow | null>(null)
   const [correctAmount, setCorrectAmount] = useState('')
   const [correctReason, setCorrectReason] = useState('')
@@ -126,491 +159,359 @@ export default function ReceivablesPage() {
   async function reload() {
     const orders = await getBudgetOrders()
     setDraftCount(orders.filter(o => o.status === 'draft' || o.status === 'pending_review').length)
-    setReceivables(buildReceivables(orders))
+    const arOrders = orders.filter(o => (o.status === 'approved' || o.status === 'closed') && o.total_revenue && o.total_revenue > 0)
+    // 内部订单号：仅按相关订单精准查询 synced_orders（不拉全表）
+    const boIds = arOrders.map(o => o.id)
+    const syncMap = new Map<string, string>()
+    if (boIds.length > 0) {
+      const { data: synced } = await createClient().from('synced_orders').select('budget_order_id, style_no').in('budget_order_id', boIds)
+      ;(synced || []).forEach((s: Record<string, unknown>) => {
+        if (s.budget_order_id && s.style_no) syncMap.set(s.budget_order_id as string, String(s.style_no))
+      })
+    }
+    setReceivables(buildReceivables(orders, syncMap))
   }
 
   useEffect(() => {
-    async function load() {
-      try { await reload() } catch { /* empty */ }
-      setLoading(false)
-    }
+    async function load() { try { await reload() } catch { /* */ } setLoading(false) }
     load()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── 登记收款 ────────────────────────────────────────────────
+  // 客户聚合
+  const customers = useMemo<CustomerAR[]>(() => {
+    const map = new Map<string, CustomerAR>()
+    for (const r of receivables) {
+      let c = map.get(r.customer)
+      if (!c) { c = { customer: r.customer, country: r.country, contractCny: 0, receivedCny: 0, unpaidCny: 0, overdueCny: 0, overdueCount: 0, lastReceiptDate: null, recoveryRate: 0, avgAgingDays: 0, risk: '低', rows: [] }; map.set(r.customer, c) }
+      c.rows.push(r)
+      c.contractCny += r.amountCny
+      c.receivedCny += r.paidCny
+      if (r.balanceCny > 0.01) c.unpaidCny += r.balanceCny
+      if (r.status === 'overdue') { c.overdueCny += r.balanceCny; c.overdueCount += 1 }
+      if (r.receivedAt && (!c.lastReceiptDate || r.receivedAt > c.lastReceiptDate)) c.lastReceiptDate = r.receivedAt
+    }
+    return Array.from(map.values()).map(c => {
+      const unpaidRows = c.rows.filter(r => r.balanceCny > 0.01)
+      const avgAging = unpaidRows.length ? Math.round(unpaidRows.reduce((s, r) => s + r.agingDays, 0) / unpaidRows.length) : 0
+      const maxAging = Math.max(0, ...c.rows.filter(r => r.status === 'overdue').map(r => r.agingDays))
+      const risk: CustomerAR['risk'] = c.overdueCny > 0.01
+        ? ((maxAging > 90 || (c.unpaidCny > 0 && c.overdueCny / c.unpaidCny > 0.5)) ? '高' : '中')
+        : '低'
+      return {
+        ...c,
+        contractCny: r2(c.contractCny), receivedCny: r2(c.receivedCny), unpaidCny: r2(c.unpaidCny), overdueCny: r2(c.overdueCny),
+        recoveryRate: c.contractCny > 0 ? Math.round((c.receivedCny / c.contractCny) * 1000) / 10 : 0,
+        avgAgingDays: avgAging, risk,
+      }
+    }).sort((a, b) => b.unpaidCny - a.unpaidCny)
+  }, [receivables])
+
+  const customerMap = useMemo(() => { const m = new Map<string, CustomerAR>(); customers.forEach(c => m.set(c.customer, c)); return m }, [customers])
+
+  // 搜索：客户名 / 内部订单号 / 客户PO
+  const filteredCustomers = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return customers
+    return customers.filter(c =>
+      c.customer.toLowerCase().includes(q) ||
+      c.rows.some(r => r.internalNo.toLowerCase().includes(q) || r.customerPO.toLowerCase().includes(q) || r.orderNo.toLowerCase().includes(q)),
+    )
+  }, [customers, search])
+
+  const openCustomer = (name: string) => { setOpenTabs(p => p.includes(name) ? p : [...p, name]); setActiveTab(name) }
+  const closeTab = (name: string) => setOpenTabs(p => { const next = p.filter(t => t !== name); setActiveTab(cur => cur === name ? (next[next.length - 1] || null) : cur); return next })
+
+  // KPI（全局）
+  const totalUnpaid = customers.reduce((s, c) => s + c.unpaidCny, 0)
+  const totalOverdue = customers.reduce((s, c) => s + c.overdueCny, 0)
+  const totalContract = customers.reduce((s, c) => s + c.contractCny, 0)
+  const totalReceived = customers.reduce((s, c) => s + c.receivedCny, 0)
+
+  const bankOptions = Array.from(new Set(receivables.map(r => r.bank).filter((b): b is string => !!b && b.trim() !== ''))).sort()
+
   async function saveReceipt() {
     if (!receiptDialog) return
     const amt = Number(receiptAmount)
-    if (receiptAmount === '' || Number.isNaN(amt) || amt < 0) {
-      toast.error('请输入有效的收款金额')
-      return
-    }
+    if (receiptAmount === '' || Number.isNaN(amt) || amt < 0) { toast.error('请输入有效的收款金额'); return }
     setReceiptSaving(true)
     const at = receiptDate ? new Date(receiptDate + 'T12:00:00').toISOString() : null
-    const { error } = await updateBudgetOrderReceivable(receiptDialog.id, {
-      ar_received_amount: amt,
-      ar_received_at: at,
-      ar_received_bank: receiptBank.trim() || null,
-    })
+    const { error } = await updateBudgetOrderReceivable(receiptDialog.id, { ar_received_amount: amt, ar_received_at: at, ar_received_bank: receiptBank.trim() || null })
     setReceiptSaving(false)
-    // 银行列缺失时返回部分成功提示（仍已保存金额/日期）：用 warning 不当作失败
-    if (error) {
-      if (error.includes('收款银行')) toast.warning(error)
-      else { toast.error(error); return }
-    } else {
-      toast.success('收款信息已保存')
-    }
-    // 回款保存 → GL 受控灰度：入队生成「银行/应收」增量草稿凭证（非阻塞；
-    // 失败进异常中心，不影响收款保存，可后续重试/复核过账）
-    fetch('/api/gl/queue', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ businessEvent: 'receipt_saved', sourceType: 'receipt', sourceId: receiptDialog.id }),
-    }).catch(err => console.error('[GL] 收款入队失败:', err))
-    setReceiptDialog(null)
-    setReceiptAmount('')
-    setReceiptDate('')
-    setReceiptBank('')
-    try { await reload() } catch { /* empty */ }
+    if (error) { if (error.includes('收款银行')) toast.warning(error); else { toast.error(error); return } } else { toast.success('收款信息已保存') }
+    fetch('/api/gl/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ businessEvent: 'receipt_saved', sourceType: 'receipt', sourceId: receiptDialog.id }) }).catch(err => console.error('[GL] 收款入队失败:', err))
+    setReceiptDialog(null); setReceiptAmount(''); setReceiptDate(''); setReceiptBank('')
+    try { await reload() } catch { /* */ }
   }
 
-  // ── 核销余额 ────────────────────────────────────────────────
   async function saveWriteOff() {
     if (!writeOffDialog) return
     if (!writeOffReason.trim()) { toast.error('请填写核销原因'); return }
     setWriteOffSaving(true)
-    const { error } = await writeOffReceivable(
-      writeOffDialog.id,
-      writeOffDialog.amount,
-      writeOffReason.trim()
-    )
+    const { error } = await writeOffReceivable(writeOffDialog.id, writeOffDialog.amount, writeOffReason.trim())
     setWriteOffSaving(false)
     if (error) { toast.error(error); return }
     toast.success(`余额 ${writeOffDialog.currency} ${writeOffDialog.balance.toLocaleString()} 已核销`)
-    setWriteOffDialog(null)
-    setWriteOffReason('')
-    try { await reload() } catch { /* empty */ }
+    setWriteOffDialog(null); setWriteOffReason('')
+    try { await reload() } catch { /* */ }
   }
 
-  // ── 修正订单金额 ─────────────────────────────────────────────
   async function saveCorrectRevenue() {
     if (!correctDialog) return
     const amt = Number(correctAmount)
-    if (!correctAmount || Number.isNaN(amt) || amt <= 0) {
-      toast.error('请输入有效的修正金额')
-      return
-    }
+    if (!correctAmount || Number.isNaN(amt) || amt <= 0) { toast.error('请输入有效的修正金额'); return }
     if (!correctReason.trim()) { toast.error('请填写修正原因'); return }
     setCorrectSaving(true)
     const { error } = await correctOrderRevenue(correctDialog.id, amt, correctReason.trim())
     setCorrectSaving(false)
     if (error) { toast.error(error); return }
     toast.success(`订单金额已修正为 ${correctDialog.currency} ${amt.toLocaleString()}`)
-    setCorrectDialog(null)
-    setCorrectAmount('')
-    setCorrectReason('')
-    try { await reload() } catch { /* empty */ }
+    setCorrectDialog(null); setCorrectAmount(''); setCorrectReason('')
+    try { await reload() } catch { /* */ }
   }
 
-  // ── 统计 ─────────────────────────────────────────────────────
-  const unpaid = receivables.filter(r => r.status !== 'paid')
-  const overdue = receivables.filter(r => r.status === 'overdue')
-  const totalBalance = unpaid.reduce((s, r) => s + r.balance, 0)
-  const overdueBalance = overdue.reduce((s, r) => s + r.balance, 0)
-
-  const agingData = agingBuckets.map(bucket => {
-    const items = unpaid.filter(r => r.agingDays >= bucket.range[0] && r.agingDays <= bucket.range[1])
-    return { name: bucket.name, amount: items.reduce((s, r) => s + r.balance, 0), color: bucket.color, count: items.length }
-  })
-
-  const filtered = receivables.filter(r => {
-    const matchTab = tab === 'all' || r.status === tab
-    const matchSearch = !search
-      || r.customer.toLowerCase().includes(search.toLowerCase())
-      || r.orderNo.toLowerCase().includes(search.toLowerCase())
-    return matchTab && matchSearch
-  })
-
-  // 历史收款银行（去重）— 供登记弹窗下拉建议
-  const bankOptions = Array.from(new Set(
-    receivables.map(r => r.bank).filter((b): b is string => !!b && b.trim() !== '')
-  )).sort()
-
-  const statusConfig = {
-    paid:    { label: '已收',  variant: 'default' as const },
-    partial: { label: '部分收', variant: 'secondary' as const },
-    unpaid:  { label: '未收',  variant: 'outline' as const },
-    overdue: { label: '逾期',  variant: 'destructive' as const },
+  const exportCustomer = (c: CustomerAR) => {
+    const headers = ['内部订单号', '客户PO', '合同额原币', '币种', '汇率', '合同额¥', '已收原币', '已收¥', '未收¥', '应收日期', '实际收款日', '收款银行', '状态', '备注']
+    const lines = c.rows.map(r => [
+      r.internalNo, r.customerPO, r.amount, r.currency, r.rate, r.amountCny, r.paid, r.paidCny, r.balanceCny,
+      r.dueDate, r.receivedAt ? r.receivedAt.slice(0, 10) : '', (r.bank || '').replace(/,/g, ' '), STATUS[r.status].label, (r.notes || '').replace(/[\n,]/g, ' '),
+    ].join(','))
+    const csv = [headers.join(','), ...lines].join('\n')
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = `应收明细_${c.customer}_${new Date().toISOString().slice(0, 10)}.csv`; a.click(); URL.revokeObjectURL(url)
+    toast.success('已导出该客户应收明细')
   }
 
-  if (loading) return (
-    <div className="flex items-center justify-center h-full">
-      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-    </div>
-  )
+  if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
+
+  const openReceipt = (r: ReceivableRow) => { setReceiptDialog(r); setReceiptAmount(String(r.paid)); setReceiptDate(r.receivedAt ? r.receivedAt.slice(0, 10) : new Date().toISOString().slice(0, 10)); setReceiptBank(r.bank || '') }
 
   return (
     <div className="flex flex-col h-full">
-      <Header title="应收账款管理" subtitle="基于已审批订单自动生成 · 账龄追踪 · 回款监控" />
+      <Header title="应收账款管理" subtitle="客户维度 · 左选客户右多标签同时打开对比 · 未收/逾期按人民币口径" />
 
-      <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
-        {/* KPI */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card>
-            <CardContent className="p-4 flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div>
-              <div><p className="text-xs text-muted-foreground">应收总额</p><p className="text-xl font-bold">¥{totalBalance.toLocaleString()}</p></div>
-            </CardContent>
-          </Card>
-          <Card className={overdueBalance > 0 ? 'border-red-200' : ''}>
-            <CardContent className="p-4 flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-red-50"><AlertTriangle className="h-4 w-4 text-red-600" /></div>
-              <div><p className="text-xs text-muted-foreground">逾期金额</p><p className="text-xl font-bold text-red-600">¥{overdueBalance.toLocaleString()}</p></div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4 flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-amber-50"><Clock className="h-4 w-4 text-amber-600" /></div>
-              <div><p className="text-xs text-muted-foreground">逾期笔数</p><p className="text-xl font-bold">{overdue.length}</p></div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4 flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-green-50"><TrendingDown className="h-4 w-4 text-green-600" /></div>
-              <div>
-                <p className="text-xs text-muted-foreground">已收回比率</p>
-                <p className="text-xl font-bold">
-                  {receivables.length > 0
-                    ? Math.round(receivables.filter(r => r.status === 'paid').length / receivables.length * 100)
-                    : 0}%
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+      {/* KPI */}
+      <div className="px-4 md:px-6 pt-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div><div><p className="text-xs text-muted-foreground">未收总额(¥)</p><p className="text-xl font-bold">¥{totalUnpaid.toLocaleString()}</p></div></CardContent></Card>
+        <Card className={totalOverdue > 0 ? 'border-red-200' : ''}><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-red-50"><AlertTriangle className="h-4 w-4 text-red-600" /></div><div><p className="text-xs text-muted-foreground">逾期金额(¥)</p><p className="text-xl font-bold text-red-600">¥{r2(totalOverdue).toLocaleString()}</p></div></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">客户数</p><p className="text-xl font-bold">{customers.length}</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">整体回款率</p><p className="text-xl font-bold">{totalContract > 0 ? Math.round(totalReceived / totalContract * 100) : 0}%</p></CardContent></Card>
+      </div>
 
-        {/* 引导提示 */}
-        {receivables.length === 0 && draftCount > 0 && (
-          <Card className="border-amber-200 bg-amber-50/50">
-            <CardContent className="p-4 flex items-center gap-3">
-              <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-amber-800">当前有 {draftCount} 个订单待审批</p>
-                <p className="text-xs text-amber-600 mt-0.5">订单审批通过后，应收账款会自动生成。请先到「订单成本核算」页面提交审批。</p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+      {draftCount > 0 && receivables.length === 0 && (
+        <div className="px-4 md:px-6 pt-3"><Card className="border-amber-200 bg-amber-50/50"><CardContent className="p-3 text-sm text-amber-700">当前有 {draftCount} 个订单待审批，审批通过后应收自动生成。</CardContent></Card></div>
+      )}
 
-        {/* Aging Chart */}
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-base">账龄分布</CardTitle></CardHeader>
-          <CardContent>
-            {unpaid.length > 0 ? (
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={agingData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                  <YAxis tickFormatter={v => `¥${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
-                  <Tooltip formatter={(value) => [`¥${Number(value).toLocaleString()}`, '金额']} />
-                  <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
-                    {agingData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-center text-muted-foreground py-8">暂无未收款项</p>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Table */}
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <Tabs value={tab} onValueChange={setTab}>
-            <TabsList>
-              <TabsTrigger value="all">全部 ({receivables.length})</TabsTrigger>
-              <TabsTrigger value="overdue" className={overdue.length > 0 ? 'text-red-600' : ''}>
-                逾期 ({overdue.length})
-              </TabsTrigger>
-              <TabsTrigger value="unpaid">未收 ({receivables.filter(r => r.status === 'unpaid').length})</TabsTrigger>
-              <TabsTrigger value="paid">已收 ({receivables.filter(r => r.status === 'paid').length})</TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <div className="relative max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input placeholder="搜索客户/订单号..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+      {/* 左右分栏 */}
+      <div className="flex-1 flex overflow-hidden mt-3 border-t min-h-0">
+        {/* 左：客户列表 */}
+        <div className="w-80 shrink-0 border-r flex flex-col bg-muted/10">
+          <div className="p-3 border-b">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input placeholder="搜索客户 / 内部订单号 / 客户PO..." className="pl-9 h-9" value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-2">共 {filteredCustomers.length} 个客户</p>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {filteredCustomers.map(c => {
+              const isActive = activeTab === c.customer
+              return (
+                <button key={c.customer} onClick={() => openCustomer(c.customer)}
+                  className={`w-full text-left px-3 py-2.5 border-b border-border/60 hover:bg-muted/50 transition ${isActive ? 'bg-primary/10 border-l-2 border-l-primary' : openTabs.includes(c.customer) ? 'bg-muted/30' : ''}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-sm truncate">{c.customer}</span>
+                    <Badge className={`text-[10px] shrink-0 ${RISK_COLOR[c.risk]}`}>{c.risk}险</Badge>
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-[11px] text-muted-foreground">未收</span>
+                    <span className={`text-sm font-semibold ${c.unpaidCny > 0.01 ? 'text-red-600' : 'text-green-600'}`}>¥{c.unpaidCny.toLocaleString()}</span>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground mt-0.5">
+                    合同¥{(c.contractCny / 1000).toFixed(0)}k · 已收¥{(c.receivedCny / 1000).toFixed(0)}k
+                    {c.overdueCny > 0.01 && <span className="text-red-500"> · 逾期¥{c.overdueCny.toLocaleString()}({c.overdueCount}单)</span>}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground mt-0.5">最近回款 {c.lastReceiptDate ? new Date(c.lastReceiptDate).toLocaleDateString('zh-CN') : '—'}</div>
+                </button>
+              )
+            })}
+            {filteredCustomers.length === 0 && <div className="text-center py-12 text-muted-foreground text-sm">无匹配客户</div>}
           </div>
         </div>
 
-        <Card>
-          <CardContent className="p-0 overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>客户</TableHead>
-                  <TableHead>关联订单</TableHead>
-                  <TableHead className="text-right">订单金额</TableHead>
-                  <TableHead className="text-right">已收</TableHead>
-                  <TableHead className="text-right">余额</TableHead>
-                  <TableHead>到期日</TableHead>
-                  <TableHead>账龄</TableHead>
-                  <TableHead>实际收款日</TableHead>
-                  <TableHead>收款银行</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead className="text-right w-[160px]">操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filtered.map(r => {
-                  const sc = statusConfig[r.status]
+        {/* 右：多标签明细 */}
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {openTabs.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
+              <DollarSign className="h-10 w-10 opacity-30 mb-3" />
+              <p className="text-sm">从左侧点击客户查看应收明细</p>
+              <p className="text-xs mt-1">可点击多个，像浏览器标签一样同时打开对比</p>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-1 border-b px-2 py-1.5 overflow-x-auto bg-muted/20">
+                {openTabs.map(name => (
+                  <div key={name} onClick={() => setActiveTab(name)}
+                    className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-md text-sm cursor-pointer whitespace-nowrap shrink-0 ${activeTab === name ? 'bg-background border shadow-sm font-medium' : 'hover:bg-background/60 text-muted-foreground'}`}>
+                    <span className="truncate max-w-[140px]">{name}</span>
+                    <span onClick={(e) => { e.stopPropagation(); closeTab(name) }} className="rounded p-0.5 hover:bg-muted"><X className="h-3 w-3" /></span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex-1 overflow-y-auto min-w-0">
+                {openTabs.map(name => {
+                  const c = customerMap.get(name)
+                  if (!c) return null
                   return (
-                    <TableRow key={r.id} className={r.status === 'overdue' ? 'bg-red-50/50' : ''}>
-                      <TableCell>
-                        <div>
-                          <p className="text-sm font-medium">{r.customer}</p>
-                          <p className="text-xs text-muted-foreground">{r.country}</p>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Link href={`/orders/${r.id}`} className="text-primary text-sm hover:underline">
-                          {r.orderNo}
-                        </Link>
-                      </TableCell>
-                      {/* 订单金额 — 点击铅笔图标可修正 */}
-                      <TableCell className="text-right">
-                        <span className="text-sm">{r.currency} {r.amount.toLocaleString()}</span>
-                        <button
-                          className="ml-1.5 text-muted-foreground hover:text-primary opacity-50 hover:opacity-100 transition-opacity"
-                          title="修正订单金额"
-                          onClick={() => {
-                            setCorrectDialog(r)
-                            setCorrectAmount(String(r.amount))
-                            setCorrectReason('')
-                          }}
-                        >
-                          <Pencil className="h-3 w-3 inline" />
-                        </button>
-                      </TableCell>
-                      <TableCell className="text-right text-green-600 text-sm">
-                        {r.currency} {r.paid.toLocaleString()}
-                      </TableCell>
-                      <TableCell className={`text-right font-semibold text-sm ${r.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        {r.currency} {r.balance.toLocaleString()}
-                      </TableCell>
-                      <TableCell className="text-sm">{r.dueDate}</TableCell>
-                      <TableCell>
-                        {r.agingDays > 0 ? (
-                          <span className={`text-sm font-medium ${r.agingDays > 60 ? 'text-red-700' : r.agingDays > 30 ? 'text-amber-700' : 'text-green-700'}`}>
-                            {r.agingDays}天
-                          </span>
-                        ) : '-'}
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {r.receivedAt ? new Date(r.receivedAt).toLocaleDateString('zh-CN') : '—'}
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground max-w-[140px] truncate" title={r.bank || ''}>
-                        {r.bank || '—'}
-                      </TableCell>
-                      <TableCell><Badge variant={sc.variant}>{sc.label}</Badge></TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          {/* 核销余额 — 只对部分收款显示 */}
-                          {r.status === 'partial' && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs border-amber-300 text-amber-700 hover:bg-amber-50"
-                              onClick={() => {
-                                setWriteOffDialog(r)
-                                setWriteOffReason('')
-                              }}
-                            >
-                              <CheckCircle2 className="h-3 w-3 mr-1" />
-                              核销余额
-                            </Button>
-                          )}
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-xs"
-                            onClick={() => {
-                              setReceiptDialog(r)
-                              setReceiptAmount(String(r.paid))
-                              setReceiptDate(
-                                r.receivedAt
-                                  ? r.receivedAt.slice(0, 10)
-                                  : new Date().toISOString().slice(0, 10)
-                              )
-                              setReceiptBank(r.bank || '')
-                            }}
-                          >
-                            登记收款
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
+                    <div key={name} className={activeTab === name ? 'p-4 md:p-5 space-y-4' : 'hidden'}>
+                      {/* 客户应收三角 + 指标 */}
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <h3 className="text-base font-semibold">{c.customer} <Badge className={`ml-1 text-[10px] ${RISK_COLOR[c.risk]}`}>{c.risk}风险</Badge></h3>
+                        <Button variant="outline" size="sm" onClick={() => exportCustomer(c)}><Download className="h-4 w-4 mr-1" />导出应收明细</Button>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+                        <Card><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">合同额合计</p><p className="text-lg font-bold">¥{c.contractCny.toLocaleString()}</p></CardContent></Card>
+                        <Card><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">已收合计</p><p className="text-lg font-bold text-green-600">¥{c.receivedCny.toLocaleString()}</p></CardContent></Card>
+                        <Card className={c.unpaidCny > 0.01 ? 'border-red-200' : ''}><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">未收合计</p><p className={`text-lg font-bold ${c.unpaidCny > 0.01 ? 'text-red-600' : 'text-green-600'}`}>¥{c.unpaidCny.toLocaleString()}</p></CardContent></Card>
+                        <Card className={c.overdueCny > 0.01 ? 'border-red-200 bg-red-50/40' : ''}><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">逾期金额</p><p className={`text-lg font-bold ${c.overdueCny > 0.01 ? 'text-red-600' : ''}`}>¥{c.overdueCny.toLocaleString()}</p></CardContent></Card>
+                        <Card><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">回款率</p><p className="text-lg font-bold">{c.recoveryRate}%</p></CardContent></Card>
+                        <Card><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">平均账期</p><p className="text-lg font-bold">{c.avgAgingDays}天</p></CardContent></Card>
+                      </div>
+
+                      {/* 明细表 */}
+                      <Card>
+                        <CardContent className="p-0 overflow-x-auto">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>内部订单号</TableHead>
+                                <TableHead>客户PO</TableHead>
+                                <TableHead className="text-right">合同额(原币)</TableHead>
+                                <TableHead>币种</TableHead>
+                                <TableHead className="text-right">汇率</TableHead>
+                                <TableHead className="text-right">合同额¥</TableHead>
+                                <TableHead className="text-right">已收(原币)</TableHead>
+                                <TableHead className="text-right">已收¥</TableHead>
+                                <TableHead className="text-right">未收¥</TableHead>
+                                <TableHead>应收日期</TableHead>
+                                <TableHead>实际收款日</TableHead>
+                                <TableHead>收款银行</TableHead>
+                                <TableHead>状态</TableHead>
+                                <TableHead>备注</TableHead>
+                                <TableHead className="text-right w-[150px]">操作</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {c.rows.map(r => (
+                                <TableRow key={r.id} className={r.status === 'overdue' || r.status === 'abnormal' ? 'bg-red-50/40' : ''}>
+                                  <TableCell className="text-sm font-medium">
+                                    <Link href={`/orders/${r.id}`} className="text-primary hover:underline">{r.internalNo || r.orderNo}</Link>
+                                  </TableCell>
+                                  <TableCell className="text-sm">{r.customerPO || '—'}</TableCell>
+                                  <TableCell className="text-right text-sm">
+                                    {r.amount.toLocaleString()}
+                                    <button className="ml-1 text-muted-foreground hover:text-primary opacity-50 hover:opacity-100" title="修正订单金额"
+                                      onClick={() => { setCorrectDialog(r); setCorrectAmount(String(r.amount)); setCorrectReason('') }}><Pencil className="h-3 w-3 inline" /></button>
+                                  </TableCell>
+                                  <TableCell className="text-sm">{r.currency}</TableCell>
+                                  <TableCell className="text-right text-xs text-muted-foreground">{r.currency === 'CNY' ? '—' : r.rate}</TableCell>
+                                  <TableCell className="text-right text-sm">¥{r.amountCny.toLocaleString()}</TableCell>
+                                  <TableCell className="text-right text-sm text-green-600">{r.paid.toLocaleString()}</TableCell>
+                                  <TableCell className="text-right text-sm text-green-600">¥{r.paidCny.toLocaleString()}</TableCell>
+                                  <TableCell className={`text-right text-sm font-semibold ${r.balanceCny > 0.01 ? 'text-red-600' : 'text-green-600'}`}>¥{r.balanceCny.toLocaleString()}</TableCell>
+                                  <TableCell className="text-xs">{r.dueDate}{r.agingDays > 0 && <span className="text-red-500"> · 逾{r.agingDays}天</span>}</TableCell>
+                                  <TableCell className="text-xs text-muted-foreground">{r.receivedAt ? new Date(r.receivedAt).toLocaleDateString('zh-CN') : '—'}</TableCell>
+                                  <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate" title={r.bank || ''}>{r.bank || '—'}</TableCell>
+                                  <TableCell><Badge variant={STATUS[r.status].variant}>{STATUS[r.status].label}</Badge></TableCell>
+                                  <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate" title={r.notes}>{r.notes ? r.notes.replace(/\n/g, ' ') : '—'}</TableCell>
+                                  <TableCell className="text-right whitespace-nowrap">
+                                    {r.status === 'partial' && (
+                                      <Button variant="outline" size="sm" className="h-7 text-xs border-amber-300 text-amber-700 mr-1" onClick={() => { setWriteOffDialog(r); setWriteOffReason('') }}><CheckCircle2 className="h-3 w-3 mr-1" />核销</Button>
+                                    )}
+                                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => openReceipt(r)}>登记收款</Button>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                              <TableRow className="bg-muted/50 font-semibold border-t-2">
+                                <TableCell colSpan={5} className="text-right">合计</TableCell>
+                                <TableCell className="text-right">¥{c.contractCny.toLocaleString()}</TableCell>
+                                <TableCell />
+                                <TableCell className="text-right text-green-700">¥{c.receivedCny.toLocaleString()}</TableCell>
+                                <TableCell className="text-right text-red-600">¥{c.unpaidCny.toLocaleString()}</TableCell>
+                                <TableCell colSpan={6} />
+                              </TableRow>
+                            </TableBody>
+                          </Table>
+                        </CardContent>
+                      </Card>
+                    </div>
                   )
                 })}
-                {filtered.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={11} className="text-center py-12 text-muted-foreground">
-                      {receivables.length === 0
-                        ? '暂无已审批订单，应收数据将在订单审批通过后自动生成'
-                        : '没有匹配的记录'}
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* ── 登记收款 Dialog ─────────────────────────────────── */}
+      {/* ── 登记收款 Dialog ── */}
       <Dialog open={!!receiptDialog} onOpenChange={(open) => { if (!open) setReceiptDialog(null) }}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>登记实际收款</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>登记实际收款</DialogTitle></DialogHeader>
           {receiptDialog && (
             <div className="space-y-4 py-2">
-              <p className="text-sm text-muted-foreground">
-                订单 <span className="font-medium text-foreground">{receiptDialog.orderNo}</span>
-                {' · '}应收 {receiptDialog.currency} {receiptDialog.amount.toLocaleString()}
-              </p>
-              <div className="space-y-2">
-                <Label>实际收款金额（{receiptDialog.currency}）</Label>
-                <Input
-                  type="number" step="0.01" min={0}
-                  value={receiptAmount}
-                  onChange={e => setReceiptAmount(e.target.value)}
-                  placeholder={`最大 ${receiptDialog.amount}`}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>实际收款日期</Label>
-                <Input type="date" value={receiptDate} onChange={e => setReceiptDate(e.target.value)} />
-              </div>
+              <p className="text-sm text-muted-foreground">订单 <span className="font-medium text-foreground">{receiptDialog.internalNo || receiptDialog.orderNo}</span>{' · '}应收 {receiptDialog.currency} {receiptDialog.amount.toLocaleString()}</p>
+              <div className="space-y-2"><Label>实际收款金额（{receiptDialog.currency}）</Label><Input type="number" step="0.01" min={0} value={receiptAmount} onChange={e => setReceiptAmount(e.target.value)} placeholder={`最大 ${receiptDialog.amount}`} /></div>
+              <div className="space-y-2"><Label>实际收款日期</Label><Input type="date" value={receiptDate} onChange={e => setReceiptDate(e.target.value)} /></div>
               <div className="space-y-2">
                 <Label>收款银行 / 账户</Label>
-                <Input
-                  list="ar-bank-options"
-                  placeholder="如：工行义乌分行 / 招行 6222... / PayPal"
-                  value={receiptBank}
-                  onChange={e => setReceiptBank(e.target.value)}
-                />
-                <datalist id="ar-bank-options">
-                  {bankOptions.map(b => <option key={b} value={b} />)}
-                </datalist>
-                <p className="text-[11px] text-muted-foreground">记录这笔钱打到了哪个银行账户，方便后续核对回款流向。可从下拉选历史银行，也可直接输入新的。</p>
+                <Input list="ar-bank-options" placeholder="如：工行义乌分行 / 招行 6222... / PayPal" value={receiptBank} onChange={e => setReceiptBank(e.target.value)} />
+                <datalist id="ar-bank-options">{bankOptions.map(b => <option key={b} value={b} />)}</datalist>
+                <p className="text-[11px] text-muted-foreground">记录这笔钱打到哪个账户，方便核对回款流向。</p>
               </div>
-              <p className="text-xs text-muted-foreground">
-                未手动登记时，「已关闭」订单仍按原逻辑视为全额已收。登记后以此金额与日期为准。
-              </p>
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setReceiptDialog(null)}>取消</Button>
-            <Button onClick={saveReceipt} disabled={receiptSaving}>
-              {receiptSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : '保存'}
-            </Button>
+            <Button onClick={saveReceipt} disabled={receiptSaving}>{receiptSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : '保存'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* ── 核销余额 Dialog ─────────────────────────────────── */}
+      {/* ── 核销余额 Dialog ── */}
       <Dialog open={!!writeOffDialog} onOpenChange={(open) => { if (!open) setWriteOffDialog(null) }}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>核销应收余额</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>核销应收余额</DialogTitle></DialogHeader>
           {writeOffDialog && (
             <div className="space-y-4 py-2">
               <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 space-y-1">
-                <p className="text-sm font-medium text-amber-800">
-                  订单 {writeOffDialog.orderNo} · {writeOffDialog.customer}
-                </p>
-                <div className="flex justify-between text-sm text-amber-700">
-                  <span>已收：{writeOffDialog.currency} {writeOffDialog.paid.toLocaleString()}</span>
-                  <span>待核销余额：<strong>{writeOffDialog.currency} {writeOffDialog.balance.toLocaleString()}</strong></span>
-                </div>
+                <p className="text-sm font-medium text-amber-800">订单 {writeOffDialog.internalNo || writeOffDialog.orderNo} · {writeOffDialog.customer}</p>
+                <div className="flex justify-between text-sm text-amber-700"><span>已收：{writeOffDialog.currency} {writeOffDialog.paid.toLocaleString()}</span><span>待核销：<strong>{writeOffDialog.currency} {writeOffDialog.balance.toLocaleString()}</strong></span></div>
               </div>
-              <div className="space-y-2">
-                <Label>
-                  核销原因 <span className="text-red-500">*</span>
-                </Label>
-                <Textarea
-                  placeholder="例：客户尾款差额豁免 / 运费抵扣 / 汇率损益 / 双方协商平账..."
-                  value={writeOffReason}
-                  onChange={e => setWriteOffReason(e.target.value)}
-                  rows={3}
-                />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                核销后状态变为「已收」，原因将记录到订单备注中，操作不可撤销。
-              </p>
+              <div className="space-y-2"><Label>核销原因 <span className="text-red-500">*</span></Label><Textarea placeholder="例：尾款差额豁免 / 运费抵扣 / 汇率损益..." value={writeOffReason} onChange={e => setWriteOffReason(e.target.value)} rows={3} /></div>
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setWriteOffDialog(null)}>取消</Button>
-            <Button
-              onClick={saveWriteOff}
-              disabled={writeOffSaving || !writeOffReason.trim()}
-              className="bg-amber-600 hover:bg-amber-700 text-white"
-            >
-              {writeOffSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-1" />}
-              确认核销
-            </Button>
+            <Button onClick={saveWriteOff} disabled={writeOffSaving || !writeOffReason.trim()} className="bg-amber-600 hover:bg-amber-700 text-white">{writeOffSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-1" />}确认核销</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* ── 修正订单金额 Dialog ──────────────────────────────── */}
+      {/* ── 修正订单金额 Dialog ── */}
       <Dialog open={!!correctDialog} onOpenChange={(open) => { if (!open) setCorrectDialog(null) }}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>修正订单金额</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>修正订单金额</DialogTitle></DialogHeader>
           {correctDialog && (
             <div className="space-y-4 py-2">
-              <p className="text-sm text-muted-foreground">
-                订单 <span className="font-medium text-foreground">{correctDialog.orderNo}</span>
-                {' · '}当前金额：{correctDialog.currency} {correctDialog.amount.toLocaleString()}
-              </p>
-              <div className="space-y-2">
-                <Label>
-                  修正后金额（{correctDialog.currency}）<span className="text-red-500">*</span>
-                </Label>
-                <Input
-                  type="number" step="0.01" min={0.01}
-                  value={correctAmount}
-                  onChange={e => setCorrectAmount(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>
-                  修正原因 <span className="text-red-500">*</span>
-                </Label>
-                <Textarea
-                  placeholder="例：原始录入有误 / 汇率调整 / 合同变更..."
-                  value={correctReason}
-                  onChange={e => setCorrectReason(e.target.value)}
-                  rows={2}
-                />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                修改将直接更新订单金额，修正记录写入订单备注。请确认已知会相关同事。
-              </p>
+              <p className="text-sm text-muted-foreground">订单 <span className="font-medium text-foreground">{correctDialog.internalNo || correctDialog.orderNo}</span>{' · '}当前：{correctDialog.currency} {correctDialog.amount.toLocaleString()}</p>
+              <div className="space-y-2"><Label>修正后金额（{correctDialog.currency}）<span className="text-red-500">*</span></Label><Input type="number" step="0.01" min={0.01} value={correctAmount} onChange={e => setCorrectAmount(e.target.value)} /></div>
+              <div className="space-y-2"><Label>修正原因 <span className="text-red-500">*</span></Label><Textarea placeholder="例：原始录入有误 / 汇率调整 / 合同变更..." value={correctReason} onChange={e => setCorrectReason(e.target.value)} rows={2} /></div>
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setCorrectDialog(null)}>取消</Button>
-            <Button
-              onClick={saveCorrectRevenue}
-              disabled={correctSaving || !correctAmount || !correctReason.trim()}
-            >
-              {correctSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : '确认修正'}
-            </Button>
+            <Button onClick={saveCorrectRevenue} disabled={correctSaving || !correctAmount || !correctReason.trim()}>{correctSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : '确认修正'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
