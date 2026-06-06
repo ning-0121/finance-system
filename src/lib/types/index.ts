@@ -283,6 +283,39 @@ export interface Supplier {
   deleted_at?: string | null
 }
 
+// 回款流水（应收财务化）：一笔银行/客户回款
+export interface ReceivablePayment {
+  id: string
+  customer_id: string | null
+  customer_name: string | null
+  budget_order_id: string | null
+  amount_original: number
+  currency: string
+  exchange_rate: number
+  amount_cny: number
+  received_at: string | null
+  bank_account: string | null
+  payment_reference: string | null
+  source_type: 'manual' | 'bank_receipt' | 'wecom_file' | 'ocr'
+  source_document_id: string | null
+  matched_status: 'unmatched' | 'partially_matched' | 'matched' | 'disputed'
+  notes: string | null
+  created_by?: string | null
+  created_at: string
+  deleted_at?: string | null
+}
+
+// 回款匹配分配：一笔回款分配到某订单的金额（多对多）
+export interface ReceivablePaymentAllocation {
+  id: string
+  receipt_id: string
+  budget_order_id: string
+  amount_cny: number
+  amount_original: number | null
+  created_by?: string | null
+  created_at: string
+}
+
 // 供应商付款流水（对账单负数行的来源；只挂供应商不挂订单）
 export interface SupplierPayment {
   id: string
