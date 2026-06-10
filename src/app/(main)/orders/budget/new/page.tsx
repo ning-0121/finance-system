@@ -72,7 +72,7 @@ export default function NewBudgetOrderPage() {
     newSubDoc('factory_processing'),
   ])
 
-  // 订单级费用（运费/佣金/报关费等）
+  // 订单级费用（运费/加工费/报关费等）
   const [estimatedFreight, setEstimatedFreight] = useState(0)
   const [estimatedCommission, setEstimatedCommission] = useState(0)
   const [estimatedCustomsFee, setEstimatedCustomsFee] = useState(0)
@@ -210,7 +210,7 @@ export default function NewBudgetOrderPage() {
     const costBreakdown = {
       fabric: fabricRes.total,
       accessory: accessoryRes.total,
-      processing: estimatedCommission,   // 编辑页：processing → 佣金字段
+      processing: estimatedCommission,   // 加工费：→ _cost_breakdown.processing，并落库 estimated_commission 列（与编辑页同口径）
       forwarder: estimatedFreight,       // 编辑页：forwarder → 运费字段
       container: estimatedCustomsFee,    // 编辑页：container → 报关费字段
       logistics: otherCosts,             // 编辑页：logistics+extras → 其他费用字段
@@ -452,7 +452,7 @@ export default function NewBudgetOrderPage() {
                   <CardContent className="space-y-4">
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                       <div className="space-y-2"><Label>运费 ({currency})</Label><Input type="number" value={estimatedFreight || ''} onChange={e => setEstimatedFreight(Number(e.target.value) || 0)} /></div>
-                      <div className="space-y-2"><Label>佣金 ({currency})</Label><Input type="number" value={estimatedCommission || ''} onChange={e => setEstimatedCommission(Number(e.target.value) || 0)} /></div>
+                      <div className="space-y-2"><Label>加工费 ({currency})</Label><Input type="number" value={estimatedCommission || ''} onChange={e => setEstimatedCommission(Number(e.target.value) || 0)} /></div>
                       <div className="space-y-2"><Label>报关费 ({currency})</Label><Input type="number" value={estimatedCustomsFee || ''} onChange={e => setEstimatedCustomsFee(Number(e.target.value) || 0)} /></div>
                       <div className="space-y-2"><Label>预算税费 ({currency})</Label><Input type="number" value={estimatedTax || ''} onChange={e => setEstimatedTax(Number(e.target.value) || 0)} /></div>
                       <div className="space-y-2"><Label>其他费用 ({currency})</Label><Input type="number" value={otherCosts || ''} onChange={e => setOtherCosts(Number(e.target.value) || 0)} /></div>
@@ -483,7 +483,7 @@ export default function NewBudgetOrderPage() {
                 <Separator />
                 <div className="flex justify-between"><span className="text-muted-foreground">子单据小计</span><span className="font-medium">{currency} {subDocTotal.toLocaleString()}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">运费</span><span>{currency} {estimatedFreight.toLocaleString()}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">佣金</span><span>{currency} {estimatedCommission.toLocaleString()}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">加工费</span><span>{currency} {estimatedCommission.toLocaleString()}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">报关费</span><span>{currency} {estimatedCustomsFee.toLocaleString()}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">税费</span><span>{currency} {estimatedTax.toLocaleString()}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">其他</span><span>{currency} {otherCosts.toLocaleString()}</span></div>
