@@ -90,7 +90,7 @@ export default function CostsPage() {
   const [entryMode, setEntryMode] = useState<'single' | 'shared'>('single')
   const [sharedOrderIds, setSharedOrderIds] = useState<string[]>([])
   // 多行明细（同一供应商多个品目）
-  const [extraLines, setExtraLines] = useState<{ desc: string; qty: string; unit: string; unitPrice: string; amount: string }[]>([])
+  const [extraLines, setExtraLines] = useState<{ desc: string; color: string; roll: string; qty: string; unit: string; unitPrice: string; amount: string }[]>([])
   // 防错校验
   const [validationWarnings, setValidationWarnings] = useState<ValidationWarning[]>([])
   const [showConfirm, setShowConfirm] = useState(false)
@@ -430,6 +430,8 @@ export default function CostsPage() {
             quantity: (line.qty || line.unitPrice) ? lineQty : null,
             unit: (line.qty || line.unitPrice) ? (line.unit || null) : null,
             unit_price: (line.qty || line.unitPrice) ? lineUnitPrice : null,
+            color: line.color?.trim() || null,
+            roll_count: line.roll ? Number(line.roll) : null,
             created_by: createdBy,
           }).select('*, budget_orders(order_no)').single()
 
@@ -914,6 +916,16 @@ export default function CostsPage() {
                 <div className="space-y-1">
                   <Input placeholder="品名（如：天地盖、腰卡、挂衣袋）" value={line.desc} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], desc: e.target.value }; setExtraLines(n) }} className="text-sm h-8" />
                 </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">颜色</Label>
+                    <Input placeholder="如：黑色" value={line.color} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], color: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">匹数</Label>
+                    <Input type="number" step="0.01" placeholder="0" value={line.roll} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], roll: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
+                  </div>
+                </div>
                 <div className="grid grid-cols-4 gap-2">
                   <div className="space-y-1">
                     <Label className="text-[10px]">数量</Label>
@@ -945,7 +957,7 @@ export default function CostsPage() {
               </div>
             ))}
             {!(entryMode === 'shared' && !editItem) && (
-            <Button type="button" size="sm" variant="outline" className="w-full text-xs h-7" onClick={() => setExtraLines([...extraLines, { desc: '', qty: '', unit: '件', unitPrice: '', amount: '' }])}>
+            <Button type="button" size="sm" variant="outline" className="w-full text-xs h-7" onClick={() => setExtraLines([...extraLines, { desc: '', color: '', roll: '', qty: '', unit: '件', unitPrice: '', amount: '' }])}>
               + 添加更多品目（同一供应商）
             </Button>
             )}
