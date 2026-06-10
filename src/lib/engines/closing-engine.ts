@@ -16,7 +16,7 @@ import {
   type CheckResult,
 } from '@/lib/accounting/reconciliation'
 import { getTrialBalance, getProfitAndLoss } from '@/lib/accounting/gl-posting'
-import { calculateAllFxGains } from '@/lib/accounting/fx-gains'
+import { calculateAllFxGains, createFxRevaluationDraft } from '@/lib/accounting/fx-gains'
 
 // --------------- Types ---------------
 
@@ -265,6 +265,18 @@ export async function executeClosingCheck(
       const defaultRate = 7.1
       const fxResults = await calculateAllFxGains(defaultRate)
       const totalGainLoss = fxResults.reduce((s, r) => s + r.fxGainLoss, 0)
+      // 接入受控灰度：生成「汇兑重估」草稿凭证（非阻塞、幂等、待人工复核过账）
+      let draftMsg = ''
+      if (fxResults.length > 0) {
+        try {
+          const d = await createFxRevaluationDraft(fxResults, periodCode)
+          draftMsg = d.created
+            ? `；已生成汇兑重估草稿 ${d.voucherNo ?? ''}（待 GL 复核过账）`
+            : `；未生成草稿：${d.reason ?? ''}`
+        } catch (e) {
+          draftMsg = `；草稿生成失败：${e instanceof Error ? e.message : '未知'}`
+        }
+      }
       result = {
         type: 'fx_revaluation',
         status: 'passed',
@@ -273,9 +285,9 @@ export async function executeClosingCheck(
           orderCount: fxResults.length,
           totalGainLoss: Math.round(totalGainLoss * 100) / 100,
           rate: defaultRate,
-          message: fxResults.length === 0
+          message: (fxResults.length === 0
             ? '无USD订单需要重估'
-            : `${fxResults.length}笔USD订单重估, 净损益¥${totalGainLoss.toFixed(2)}`,
+            : `${fxResults.length}笔USD订单重估, 净损益¥${totalGainLoss.toFixed(2)}`) + draftMsg,
         },
       }
       break

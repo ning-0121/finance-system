@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DollarSign, Clock, CheckCircle, AlertTriangle, Loader2, Search, CreditCard, Plus } from 'lucide-react'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { getSuppliers } from '@/lib/supabase/queries-v2'
+import { uploadAttachment, openAttachment, attachmentName } from '@/lib/supabase/storage'
 import Link from 'next/link'
 import type { BudgetOrder, Supplier } from '@/lib/types'
 import { validatePayment, type ValidationWarning } from '@/lib/engines/validation-engine'
@@ -49,7 +50,19 @@ export default function PaymentsPage() {
   const [newAmount, setNewAmount] = useState('')
   const [newOrderId, setNewOrderId] = useState('')
   const [newDueDate, setNewDueDate] = useState('')
+  const [newAttachment, setNewAttachment] = useState('')
+  const [uploadingAtt, setUploadingAtt] = useState(false)
   const selectedSupplier = suppliers.find(s => s.id === newSupplierId) || null
+
+  const handleAttUpload = async (file: File | undefined) => {
+    if (!file) return
+    setUploadingAtt(true)
+    const { path, error } = await uploadAttachment(file, 'payments')
+    setUploadingAtt(false)
+    if (error) { toast.error(error); return }
+    setNewAttachment(path || '')
+    toast.success('附件已上传')
+  }
 
   useEffect(() => {
     async function load() {
@@ -102,12 +115,13 @@ export default function PaymentsPage() {
         order_no: orders.find(o => o.id === newOrderId)?.order_no || null,
         due_date: newDueDate || null,
         notes: bankSnapshot || null,
+        attachment_url: newAttachment || null,
       }).select().single()
       if (error) throw error
       setRecords([data as unknown as PayableRecord, ...records])
       toast.success('付款申请已创建')
       setShowCreate(false)
-      setNewSupplierId(''); setNewSupplier(''); setNewDesc(''); setNewAmount(''); setNewOrderId(''); setNewDueDate('')
+      setNewSupplierId(''); setNewSupplier(''); setNewDesc(''); setNewAmount(''); setNewOrderId(''); setNewDueDate(''); setNewAttachment('')
     } catch (err) {
       toast.error(`创建失败: ${err instanceof Error ? err.message : '未知错误'}`)
     }
@@ -316,6 +330,18 @@ export default function PaymentsPage() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>插入附件（发票/合同/银行回单等，可选）</Label>
+              {newAttachment ? (
+                <div className="flex items-center gap-2 text-sm">
+                  <button type="button" className="text-primary underline truncate max-w-[220px]" onClick={() => openAttachment(newAttachment)}>{attachmentName(newAttachment)}</button>
+                  <Button type="button" variant="ghost" size="sm" className="h-7 text-red-500" onClick={() => setNewAttachment('')}>移除</Button>
+                </div>
+              ) : (
+                <Input type="file" disabled={uploadingAtt} onChange={e => handleAttUpload(e.target.files?.[0])} className="text-xs" />
+              )}
+              {uploadingAtt && <p className="text-[11px] text-muted-foreground">上传中…</p>}
             </div>
           </div>
           <DialogFooter>

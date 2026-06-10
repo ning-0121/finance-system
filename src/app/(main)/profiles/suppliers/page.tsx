@@ -19,6 +19,7 @@ import { Search, Loader2, Plus, Pencil, Trash2, Building2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import { getSuppliers, upsertSupplier, deleteSupplier } from '@/lib/supabase/queries-v2'
+import { uploadAttachment, openAttachment, attachmentName } from '@/lib/supabase/storage'
 import { normalizeSupplierName } from '@/lib/utils'
 import type { Supplier } from '@/lib/types'
 
@@ -33,6 +34,17 @@ export default function SupplierProfilesPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState<Partial<Supplier>>(emptyForm())
   const [saving, setSaving] = useState(false)
+  const [uploadingAtt, setUploadingAtt] = useState(false)
+
+  const handleAttUpload = async (file: File | undefined) => {
+    if (!file) return
+    setUploadingAtt(true)
+    const { path, error } = await uploadAttachment(file, 'suppliers')
+    setUploadingAtt(false)
+    if (error) { toast.error(error); return }
+    setForm(f => ({ ...f, attachment_url: path }))
+    toast.success('附件已上传')
+  }
 
   async function reloadMasters() {
     setMasters(await getSuppliers())
@@ -247,7 +259,18 @@ export default function SupplierProfilesPage() {
               <div className="space-y-1.5"><Label>联系人</Label><Input value={form.contact || ''} onChange={e => setForm(f => ({ ...f, contact: e.target.value }))} /></div>
               <div className="space-y-1.5"><Label>电话</Label><Input value={form.phone || ''} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} /></div>
             </div>
-            <div className="space-y-1.5"><Label>附件（链接，可选）</Label><Input value={form.attachment_url || ''} onChange={e => setForm(f => ({ ...f, attachment_url: e.target.value }))} placeholder="粘贴营业执照/开户许可证等链接" /></div>
+            <div className="space-y-1.5">
+              <Label>附件（营业执照/开户许可证等）</Label>
+              {form.attachment_url ? (
+                <div className="flex items-center gap-2 text-sm">
+                  <button type="button" className="text-primary underline truncate max-w-[220px]" onClick={() => openAttachment(form.attachment_url)}>{attachmentName(form.attachment_url)}</button>
+                  <Button type="button" variant="ghost" size="sm" className="h-7 text-red-500" onClick={() => setForm(f => ({ ...f, attachment_url: null }))}>移除</Button>
+                </div>
+              ) : (
+                <Input type="file" disabled={uploadingAtt} onChange={e => handleAttUpload(e.target.files?.[0])} className="text-xs" />
+              )}
+              {uploadingAtt && <p className="text-[11px] text-muted-foreground">上传中…</p>}
+            </div>
             <div className="space-y-1.5"><Label>备注</Label><Textarea rows={2} value={form.notes || ''} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} /></div>
           </div>
           <DialogFooter>

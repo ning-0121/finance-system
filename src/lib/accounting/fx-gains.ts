@@ -67,87 +67,80 @@ export async function calculateAllFxGains(actualRate: number): Promise<FxGainRes
 }
 
 /**
- * 生成期末汇兑损益凭证（未实现汇兑损益 · 期末重估）
+ * 期末汇兑损益重估 → 生成「受控灰度草稿凭证」（不自动过账）。
  *
- * ⚠️ 审计修复 C4（latent / 当前未接入任何流程）：
- *   本函数计算的是「期末对未结汇的外币应收账款按期末汇率重估」产生的
- *   *未实现* 汇兑损益（voucher_type='closing'）。重估调整的对账户应为
- *   **应收账款 1122**（外币货币性资产随汇率变动而增减），而非银行存款——
- *   此时尚未结汇收款，银行余额不应变动。原实现错误地借/贷 100201 银行，
- *   会虚增/虚减银行现金且不冲销应收。现已改为 1122。
+ * 审计修复 C4 已接入受控灰度：
+ *   - 走原子 RPC create_journal_draft（header+lines 同事务，杜绝孤立凭证）；
+ *   - 仅生成 status='draft' + requires_review=true，进 GL 复核中心等人工过账，
+ *     过账时由 post_journal 累加 gl_balances（试算平衡可见）；
+ *   - 带完整 provenance（business_event='fx_revaluation' + 说明 + 汇率来源）；
+ *   - 幂等：同会计期间已有 fx_revaluation 草稿/已过账则跳过。
  *
- *   收益（期末汇率>入账汇率）: 借:应收账款1122  贷:汇兑收益5301
- *   损失（期末汇率<入账汇率）: 借:汇兑损失5601  贷:应收账款1122
- *
- *   注意：本系统的复式记账层（gl-posting.ts / 本文件）目前**未被任何
- *   生产流程调用**——应收页直接把收款写入 budget_orders 列，汇兑损益仅
- *   在期末结账检查 (closing-engine) 中用于*展示*，并不真正过账。若未来要
- *   启用真实过账，本函数还需：① 改走原子 RPC create_journal_atomic
- *   （现为 header/lines 两次独立 insert，存在孤立凭证风险）；② 同步更新
- *   gl_balances（否则试算平衡表看不到该凭证）。
+ * 重估的对账户是 **应收账款 1122**（外币货币性资产随汇率变动增减），不是银行——
+ * 此时尚未结汇收款，银行余额不应变动。
+ *   收益（期末汇率>入账汇率）: 借 应收账款1122 / 贷 汇兑收益5301
+ *   损失（期末汇率<入账汇率）: 借 汇兑损失5601 / 贷 应收账款1122
  */
-export async function postFxGainLossJournal(
+export async function createFxRevaluationDraft(
   gains: FxGainResult[],
-  periodCode: string
-): Promise<{ voucherNo: string; totalGain: number; totalLoss: number }> {
+  periodCode: string,
+  asOfDate?: string,
+): Promise<{ created: boolean; reason?: string; journalId?: string; voucherNo?: string; net: number }> {
   const supabase = createClient()
   const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-  const createdBy = profiles?.[0]?.id
+  const createdBy = profiles?.[0]?.id ?? null
 
   const totalGain = sumAmounts(gains.filter(g => g.isGain).map(g => g.fxGainLoss))
   const totalLoss = sumAmounts(gains.filter(g => !g.isGain).map(g => Math.abs(g.fxGainLoss)))
-  const netGainLoss = mulAmount(totalGain - totalLoss, 1)
+  const net = mulAmount(totalGain - totalLoss, 1)
+  if (Math.abs(net) < 0.01) return { created: false, reason: '净汇兑损益≈0，无需入账', net }
 
-  if (Math.abs(netGainLoss) < 0.01) {
-    return { voucherNo: '', totalGain: 0, totalLoss: 0 }
-  }
+  // 幂等：同期间已有汇兑重估草稿/已过账 → 跳过
+  const { data: existing } = await supabase
+    .from('journal_entries')
+    .select('id')
+    .eq('source_type', 'fx_revaluation')
+    .eq('period_code', periodCode)
+    .in('status', ['draft', 'posted'])
+    .limit(1)
+  if (existing && existing.length > 0) return { created: false, reason: '该期间汇兑重估草稿已存在', net }
 
-  const lines: { account_code: string; description: string; debit: number; credit: number }[] = []
-
-  if (netGainLoss > 0) {
-    // 净收益：期末外币应收按更高汇率重估 → 应收增值
-    lines.push({ account_code: '1122', description: '应收账款汇兑重估(收益)', debit: netGainLoss, credit: 0 })
-    lines.push({ account_code: '5301', description: '汇兑收益', debit: 0, credit: netGainLoss })
-  } else {
-    // 净损失：期末外币应收按更低汇率重估 → 应收减值
-    lines.push({ account_code: '5601', description: '汇兑损失', debit: Math.abs(netGainLoss), credit: 0 })
-    lines.push({ account_code: '1122', description: '应收账款汇兑重估(损失)', debit: 0, credit: Math.abs(netGainLoss) })
-  }
-
+  const lines = net > 0
+    ? [
+        { account_code: '1122', description: '应收账款汇兑重估(收益)', debit: net, credit: 0 },
+        { account_code: '5301', description: '汇兑收益', debit: 0, credit: net },
+      ]
+    : [
+        { account_code: '5601', description: '汇兑损失', debit: Math.abs(net), credit: 0 },
+        { account_code: '1122', description: '应收账款汇兑重估(损失)', debit: 0, credit: Math.abs(net) },
+      ]
   const totalDebit = sumAmounts(lines.map(l => l.debit))
   const totalCredit = sumAmounts(lines.map(l => l.credit))
+  const linesJson = lines.map((l, i) => ({
+    line_no: i + 1, account_code: l.account_code, description: l.description,
+    debit: Math.round(l.debit * 100) / 100, credit: Math.round(l.credit * 100) / 100,
+    currency: 'CNY', exchange_rate: 1, original_amount: null,
+    customer_id: null, supplier_name: null, order_id: null,
+  }))
+  const actualRate = gains[0]?.actualRate
 
-  const { data: journal, error } = await supabase
-    .from('journal_entries')
-    .insert({
-      voucher_no: '',
-      period_code: periodCode,
-      voucher_date: new Date().toISOString().substring(0, 10),
-      voucher_type: 'closing',
-      description: `期末汇兑损益结转 实际汇率${gains[0]?.actualRate || '-'}`,
-      source_type: 'fx_revaluation',
-      total_debit: Math.round(totalDebit * 100) / 100,
-      total_credit: Math.round(totalCredit * 100) / 100,
-      status: 'posted',
-      created_by: createdBy,
-      posted_by: createdBy,
-      posted_at: new Date().toISOString(),
-    })
-    .select('id, voucher_no')
-    .single()
-
-  if (error) throw new Error(`汇兑凭证创建失败: ${error.message}`)
-
-  await supabase.from('journal_lines').insert(
-    lines.map((l, i) => ({
-      journal_id: journal.id,
-      line_no: i + 1,
-      account_code: l.account_code,
-      description: l.description,
-      debit: l.debit,
-      credit: l.credit,
-    }))
-  )
-
-  return { voucherNo: journal.voucher_no, totalGain, totalLoss }
+  const { data, error } = await supabase.rpc('create_journal_draft', {
+    p_period_code: periodCode,
+    p_date: asOfDate ?? new Date().toISOString().substring(0, 10),
+    p_description: `期末汇兑损益重估 ${periodCode} 实际汇率${actualRate ?? '-'}`,
+    p_source_type: 'fx_revaluation',
+    p_source_id: crypto.randomUUID(), // 期末重估无单一源单据，用合成 id 满足 provenance 非空
+    p_total_debit: Math.round(totalDebit * 100) / 100,
+    p_total_credit: Math.round(totalCredit * 100) / 100,
+    p_created_by: createdBy,
+    p_lines: linesJson,
+    p_business_event: 'fx_revaluation',
+    p_target_journal_type: 'fx_revaluation',
+    p_exchange_rate_source: `actual_rate=${actualRate ?? '-'}`,
+    p_explanation: `期末对未结汇外币应收按汇率 ${actualRate} 重估：收益¥${totalGain} 损失¥${totalLoss} 净¥${net}`,
+    p_requires_review: true,
+  })
+  if (error) return { created: false, reason: error.message, net }
+  const r = data as { journal_id: string; voucher_no: string }
+  return { created: true, journalId: r.journal_id, voucherNo: r.voucher_no, net }
 }
