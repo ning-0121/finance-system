@@ -12,7 +12,7 @@ import {
   markRequestProcessed,
 } from '@/lib/integration/security'
 import type { WebhookPayload, SyncedOrder, PriceApprovalRequest, DelayApprovalRequest } from '@/lib/integration/types'
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 
 export async function POST(request: Request) {
   // 1. 速率限制
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     console.error(`[Webhook] Security validation failed: ${validation.error}`)
     // 记录鉴权失败（用于联调诊断 — API Key 不一致 / 签名错 / 时间戳过期）
     try {
-      const supabase = await createClient()
+      const supabase = createServiceClient()
       const apiKey = request.headers.get('x-api-key') || ''
       const apiKeyMasked = apiKey.length > 8
         ? `${apiKey.slice(0, 4)}...${apiKey.slice(-4)} (len=${apiKey.length})`
@@ -119,7 +119,7 @@ async function handleWebhookEvent(payload: WebhookPayload) {
 
 // --- 订单同步 ---
 async function handleOrderSync(order: SyncedOrder, event: string) {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // Upsert 同步订单
   const { error } = await supabase
@@ -174,7 +174,7 @@ async function handleOrderSync(order: SyncedOrder, event: string) {
 
 // --- 订单状态变更 ---
 async function handleOrderStatusChange(order: SyncedOrder, event: string) {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { error } = await supabase
     .from('synced_orders')
@@ -191,7 +191,7 @@ async function handleOrderStatusChange(order: SyncedOrder, event: string) {
 
 // --- 价格审批请求 ---
 async function handlePriceApprovalRequest(req: PriceApprovalRequest) {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { error } = await supabase
     .from('pending_approvals')
@@ -216,7 +216,7 @@ async function handlePriceApprovalRequest(req: PriceApprovalRequest) {
 
 // --- 延期审批请求 ---
 async function handleDelayApprovalRequest(req: DelayApprovalRequest) {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { error } = await supabase
     .from('pending_approvals')
@@ -247,7 +247,7 @@ async function handleDelayApprovalRequest(req: DelayApprovalRequest) {
 
 // --- 文件上传同步 ---
 async function handleFileUpload(data: Record<string, unknown>) {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { error } = await supabase
     .from('uploaded_documents')
@@ -273,7 +273,7 @@ async function handleFileUpload(data: Record<string, unknown>) {
 type AutoBudgetResult = { status: string; budget_order_id?: string; error?: string }
 
 async function markSyncStatus(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: ReturnType<typeof createServiceClient>,
   syncedOrderId: string,
   status: string,
   patch: Partial<{ budget_order_id: string; budget_sync_error: string | null }> = {},
@@ -291,7 +291,7 @@ async function markSyncStatus(
 }
 
 async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResult> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   try {
     // ────────── 1. 业务规则：无金额则跳过（可解释） ──────────
     if (!order.total_amount && !order.unit_price) {
@@ -421,7 +421,7 @@ async function logIntegrationEvent(
   errorMessage?: string
 ) {
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
     await supabase.from('integration_logs').insert({
       event_type: payload.event,
       direction,

@@ -5,6 +5,7 @@
 
 import { createClient } from './client'
 import { fetchAll } from './fetch-all'
+import { bizToday } from '@/lib/biz-date'
 import {
   demoBudgetOrders,
   demoSettlementOrders,
@@ -616,12 +617,16 @@ export async function updateBudgetOrderReceivable(
 }
 
 /**
- * 核销应收余额 — 将 ar_received_amount 置为 total_revenue（视为全额已收），
- * 并在 notes 中追加核销原因（格式：[核销 YYYY-MM-DD] {reason}）。
+ * 核销应收余额 — 财务化（决议④A）：不再直写 ar_received_amount（旧实现对已有
+ * 匹配流水的订单会被 projection 刷新覆盖、且不可追溯）。改为：
+ *   生成一条「核销调整」回款流水 + 匹配到本订单（RPC 回写 projection），
+ *   可在回款流水中撤销匹配/作废回退。订单 notes 仍追加核销原因。
+ * 金额口径：有流水 → 核销剩余 = 合同CNY − 已匹配CNY；
+ *           无流水的历史订单 → 把历史已收与核销尾差合并为一条流水（金额=合同CNY）。
  */
 export async function writeOffReceivable(
   id: string,
-  totalRevenue: number,
+  _totalRevenue: number,
   reason: string
 ): Promise<{ error: string | null }> {
   if (!isSupabaseConfigured()) {
@@ -629,27 +634,56 @@ export async function writeOffReceivable(
   }
   try {
     const supabase = createClient()
-    const { data: row } = await supabase
+    const { data: order } = await supabase
       .from('budget_orders')
-      .select('notes')
+      .select('id, total_revenue, currency, exchange_rate, notes, customers(company)')
       .eq('id', id)
       .maybeSingle()
-    const existingNotes = (row?.notes as string) || ''
-    const today = new Date().toISOString().substring(0, 10)
+    if (!order) return { error: '订单不存在' }
+    const r2 = (n: number) => Math.round(n * 100) / 100
+    const rate = order.currency === 'CNY' ? 1 : (Number(order.exchange_rate) || 1)
+    const contractCny = r2((Number(order.total_revenue) || 0) * rate)
+
+    // 权威已收 = 未作废分配合计
+    const { data: allocs } = await supabase
+      .from('receivable_payment_allocations')
+      .select('amount_cny')
+      .eq('budget_order_id', id)
+      .is('voided_at', null)
+    const hasLedger = (allocs || []).length > 0
+    const allocCny = r2((allocs || []).reduce((s, a) => s + (Number(a.amount_cny) || 0), 0))
+    const writeOffCny = hasLedger ? r2(contractCny - allocCny) : contractCny
+    if (writeOffCny <= 0.005) return { error: '该订单按回款流水口径已无应收余额，无需核销' }
+
+    // 1) 生成核销调整流水（CNY 口径，可追溯、可作废）
+    const { createReceivablePayment, allocateReceipt } = await import('./queries-v2')
+    const customerName = (order.customers as unknown as { company?: string } | null)?.company || null
+    const { data: pay, error: payErr } = await createReceivablePayment({
+      customer_name: customerName,
+      budget_order_id: id,
+      amount_original: writeOffCny,
+      currency: 'CNY',
+      exchange_rate: 1,
+      received_at: new Date().toISOString(),
+      source_type: 'manual',
+      notes: `[核销调整] ${reason}${hasLedger ? '' : '（含历史已收合并入流水）'} — 由核销操作生成，可撤销匹配回退`,
+    })
+    if (payErr || !pay) return { error: `生成核销流水失败：${payErr || '未知错误'}` }
+
+    // 2) 匹配到订单（RPC 事务：防超分配 + 自动状态 + 回写 projection + 时间线）
+    const { error: allocErr } = await allocateReceipt({ receipt_id: pay.id, budget_order_id: id, amount_cny: writeOffCny })
+    if (allocErr) return { error: `核销流水已生成但匹配失败：${allocErr}。请到回款流水手动匹配或作废该笔` }
+
+    // 3) 订单 notes 追加核销原因（保留原审计习惯）
+    const existingNotes = (order.notes as string) || ''
+    const today = bizToday()
     const newNote = `[核销 ${today}] ${reason}`
     const mergedNotes = existingNotes ? `${existingNotes}\n${newNote}` : newNote
-
-    const { error } = await supabase
+    await supabase
       .from('budget_orders')
-      .update({
-        ar_received_amount: totalRevenue,
-        ar_received_at: new Date().toISOString(),
-        notes: mergedNotes,
-        updated_at: new Date().toISOString(),
-      })
+      .update({ ar_received_at: new Date().toISOString(), notes: mergedNotes, updated_at: new Date().toISOString() })
       .eq('id', id)
 
-    if (error) return { error: error.message }
     return { error: null }
   } catch (e) {
     return { error: e instanceof Error ? e.message : 'Unknown error' }

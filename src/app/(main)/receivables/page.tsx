@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/table'
 import { DollarSign, AlertTriangle, Search, Loader2, CheckCircle2, Pencil, Download, X, Plus, Link2, ChevronDown, ChevronRight, Trash2, Inbox } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
-import { getBudgetOrders, updateBudgetOrderReceivable, writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
+import { getBudgetOrders, writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
 import { getReceivablePayments, getReceivableAllocations, createReceivablePayment, allocateReceipt, unallocateReceipt, voidReceivablePayment } from '@/lib/supabase/queries-v2'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import Link from 'next/link'
@@ -56,6 +56,7 @@ type ReceivableRow = {
   status: ARStatus
   agingDays: number
   notes: string
+  hasLedger: boolean    // 已收是否来自回款流水（true=流水权威；false=历史 projection）
 }
 
 type CustomerAR = {
@@ -140,6 +141,7 @@ function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, a
         bank: o.ar_received_bank || null,
         status, agingDays,
         notes: o.notes || '',
+        hasLedger,
       }
     })
 }
@@ -296,15 +298,60 @@ export default function ReceivablesPage() {
 
   const bankOptions = Array.from(new Set(receivables.map(r => r.bank).filter((b): b is string => !!b && b.trim() !== ''))).sort()
 
+  // 快捷登记收款 — 财务化：不再直写 ar_received_amount（projection），改为
+  // 自动生成回款流水并匹配到本订单（RPC 内回写 projection）。操作习惯不变、数据归一：
+  //   - 有流水的订单：录入新的「累计已收」，差额自动建一条流水并匹配；
+  //   - 历史订单（已收来自旧登记、无流水）：首次快捷登记会把整笔累计已收合并成一条流水入账；
+  //   - 调减不允许走快捷登记 → 引导到回款流水撤销匹配（可追溯）。
   async function saveReceipt() {
     if (!receiptDialog) return
     const amt = Number(receiptAmount)
     if (receiptAmount === '' || Number.isNaN(amt) || amt < 0) { toast.error('请输入有效的收款金额'); return }
     setReceiptSaving(true)
     const at = receiptDate ? new Date(receiptDate + 'T12:00:00').toISOString() : null
-    const { error } = await updateBudgetOrderReceivable(receiptDialog.id, { ar_received_amount: amt, ar_received_at: at, ar_received_bank: receiptBank.trim() || null })
-    setReceiptSaving(false)
-    if (error) { if (error.includes('收款银行')) toast.warning(error); else { toast.error(error); return } } else { toast.success('收款信息已保存') }
+    const row = receiptDialog
+    const delta = r2(amt - row.paid)
+    try {
+      if (delta < -0.005) {
+        toast.error('快捷登记不支持调减已收。请到「回款流水」中撤销对应匹配（需财务主管权限），保证每笔调整可追溯。')
+        setReceiptSaving(false)
+        return
+      }
+      // 入账金额：有流水按差额；无流水的历史订单首次登记按整笔累计（把历史已收合并进流水，防止覆盖丢失）
+      const amountOriginal = row.hasLedger ? delta : r2(amt)
+      if (amountOriginal > 0.005) {
+        const { data: pay, error: payErr } = await createReceivablePayment({
+          customer_name: row.customer,
+          budget_order_id: row.id,
+          amount_original: amountOriginal,
+          currency: row.currency || 'CNY',
+          exchange_rate: row.rate || 1,
+          received_at: at,
+          bank_account: receiptBank.trim() || null,
+          source_type: 'manual',
+          notes: row.hasLedger ? '快捷登记收款（自动建流水）' : '快捷登记收款（含历史已收合并入流水）',
+        })
+        if (payErr || !pay) { toast.error(`生成回款流水失败：${payErr || '未知错误'}`); setReceiptSaving(false); return }
+        const amountCny = r2(amountOriginal * (row.currency === 'CNY' ? 1 : (row.rate || 1)))
+        const { error: allocErr } = await allocateReceipt({ receipt_id: pay.id, budget_order_id: row.id, amount_cny: amountCny, amount_original: amountOriginal })
+        if (allocErr) {
+          toast.error(`流水已生成但自动匹配失败：${allocErr}。请到「回款流水」手动匹配该笔（金额 ¥${amountCny.toLocaleString()}）`)
+          setReceiptSaving(false)
+          try { await reload() } catch { /* */ }
+          return
+        }
+        toast.success(row.hasLedger ? `已生成回款流水并匹配 ¥${amountCny.toLocaleString()}` : '已将累计已收合并为回款流水并匹配')
+      } else {
+        toast.success('金额无变化，已更新收款银行/日期')
+      }
+      // 银行/日期仍记到订单（展示便利字段，不动金额——金额由 RPC 回写 projection）
+      if (receiptBank.trim() || at) {
+        const supabase = createClient()
+        await supabase.from('budget_orders').update({ ar_received_at: at, ar_received_bank: receiptBank.trim() || null }).eq('id', row.id)
+      }
+    } finally {
+      setReceiptSaving(false)
+    }
     fetch('/api/gl/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ businessEvent: 'receipt_saved', sourceType: 'receipt', sourceId: receiptDialog.id }) }).catch(err => console.error('[GL] 收款入队失败:', err))
     setReceiptDialog(null); setReceiptAmount(''); setReceiptDate(''); setReceiptBank('')
     try { await reload() } catch { /* */ }

@@ -21,7 +21,7 @@ import type { BudgetOrder, Supplier } from '@/lib/types'
 import { validatePayment, type ValidationWarning } from '@/lib/engines/validation-engine'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
-import { getPayableRecords } from '@/lib/supabase/queries-v2'
+import { getPayableRecords, createSupplierPayment } from '@/lib/supabase/queries-v2'
 import type { PayableRecord, PaymentStatus } from '@/lib/types'
 
 const statusConfig: Record<PaymentStatus, { label: string; color: string }> = {
@@ -178,8 +178,41 @@ export default function PaymentsPage() {
         if (invoiceErr) toast.error(`发票状态更新失败: ${invoiceErr.message}`)
       }
 
+      // 两套账打通（决议②）：出纳确认付款 → 自动同步一条供应商付款流水，
+      // 应付工作台/对账单的「已付」随之减少，两边一个口径。幂等：note 带 payable id 防重复同步。
+      try {
+        const syncTag = `[出纳付款同步] payable:${payDialog.id}`
+        const { data: dup } = await supabase.from('supplier_payments').select('id').ilike('note', `%payable:${payDialog.id}%`).is('deleted_at', null).limit(1)
+        if (!dup || dup.length === 0) {
+          // 折人民币：CNY 原值；外币用所属订单汇率，取不到则跳过同步并提醒手工登记（绝不按 1:1 折）
+          let amountCny: number | null = null
+          if ((payDialog.currency || 'CNY') === 'CNY') {
+            amountCny = Number(payDialog.amount) || 0
+          } else if (payDialog.budget_order_id) {
+            const { data: bo } = await supabase.from('budget_orders').select('currency, exchange_rate').eq('id', payDialog.budget_order_id).maybeSingle()
+            const rate = bo && bo.currency !== 'CNY' ? Number(bo.exchange_rate) : 0
+            if (rate > 0) amountCny = Math.round((Number(payDialog.amount) || 0) * rate * 100) / 100
+          }
+          if (amountCny != null && amountCny > 0) {
+            const { error: syncErr } = await createSupplierPayment({
+              supplier_name: payDialog.supplier_name,
+              amount: amountCny,
+              currency: 'CNY',
+              paid_at: new Date().toISOString(),
+              note: `${syncTag} ${payDialog.description || ''}${payDialog.currency !== 'CNY' ? `（原币 ${payDialog.currency} ${payDialog.amount}）` : ''}`.trim(),
+            })
+            if (syncErr) toast.warning(`付款已确认，但同步到应付工作台失败：${syncErr}。请到供应商对账单手工登记付款`)
+          } else if ((payDialog.currency || 'CNY') !== 'CNY') {
+            toast.warning('付款已确认，但该笔为外币且无订单汇率，未自动同步应付工作台——请到供应商对账单手工登记付款（填准确人民币金额）')
+          }
+        }
+      } catch (syncEx) {
+        console.error('[付款同步] 写供应商付款流水失败:', syncEx)
+        toast.warning('付款已确认，但同步应付工作台失败，请到供应商对账单手工登记付款')
+      }
+
       setRecords(records.map(r => r.id === payDialog.id ? { ...r, payment_status: 'paid' as PaymentStatus } : r))
-      toast.success('付款完成')
+      toast.success('付款完成（已同步应付工作台）')
       setPayDialog(null); setPayRef(''); setPayNote('')
     } catch (err) { toast.error(`付款失败: ${err instanceof Error ? err.message : '未知错误'}`) }
     setProcessing(false)
