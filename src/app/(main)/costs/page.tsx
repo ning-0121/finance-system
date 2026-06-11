@@ -744,7 +744,7 @@ export default function CostsPage() {
         }
       }}
       >
-        <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editItem ? '编辑费用' : '录入费用'}</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
             {!editItem && (
@@ -896,6 +896,8 @@ export default function CostsPage() {
                 <Input type="date" value={formDeliveryDate} onChange={e => setFormDeliveryDate(e.target.value)} />
               </div>
             </div>
+            {/* 数量/单位/单价/金额 一行四列；币种/汇率 另起一行——此前 6 个字段挤在 grid-cols-4
+                里导致金额标签换行、数值显示不全 */}
             <div className="grid grid-cols-4 gap-3">
               <div className="space-y-1">
                 <Label className="text-xs">数量</Label>
@@ -916,11 +918,13 @@ export default function CostsPage() {
                 }} />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs font-semibold">金额 *<span className="font-normal text-muted-foreground">（数量×单价自动算）</span></Label>
+                <Label className="text-xs font-semibold whitespace-nowrap">金额 *<span className="font-normal text-muted-foreground">（数量×单价自动算）</span></Label>
                 <Input type="number" step="0.01" placeholder="0.00" value={formAmount} onChange={e => setFormAmount(e.target.value)} className="border-primary/30" />
               </div>
-              <div className="space-y-2">
-                <Label>币种</Label>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">币种</Label>
                 <Select value={formCurrency} onValueChange={(v) => {
                   const cur = v || 'USD'
                   setFormCurrency(cur)
@@ -936,8 +940,8 @@ export default function CostsPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
-                <Label>{formCurrency === 'CNY' ? '汇率（人民币无需填）' : '汇率'}</Label>
+              <div className="space-y-1">
+                <Label className="text-xs">{formCurrency === 'CNY' ? '汇率（人民币无需填）' : '汇率'}</Label>
                 <Input type="number" step="0.01" value={formRate} onChange={e => setFormRate(e.target.value)} disabled={formCurrency === 'CNY'} />
               </div>
             </div>
