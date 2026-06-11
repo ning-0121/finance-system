@@ -117,7 +117,19 @@ export default function ActualGrossReportPage() {
       }]
     }
     const productName = (order.items as unknown as Record<string, unknown>[])?.[0]?.product_name as string | undefined
-    const orderWithCustomer = { ...order, product_name: productName || null, customer_name: order.customer?.company || '' }
+    // 基本信息同步：内部订单号/节拍器号/数量 来自节拍器同步表（与订单详情「基本信息」同口径）
+    const { data: syncedRow } = await sb.from('synced_orders')
+      .select('style_no, order_no, quantity, quantity_unit')
+      .eq('budget_order_id', orderId).limit(1).maybeSingle()
+    const orderWithCustomer = {
+      ...order,
+      product_name: productName || null,
+      customer_name: order.customer?.company || '',
+      internal_no: (syncedRow?.style_no as string) || '',
+      metronome_no: (syncedRow?.order_no as string) || '',
+      synced_quantity: syncedRow?.quantity != null ? Number(syncedRow.quantity) : null,
+      synced_quantity_unit: (syncedRow?.quantity_unit as string) || null,
+    }
     // 支区「时间」列：送货日期优先（财务对账口径），历史数据回退录入时间
     const expWithDate = (expenses || []).map(e => ({ ...e, created_at: (e as Record<string, unknown>).delivery_date as string || e.created_at }))
     const exp = expWithDate.length > 0 ? expWithDate : synthesizeExpensesFromBudget(order)
@@ -413,7 +425,8 @@ export default function ActualGrossReportPage() {
             return (
               <>
                 <DialogHeader>
-                  <DialogTitle className="text-center">订单核算单 · {b.header.order_no}</DialogTitle>
+                  {/* 抬头优先内部订单号（财务对外口径），系统单号退化为补充信息 */}
+                  <DialogTitle className="text-center">订单核算单 · {b.header.internal_no || b.header.order_no}</DialogTitle>
                 </DialogHeader>
                 <div className="text-xs space-y-3">
                   {(b.meta.cost_source === 'estimated' || b.meta.receipt_source === 'pending') && (
@@ -422,12 +435,17 @@ export default function ActualGrossReportPage() {
                       {b.meta.receipt_source === 'pending' && '⚠ 暂无实际回款，收入按合同金额预填。'}
                     </p>
                   )}
-                  {/* 表头信息 */}
+                  {/* 表头信息（与订单详情「基本信息」同步：内部订单号/节拍器号/数量/日期） */}
                   <div className="grid grid-cols-2 gap-x-6 gap-y-1 border rounded-md p-3 bg-muted/20">
+                    <div className="flex justify-between"><span className="text-muted-foreground">内部订单号</span><span className="font-medium">{b.header.internal_no || '—'}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">节拍器号</span><span>{b.header.metronome_no || '—'}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">系统单号</span><span className="text-muted-foreground">{b.header.order_no}</span></div>
                     <div className="flex justify-between"><span className="text-muted-foreground">客户名称</span><span className="font-medium">{b.header.customer_name || '—'}</span></div>
                     <div className="flex justify-between"><span className="text-muted-foreground">品名</span><span>{b.header.product_name || '—'}</span></div>
                     <div className="flex justify-between"><span className="text-muted-foreground">数量</span><span>{b.header.quantity ? `${b.header.quantity.toLocaleString()} ${b.header.quantity_unit || ''}` : '—'}</span></div>
                     <div className="flex justify-between"><span className="text-muted-foreground">合同金额</span><span className="font-medium">{b.header.contract_currency === 'USD' ? '$' : '¥'}{(b.header.contract_amount || 0).toLocaleString()}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">下单日期</span><span>{b.header.order_date || '—'}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">交货日期</span><span>{b.header.delivery_date || '—'}</span></div>
                     <div className="flex justify-between"><span className="text-muted-foreground">订单完结时间</span><span>{b.header.completed_at || '—'}</span></div>
                   </div>
 

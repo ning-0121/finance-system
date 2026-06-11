@@ -97,11 +97,15 @@ describe('buildSettlementRows', () => {
     // 至少：3 标题 + 6 头部 + 1 收header + 1 收数据 + 1 收合计 + 1 支header + 1 支数据 + 1 支合计 + 1 毛利 + 1 毛利率 = 18
     expect(rows.length).toBeGreaterThanOrEqual(17)
     expect(rows[0][0]).toBe('义乌市绮陌服饰有限公司')
-    expect(rows[2][0]).toBe('订单核算单')
-    expect(rows[3][0]).toBe('订单号')
-    expect(rows[3][1]).toBe('PO33301961')
-    expect(rows[4][1]).toBe('S2')
-    expect(rows[5][1]).toBe('瑜伽裤')
+    // 抬头带内部订单号（fixture 无 internal_no → 回退系统单号）
+    expect(rows[2][0]).toBe('订单核算单 · PO33301961')
+    expect(rows[3][0]).toBe('内部订单号')
+    expect(rows[3][1]).toBe('—')
+    expect(rows[4][0]).toBe('节拍器号')
+    expect(rows[5][0]).toBe('系统单号')
+    expect(rows[5][1]).toBe('PO33301961')
+    expect(rows[6][1]).toBe('S2')
+    expect(rows[7][1]).toBe('瑜伽裤')
 
     // 找到 收 header（A=='收'）行
     const shouHeaderIdx = rows.findIndex(r => r[0] === '收')

@@ -50,7 +50,9 @@ export interface ExpenseRow {
 }
 
 export interface SettlementHeader {
-  order_no: string         // PO33301961
+  order_no: string         // 系统订单号 BO-xxx
+  internal_no: string      // 内部订单号（synced_orders.style_no，财务对外口径，抬头优先用它）
+  metronome_no: string     // 节拍器号 QM-xxx
   customer_name: string    // S2
   product_name: string     // 瑜伽裤
   quantity: number         // 25680
@@ -59,6 +61,8 @@ export interface SettlementHeader {
   contract_currency: string // USD
   contract_cny: number     // 合同金额折人民币（无实际回款时用于预估毛利，避免收合计=0导致假亏损）
   order_rate: number       // 订单汇率
+  order_date: string       // 下单日期
+  delivery_date: string    // 交货日期
   completed_at: string     // 2026年3月20日
 }
 
@@ -121,15 +125,19 @@ function toCny(amount: number, currency: string, rate: number): number {
  * 组装 SettlementBundle —— 调用方（route 或 page）准备好原料后调用本函数
  */
 export function buildSettlementBundle(
-  order: BudgetOrder & { product_name?: string | null; customer_name?: string | null },
+  order: BudgetOrder & {
+    product_name?: string | null; customer_name?: string | null
+    internal_no?: string | null; metronome_no?: string | null
+    synced_quantity?: number | null; synced_quantity_unit?: string | null
+  },
   receipts: RawReceipt[],
   expenses: RawExpense[],
   completedAt: string | null,
 ): SettlementBundle {
   const orderRate = Number(order.exchange_rate || 1)
-  const itemQty = Number(
-    ((order.items as unknown as Record<string, unknown>[])?.[0]?.quantity as number | undefined) ?? 0,
-  )
+  // 数量：items.quantity → items.qty → 节拍器同步数量（与订单详情「基本信息」同口径）
+  const firstItem = (order.items as unknown as Record<string, unknown>[])?.[0]
+  const itemQty = Number(firstItem?.quantity ?? firstItem?.qty ?? order.synced_quantity ?? 0)
 
   // 收
   const receiptRows: ReceiptRow[] = receipts.map(r => {
@@ -177,16 +185,20 @@ export function buildSettlementBundle(
   return {
     header: {
       order_no: order.order_no || '',
+      internal_no: order.internal_no || '',
+      metronome_no: order.metronome_no || '',
       customer_name: (order.customer_name as string) || '',
       product_name: order.product_name || '—',
       quantity: itemQty,
-      quantity_unit: '件',
+      quantity_unit: order.synced_quantity_unit || '件',
       contract_amount: Number(order.total_revenue || 0),
       contract_currency: order.currency || 'USD',
       contract_cny: order.currency === 'CNY'
         ? Number(order.total_revenue || 0)
         : new Decimal(order.total_revenue || 0).mul(orderRate).toDecimalPlaces(2).toNumber(),
       order_rate: orderRate,
+      order_date: fmtCnDate(order.order_date),
+      delivery_date: fmtCnDate(order.delivery_date),
       completed_at: fmtCnDate(completedAt),
     },
     receipts: receiptRows,
@@ -250,15 +262,20 @@ export function buildSettlementRows(b: SettlementBundle): { rows: Cell[][]; merg
   // ── 标题（3 行）─────────────────────────────────────────────
   rows.push([COMPANY_CN, null, null, null, null, null, null, null, null]); merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } })
   rows.push([COMPANY_EN, null, null, null, null, null, null, null, null]); merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: 8 } })
-  rows.push([TITLE,      null, null, null, null, null, null, null, null]); merges.push({ s: { r: 2, c: 0 }, e: { r: 2, c: 8 } })
+  // 抬头带内部订单号（财务对外口径；无内部号时退化为系统单号）
+  rows.push([`${TITLE} · ${b.header.internal_no || b.header.order_no}`, null, null, null, null, null, null, null, null]); merges.push({ s: { r: 2, c: 0 }, e: { r: 2, c: 8 } })
 
   // ── 头部信息块（6 行，A=label，B-I=value 横向合并）──────────
   const headerInfo: [string, Cell][] = [
-    ['订单号',     b.header.order_no],
+    ['内部订单号', b.header.internal_no || '—'],
+    ['节拍器号',   b.header.metronome_no || '—'],
+    ['系统单号',   b.header.order_no],
     ['客户名称',   b.header.customer_name],
     ['品名',       b.header.product_name],
     ['数量',       `${b.header.quantity}${b.header.quantity_unit}`],
     ['合同金额',   b.header.contract_currency === 'USD' ? `$${b.header.contract_amount.toLocaleString()}` : `¥${b.header.contract_amount.toLocaleString()}`],
+    ['下单日期',   b.header.order_date || '—'],
+    ['交货日期',   b.header.delivery_date || '—'],
     ['订单完结时间', b.header.completed_at || '—'],
   ]
   const headerStartRow = 3
@@ -401,7 +418,8 @@ export function exportSettlementInvoiceToExcel(bundle: SettlementBundle, fileNam
   ]
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, '核算单')
-  const name = fileName || `${bundle.header.order_no || '订单核算单'}_${new Date().toISOString().substring(0, 10)}.xlsx`
+  // 文件名优先内部订单号（财务对外口径）
+  const name = fileName || `${bundle.header.internal_no || bundle.header.order_no || '订单核算单'}_${new Date().toISOString().substring(0, 10)}.xlsx`
   XLSX.writeFile(wb, name)
 }
 
