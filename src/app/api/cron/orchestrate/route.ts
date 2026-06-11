@@ -4,6 +4,7 @@
 // 由 Vercel Cron 或内部调用触发 (GET)
 // ============================================================
 
+import { bizToday } from '@/lib/biz-date'
 import { NextResponse } from 'next/server'
 import { runOrchestration, escalateOverdueTasks, getAutomationHealth } from '@/lib/engines/orchestration-engine'
 import { generateDailyReport, formatReportAsMarkdown } from '@/lib/engines/report-engine'
@@ -159,7 +160,7 @@ export async function GET(request: Request) {
 // ============================================================
 async function sendOverduePayableReminders(): Promise<void> {
   const supabase = await createClient()
-  const today = new Date().toISOString().substring(0, 10)
+  const today = bizToday()
 
   const { data: overdue } = await supabase
     .from('payable_records')

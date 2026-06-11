@@ -4,6 +4,7 @@
 // ============================================================
 
 import { createClient } from './client'
+import { fetchAll } from './fetch-all'
 import {
   demoBudgetOrders,
   demoSettlementOrders,
@@ -48,18 +49,18 @@ export async function getBudgetOrders(statusFilter?: string): Promise<BudgetOrde
 
   try {
     const supabase = createClient()
-    let query = supabase
-      .from('budget_orders')
-      .select('*, customers(*)')
-      .order('created_at', { ascending: false })
-      // 提到 2000：一年外贸订单量上限以下，仍然加 cap 防御性写法
-      .limit(2000)
-
-    if (statusFilter && statusFilter !== 'all') {
-      query = query.eq('status', statusFilter)
-    }
-
-    const { data, error } = await query
+    // 分页取全量（服务端 max-rows 默认 1000，.limit(2000) 也会被截断）；排除软删订单
+    const { data, error } = await fetchAll<Record<string, unknown>>((from, to) => {
+      let query = supabase
+        .from('budget_orders')
+        .select('*, customers(*)')
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false }).order('id', { ascending: true })
+      if (statusFilter && statusFilter !== 'all') {
+        query = query.eq('status', statusFilter)
+      }
+      return query.range(from, to)
+    })
     if (error) {
       console.error('[getBudgetOrders] DB error:', error.message)
       return [] // 真实失败：返回空，不返回 demo

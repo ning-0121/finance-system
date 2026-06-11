@@ -237,8 +237,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       const breakdown = (order.items as unknown as Record<string, unknown>[])?.[0]
       if (breakdown && breakdown._cost_breakdown) {
         const cb = breakdown._cost_breakdown as Record<string, number | string>
-        // 恢复币种模式
-        setEditCurrencyMode((cb._currency === 'CNY' && !cb._rate) ? 'CNY' : 'USD')
+        // 恢复币种模式：写入方对 CNY 直收单写 _currency='CNY_DIRECT'（且总是带 _rate），
+        // 兼容三种来源：新口径 CNY_DIRECT / _revenue_currency='CNY' / 旧数据 'CNY' 且无 _rate。
+        // 此前判断写成 ('CNY' && !_rate) 永远为假 → CNY 单被还原成 USD 模式，
+        // 再保存时人民币收入会被错乘汇率（利润虚增）。
+        const isCnyDirect = cb._currency === 'CNY_DIRECT'
+          || cb._revenue_currency === 'CNY'
+          || (cb._currency === 'CNY' && !cb._rate)
+        setEditCurrencyMode(isCnyDirect ? 'CNY' : 'USD')
         setEditFabric((cb.fabric || 0).toString())
         setEditAccessory((cb.accessory || 0).toString())
         setEditProcessing((cb.processing || 0).toString())
@@ -266,6 +272,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           setEditLines({})
         }
       } else {
+        // 无 _cost_breakdown 的历史订单：按订单自身币种设置模式（否则默认 USD，
+        // CNY 单保存时会被错乘汇率且 currency 被改写为 USD）
+        setEditCurrencyMode(order.currency === 'CNY' ? 'CNY' : 'USD')
         setEditFabric(order.target_purchase_price.toString())
         setEditAccessory('0')
         setEditProcessing(order.estimated_commission.toString())
@@ -328,7 +337,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       const updatedItems = existingItems.length > 0
         ? [{ ...existingItems[0], _cost_breakdown: breakdownData }, ...existingItems.slice(1)]
         : [{ _cost_breakdown: breakdownData }]
-      const { error } = await supabase.from('budget_orders').update({
+      // .select() 取命中行：乐观锁 version 不匹配时 PostgREST 更新 0 行且不报错，
+      // 必须显式判 0 行，否则并发冲突会被当成保存成功（本地展示一套 DB 里不存在的数字）
+      const { data: hit, error } = await supabase.from('budget_orders').update({
         total_revenue: revenueInput,
         currency: editCurrencyMode === 'CNY' ? 'CNY' : 'USD',
         exchange_rate: rate,
@@ -341,7 +352,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         estimated_profit: profitCny,
         estimated_margin: margin,
         items: updatedItems,
-      }).eq('id', order.id).eq('version', order.version || 1)
+      }).eq('id', order.id).eq('version', order.version || 1).select('id')
 
       if (error) {
         const msg = error.message
@@ -349,6 +360,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         else if (msg.includes('非法状态转换')) toast.error(msg)
         else if (!error.details && error.code === 'PGRST116') toast.error('保存冲突：该记录已被其他用户修改，请刷新后重试')
         else toast.error('保存失败: ' + msg)
+      } else if (!hit || hit.length === 0) {
+        toast.error('保存冲突：该订单已被其他用户修改（版本不一致），请刷新页面后重新编辑')
       } else {
         // 写后验证
         const { data: verify } = await supabase.from('budget_orders').select('id, version, total_revenue, total_cost').eq('id', order.id).single()

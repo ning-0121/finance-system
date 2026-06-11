@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/table'
 import { Loader2, Package, ChevronRight, ChevronDown, Wallet } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 import { getSupplierPayments } from '@/lib/supabase/queries-v2'
 import { normalizeSupplierName, escapeIlike } from '@/lib/utils'
 import type { SupplierPayment } from '@/lib/types'
@@ -79,12 +80,13 @@ export function SupplierPayableDetail({
         const like = `%${escapeIlike(supplierName)}%`
         // 1) 先取该供应商的费用 + 付款（费用用 ilike 缩到本供应商，避免全表）
         const [costRes, payList] = await Promise.all([
-          supabase
+          fetchAll<Record<string, unknown>>((from, to) => supabase
             .from('cost_items')
             .select('id, cost_type, description, supplier, amount, currency, exchange_rate, quantity, unit, unit_price, color, roll_count, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
             .is('deleted_at', null)
             .ilike('supplier', like)
-            .order('created_at', { ascending: true }),
+            .order('created_at', { ascending: true }).order('id', { ascending: true })
+            .range(from, to)),
           getSupplierPayments({ supplierName }),
         ])
 

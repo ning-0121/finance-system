@@ -11,6 +11,7 @@ import {
 import { Loader2, Download, Search, FileSpreadsheet, Eye } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 import { getBudgetOrders, getBudgetOrderById } from '@/lib/supabase/queries'
 import type { BudgetOrder } from '@/lib/types'
 import {
@@ -40,11 +41,11 @@ type Row = {
   margin_pct: number
 }
 
-function payableToCny(amount: number, currency: string): number {
+function payableToCny(amount: number, currency: string, orderRate?: number): number {
   const c = (currency || 'CNY').toUpperCase()
   if (c === 'CNY' || c === 'RMB') return amount
-  if (c === 'USD') return amount * 7.2
-  return amount * 7.2
+  // 优先用所属订单的汇率折算；订单缺汇率才回退约定值 7.2（页面有披露）
+  return amount * (Number(orderRate) || 7.2)
 }
 
 function receivedAmount(o: BudgetOrder): number {
@@ -132,30 +133,43 @@ export default function ActualGrossReportPage() {
 
         const supabase = createClient()
         const approvedIds = approved.map(o => o.id)
-        const [{ data: costs }, { data: payables }, syncedRes] = await Promise.all([
-          supabase.from('cost_items').select('budget_order_id, amount, exchange_rate').not('budget_order_id', 'is', null),
-          supabase.from('payable_records').select('budget_order_id, amount, currency').not('budget_order_id', 'is', null),
-          approvedIds.length > 0
-            ? supabase.from('synced_orders').select('budget_order_id, style_no').in('budget_order_id', approvedIds)
-            : Promise.resolve({ data: [] as Record<string, unknown>[] }),
+        // 分页取全量（防 1000 行静默截断）；汇总必须与明细同口径：排除已软删费用、已作废应付
+        const [{ data: costs }, { data: payables }] = await Promise.all([
+          fetchAll<{ budget_order_id: string; amount: number; currency: string; exchange_rate: number }>((from, to) =>
+            supabase.from('cost_items').select('budget_order_id, amount, currency, exchange_rate')
+              .not('budget_order_id', 'is', null).is('deleted_at', null)
+              .order('id', { ascending: true }).range(from, to)),
+          fetchAll<{ budget_order_id: string; amount: number; currency: string }>((from, to) =>
+            supabase.from('payable_records').select('budget_order_id, amount, currency')
+              .not('budget_order_id', 'is', null).neq('payment_status', 'cancelled')
+              .order('id', { ascending: true }).range(from, to)),
         ])
-        // 内部订单号 = synced_orders.style_no（非 BO 财务单号、非 QM 号）
+        // 内部订单号 = synced_orders.style_no（非 BO 财务单号、非 QM 号）；.in 分批防超长/截断
         const internalMap = new Map<string, string>()
-        ;(syncedRes.data || []).forEach((s: Record<string, unknown>) => {
-          if (s.budget_order_id && s.style_no) internalMap.set(s.budget_order_id as string, String(s.style_no))
-        })
+        for (let i = 0; i < approvedIds.length; i += 500) {
+          const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, style_no').in('budget_order_id', approvedIds.slice(i, i + 500))
+          ;(synced || []).forEach((s: Record<string, unknown>) => {
+            if (s.budget_order_id && s.style_no) internalMap.set(s.budget_order_id as string, String(s.style_no))
+          })
+        }
+
+        // 订单汇率表：应付折算用所属订单汇率（payable_records 无汇率列）
+        const orderRateMap = new Map<string, number>()
+        orders.forEach(o => orderRateMap.set(o.id, o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 0)))
 
         const costByOrder = new Map<string, number>()
-        costs?.forEach((r: { budget_order_id: string; amount: number; exchange_rate: number }) => {
+        costs?.forEach(r => {
           const id = r.budget_order_id
-          const cny = (Number(r.amount) || 0) * (Number(r.exchange_rate) || 1)
+          // CNY 行汇率恒按 1，防历史数据 exchange_rate≠1 被二次折算
+          const rate = (r.currency || 'CNY') === 'CNY' ? 1 : (Number(r.exchange_rate) || 1)
+          const cny = (Number(r.amount) || 0) * rate
           costByOrder.set(id, (costByOrder.get(id) || 0) + cny)
         })
 
         const payableByOrder = new Map<string, number>()
-        payables?.forEach((r: { budget_order_id: string; amount: number; currency: string }) => {
+        payables?.forEach(r => {
           const id = r.budget_order_id
-          const cny = payableToCny(Number(r.amount) || 0, r.currency || 'CNY')
+          const cny = payableToCny(Number(r.amount) || 0, r.currency || 'CNY', orderRateMap.get(id))
           payableByOrder.set(id, (payableByOrder.get(id) || 0) + cny)
         })
 

@@ -18,6 +18,7 @@ import {
 import { Search, Loader2, Plus, Pencil, Trash2, Building2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 import { getSuppliers, upsertSupplier, deleteSupplier } from '@/lib/supabase/queries-v2'
 import { uploadAttachment, openAttachment, attachmentName } from '@/lib/supabase/storage'
 import { normalizeSupplierName } from '@/lib/utils'
@@ -53,9 +54,10 @@ export default function SupplierProfilesPage() {
   useEffect(() => {
     async function load() {
       try {
+        const sb = createClient()
         const [mastersData, costRes] = await Promise.all([
           getSuppliers(),
-          createClient().from('cost_items').select('supplier, cost_type, amount, created_at').is('deleted_at', null).order('created_at', { ascending: false }),
+          fetchAll<Record<string, unknown>>((from, to) => sb.from('cost_items').select('supplier, cost_type, amount, created_at').is('deleted_at', null).order('created_at', { ascending: false }).order('id', { ascending: true }).range(from, to)),
         ])
         setMasters(mastersData)
         const costs = costRes.data || []

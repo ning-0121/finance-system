@@ -9,6 +9,7 @@ import {
   CreditCard, AlertTriangle, Clock, CheckCircle, Search, Loader2, Download, X,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 import { getSupplierPayments } from '@/lib/supabase/queries-v2'
 import { normalizeSupplierName } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -86,19 +87,20 @@ export default function PayablesPage() {
         // 一次性把右侧明细需要的字段也查全（含 数量/单位/单价/source_id），
         // 右侧标签直接复用，零再请求（修卡顿核心）。
         const [costRes, payList] = await Promise.all([
-          supabase
+          fetchAll<Record<string, unknown>>((from, to) => supabase
             .from('cost_items')
             .select('id, description, amount, currency, exchange_rate, supplier, cost_type, quantity, unit, unit_price, color, roll_count, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
             .is('deleted_at', null)
-            .order('created_at', { ascending: true }),
+            .order('created_at', { ascending: true }).order('id', { ascending: true })
+            .range(from, to)),
           getSupplierPayments(),
         ])
 
-        // 内部订单号：仅按出现过的订单取 synced_orders（一次，非每标签）
+        // 内部订单号：仅按出现过的订单取 synced_orders（一次，非每标签）；.in 列表过长时分批
         const boIds = [...new Set((costRes.data || []).map((c: Record<string, unknown>) => c.budget_order_id as string).filter(Boolean))]
         const syncMap = new Map<string, string>()
-        if (boIds.length > 0) {
-          const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, style_no').in('budget_order_id', boIds)
+        for (let i = 0; i < boIds.length; i += 500) {
+          const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, style_no').in('budget_order_id', boIds.slice(i, i + 500))
           ;(synced || []).forEach((s: Record<string, unknown>) => {
             if (s.budget_order_id && s.style_no) syncMap.set(s.budget_order_id as string, String(s.style_no))
           })
@@ -110,7 +112,8 @@ export default function PayablesPage() {
           const quoteFallback = bo?.quote_no ? String(bo.quote_no).trim() : ''
           const orderLabel = boId ? (syncMap.get(boId) || quoteFallback || bo?.order_no || '') : ''
           const amt = Number(c.amount) || 0
-          const rate = Number(c.exchange_rate) || 1
+          // CNY 行汇率恒按 1（防历史数据 exchange_rate≠1 被错乘），与全站口径一致
+          const rate = (c.currency as string) === 'CNY' ? 1 : (Number(c.exchange_rate) || 1)
           // 数量/单位/单价：优先真实列，缺失回退 source_id JSON
           let qty = c.quantity != null ? Number(c.quantity) : null
           let unit = (c.unit as string) || ''

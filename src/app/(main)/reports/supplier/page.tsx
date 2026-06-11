@@ -1,5 +1,6 @@
 'use client'
 
+import { bizToday } from '@/lib/biz-date'
 import React, { useState, useEffect, useMemo } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,6 +18,7 @@ import { Search, Download, DollarSign, FileText, Clock, CheckCircle, Lock, Loade
 import { toast } from 'sonner'
 import { Label } from '@/components/ui/label'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 import { exportCostSummaryReport } from '@/lib/excel/export-professional'
 import { exportSupplierStatementToExcel } from '@/lib/excel/export-supplier-statement'
 import { normalizeSupplierName } from '@/lib/utils'
@@ -69,7 +71,7 @@ export default function SupplierReportPage() {
   const [payDialogOpen, setPayDialogOpen] = useState(false)
   const [paySupplier, setPaySupplier] = useState('')
   const [payAmount, setPayAmount] = useState('')
-  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10))
+  const [payDate, setPayDate] = useState(bizToday())
   const [payNote, setPayNote] = useState('')
   const [paySaving, setPaySaving] = useState(false)
 
@@ -99,10 +101,10 @@ export default function SupplierReportPage() {
       // 没有快照或是草稿 → 从实时数据自动汇总
       // 加载费用（含 数量/单位/单价）+ 供应商付款 + 同步订单（获取内部订单号）
       const [costRes, payList, syncedRes] = await Promise.all([
-        supabase.from('cost_items').select('id, description, amount, currency, exchange_rate, cost_type, supplier, source_module, quantity, unit, unit_price, budget_order_id, created_at, budget_orders(order_no, quote_no)').is('deleted_at', null).order('created_at', { ascending: false }),
+        fetchAll<Record<string, unknown>>((from, to) => supabase.from('cost_items').select('id, description, amount, currency, exchange_rate, cost_type, supplier, source_module, quantity, unit, unit_price, budget_order_id, created_at, budget_orders(order_no, quote_no)').is('deleted_at', null).order('created_at', { ascending: false }).order('id', { ascending: true }).range(from, to)),
         getSupplierPayments(),
         // F7: 节拍器同步订单 — 用于把 cost_items 关联到内部订单号 (style_no)
-        supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null),
+        fetchAll<Record<string, unknown>>((from, to) => supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null).order('budget_order_id', { ascending: true }).range(from, to)),
       ])
       const costItems = costRes.data
       const syncedOrders = syncedRes.data || []
@@ -134,8 +136,8 @@ export default function SupplierReportPage() {
           const sync = budgetOrderId ? syncMap.get(budgetOrderId) : null
           const bo = item.budget_orders as unknown as { order_no?: string; quote_no?: string } | null
           const quoteFallback = bo?.quote_no ? String(bo.quote_no).trim() : ''
-          // 统一折算为人民币（费用可能为外币）：金额 × 汇率。付款侧为人民币登记。
-          const rate = Number(item.exchange_rate) || 1
+          // 统一折算为人民币（费用可能为外币）：金额 × 汇率。付款侧为人民币登记。CNY 行恒按 1。
+          const rate = (item.currency as string) === 'CNY' ? 1 : (Number(item.exchange_rate) || 1)
           const amountCny = Math.round((Number(item.amount) || 0) * rate * 100) / 100
           return {
             supplier: normalizeSupplierName(item.supplier as string) || '未指定',
@@ -161,7 +163,7 @@ export default function SupplierReportPage() {
           const supplier = normalizeSupplierName(item.supplier as string) || (item.description as string || '').split(' - ')[0] || '未指定供应商'
           const boRow = item.budget_orders as unknown as { order_no?: string } | null
           const orderNo = boRow?.order_no || ''
-          const rate = Number(item.exchange_rate) || 1
+          const rate = (item.currency as string) === 'CNY' ? 1 : (Number(item.exchange_rate) || 1)
           const amountCny = (Number(item.amount) || 0) * rate
 
           const existing = supplierMap.get(supplier) || { count: 0, total: 0, currency: 'CNY', orders: new Set<string>() }
@@ -333,22 +335,26 @@ export default function SupplierReportPage() {
     if (!editDialog || !editReason.trim()) { toast.error('请填写修正原因'); return }
 
     const newLines = [...lines]
-    const oldTotal = newLines[editDialog.index].total
+    // 必须按供应商名定位：editDialog.index 是「过滤+排序后视图」的下标，
+    // 与 lines（按总额排序的全量）下标不同，直接用会把修正写到别的供应商头上
+    const idx = newLines.findIndex(l => l.supplier === editDialog.line.supplier)
+    if (idx < 0) { toast.error('未找到该供应商行，请刷新后重试'); return }
+    const oldTotal = newLines[idx].total
     const newTotal = Number(editAmount)
 
     if (isNaN(newTotal)) { toast.error('请输入有效金额'); return }
 
-    newLines[editDialog.index] = {
-      ...newLines[editDialog.index],
+    newLines[idx] = {
+      ...newLines[idx],
       total: newTotal,
-      unpaid: newTotal - newLines[editDialog.index].paid,
+      unpaid: newTotal - newLines[idx].paid,
       isEdited: true,
       editNote: editReason,
     }
     setLines(newLines)
 
     setCorrections([...corrections, {
-      line_index: editDialog.index,
+      line_index: idx,
       supplier: editDialog.line.supplier,
       field: 'total',
       old_value: oldTotal,
@@ -385,7 +391,7 @@ export default function SupplierReportPage() {
     }).catch(err => console.error('[GL] 付款入队失败:', err))
     toast.success(`已登记付款 ${sup} ¥${amt.toLocaleString()}`)
     setPayDialogOpen(false)
-    setPaySupplier(''); setPayAmount(''); setPayNote(''); setPayDate(new Date().toISOString().slice(0, 10))
+    setPaySupplier(''); setPayAmount(''); setPayNote(''); setPayDate(bizToday())
   }
 
   const handleDeletePayment = async (id: string) => {
@@ -430,7 +436,7 @@ export default function SupplierReportPage() {
                   <Lock className="h-4 w-4 mr-1" />锁定
                 </Button>
               )}
-              <Button size="sm" variant="outline" onClick={() => { setPaySupplier(''); setPayAmount(''); setPayNote(''); setPayDate(new Date().toISOString().slice(0, 10)); setPayDialogOpen(true) }}>
+              <Button size="sm" variant="outline" onClick={() => { setPaySupplier(''); setPayAmount(''); setPayNote(''); setPayDate(bizToday()); setPayDialogOpen(true) }}>
                 <Plus className="h-4 w-4 mr-1" />登记付款
               </Button>
               {/* F5: 导出按钮去掉状态门槛 — draft 也能导 */}
@@ -595,7 +601,7 @@ export default function SupplierReportPage() {
                           <TableCell>
                             <div className="flex gap-1 flex-wrap">{s.orders.slice(0, 3).map(o => <Badge key={o} variant="outline" className="text-[10px]">{o}</Badge>)}{s.orders.length > 3 && <span className="text-[10px] text-muted-foreground">+{s.orders.length - 3}</span>}</div>
                           </TableCell>
-                          <TableCell><Badge variant={s.unpaid === 0 ? 'default' : 'secondary'} className={s.unpaid === 0 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}>{s.unpaid === 0 ? '已付清' : '未付清'}</Badge></TableCell>
+                          <TableCell><Badge variant={Math.abs(s.unpaid) < 0.01 ? 'default' : 'secondary'} className={Math.abs(s.unpaid) < 0.01 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}>{Math.abs(s.unpaid) < 0.01 ? '已付清' : '未付清'}</Badge></TableCell>
                           {!isLocked && (
                             <TableCell className="text-center" onClick={e => e.stopPropagation()}>
                               <Button size="sm" variant="ghost" className="h-7" onClick={() => { setEditDialog({ index: i, line: s }); setEditAmount(s.total.toString()) }}>

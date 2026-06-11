@@ -9,6 +9,7 @@ import { getActionsForCategory, canExecuteAction, type ActionConfig } from './ac
 import { assessSafety, SAFETY_LEVEL_CONFIG, type SafetyLevel } from './safety'
 import { topologicalSort, checkDependencies, updateTrustScore } from './dependency-resolver'
 import type { DocCategory, ExtractionResult } from '@/lib/types/document'
+import { bizToday } from '@/lib/biz-date'
 
 export interface ExecutionResult {
   action_type: string
@@ -384,12 +385,20 @@ async function executeSingleAction(
     case 'link_cost_item': {
       // Wave 3-B P2-E1: actor 不能 fallback 到零 UUID（会让 provenance 丢失归属）
       if (!confirmedBy) throw new Error('link_cost_item: 操作者 ID 不能为空')
+      // 汇率：禁止外币按 1:1 折人民币（下游所有报表按 amount×exchange_rate 折算）。
+      // 外币费用必须带文档汇率，否则拒绝入账（请改为手工录入并填汇率）。
+      const docCurrency = String(f.currency || 'CNY').toUpperCase()
+      let docRate = 1
+      if (docCurrency !== 'CNY' && docCurrency !== 'RMB') {
+        docRate = Number(f.exchange_rate) || 0
+        if (!docRate) throw new Error(`link_cost_item: ${docCurrency} 费用缺少汇率，拒绝按 1:1 入账，请手工录入并填写汇率`)
+      }
       const { data, error } = await supabase.from('cost_items').insert({
         cost_type: String(f._cost_type || 'procurement'),
         description: `文档导入: ${f.supplier_name || f.logistics_company || f.description || ''}`,
         amount: Number(f.total_amount || f.amount || 0),
-        currency: String(f.currency || 'USD'),
-        exchange_rate: 1,
+        currency: docCurrency,
+        exchange_rate: docRate,
         source_module: 'document_intelligence',
         source_id: documentId,
         created_by: confirmedBy,
@@ -425,7 +434,7 @@ async function executeSingleAction(
 
       const amount = Number(f.amount || f.total_amount || 0)
       if (!amount || amount <= 0) throw new Error('update_receivable: 金额必须 > 0')
-      const transactionDate = (f.transaction_date as string) || new Date().toISOString().split('T')[0]
+      const transactionDate = (f.transaction_date as string) || bizToday()
       const currency = String(f.currency || 'USD')
 
       // RPC 内部完整事务：actual_invoices + journal_entries + journal_lines + gl_balances
@@ -461,7 +470,7 @@ async function executeSingleAction(
 
     case 'update_cashflow': {
       const { data, error } = await supabase.from('cashflow_forecasts').insert({
-        forecast_date: new Date().toISOString().split('T')[0],
+        forecast_date: bizToday(),
         expected_inflow: Number(f.amount || f.total_amount || f.refund_amount || 0),
         expected_outflow: 0,
         expected_cash_balance: 0,

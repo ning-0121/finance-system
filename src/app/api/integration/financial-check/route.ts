@@ -4,6 +4,7 @@
 // 安全：API Key + 签名验证
 // ============================================================
 
+import { bizToday } from '@/lib/biz-date'
 import { NextResponse } from 'next/server'
 import { validateRequest, checkRateLimit } from '@/lib/integration/security'
 import { preOrderFinancialCheck, preShipmentFinancialCheck } from '@/lib/agents/financial-check'
@@ -62,7 +63,7 @@ export async function POST(request: Request) {
         .select('id')
         .eq('supplier_name', customer_name)
         .eq('status', 'pending')
-        .lt('due_date', new Date().toISOString().split('T')[0])
+        .lt('due_date', bizToday())
         .limit(1)
 
       result = preShipmentFinancialCheck({

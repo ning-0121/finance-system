@@ -1,5 +1,6 @@
 'use client'
 
+import { bizToday } from '@/lib/biz-date'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
@@ -55,7 +56,7 @@ export default function NewBudgetOrderPage() {
   const [customerId, setCustomerId] = useState('')
   const [currency, setCurrency] = useState('USD')
   const [exchangeRate, setExchangeRate] = useState('7.24')
-  const [orderDate, setOrderDate] = useState(new Date().toISOString().split('T')[0])
+  const [orderDate, setOrderDate] = useState(bizToday())
   const [deliveryDate, setDeliveryDate] = useState('')
   const [quoteNo, setQuoteNo] = useState('')
   const [poNo, setPoNo] = useState('')
@@ -203,23 +204,42 @@ export default function NewBudgetOrderPage() {
     }
     const fabricRes = linesFromSubDocs(subDocs.filter(sd => sd.doc_type === 'raw_material'))
     const accessoryRes = linesFromSubDocs(subDocs.filter(sd => sd.doc_type !== 'raw_material'))
-    const linesData: Record<string, BLine[]> = {}
-    if (fabricRes.lines.length > 0) linesData.fabric = fabricRes.lines
-    if (accessoryRes.lines.length > 0) linesData.accessory = accessoryRes.lines
+    // ── 币种口径（与编辑页对齐，修复 USD 单成本按原币入库被全站当人民币展示）──
+    // 编辑页/全站约定：_cost_breakdown 六类槽位、lines 明细、DB 的 total_cost /
+    // estimated_profit / target_purchase_price / estimated_* / other_costs 一律为人民币；
+    // 仅 total_revenue 存原币（配合 currency + exchange_rate 列）。
+    // 本页输入框是 {currency} 原币口径，USD 单保存时必须 × 汇率折人民币。
     const isCny = currency === 'CNY'
+    const rate = isCny ? 1 : (Number(exchangeRate) || 1)
+    const r2 = (n: number) => Math.round(n * 100) / 100
+    const cny = (n: number) => r2((Number(n) || 0) * rate)
+    // 明细行逐行折算后，类目标量取「已折算明细之和」，严格维持 明细之和==类目标量 不变量
+    const convLines = (ls: BLine[]) => ls.map(l => ({ ...l, unit_price: cny(l.unit_price), amount: cny(l.amount) }))
+    const fabricLines = convLines(fabricRes.lines)
+    const accessoryLines = convLines(accessoryRes.lines)
+    const fabricCny = fabricLines.length > 0 ? r2(fabricLines.reduce((s, l) => s + l.amount, 0)) : cny(fabricRes.total)
+    const accessoryCny = accessoryLines.length > 0 ? r2(accessoryLines.reduce((s, l) => s + l.amount, 0)) : cny(accessoryRes.total)
+    const linesDataCny: Record<string, BLine[]> = {}
+    if (fabricLines.length > 0) linesDataCny.fabric = fabricLines
+    if (accessoryLines.length > 0) linesDataCny.accessory = accessoryLines
+    const purchaseCny = r2(fabricCny + accessoryCny)
+    const totalCostCny = r2(purchaseCny + cny(orderLevelTotal))
+    const revenueCny = cny(totalRevenue)
+    const profitCny = r2(revenueCny - totalCostCny)
+
     const costBreakdown = {
-      fabric: fabricRes.total,
-      accessory: accessoryRes.total,
-      processing: estimatedCommission,   // 加工费：→ _cost_breakdown.processing，并落库 estimated_commission 列（与编辑页同口径）
-      forwarder: estimatedFreight,       // 编辑页：forwarder → 运费字段
-      container: estimatedCustomsFee,    // 编辑页：container → 报关费字段
-      logistics: otherCosts,             // 编辑页：logistics+extras → 其他费用字段
-      extras: estimatedTax > 0 ? [{ name: '预算税费', amount: estimatedTax }] : [],
-      lines: linesData,
+      fabric: fabricCny,
+      accessory: accessoryCny,
+      processing: cny(estimatedCommission),   // 加工费：→ _cost_breakdown.processing，并落库 estimated_commission 列（与编辑页同口径）
+      forwarder: cny(estimatedFreight),       // 编辑页：forwarder → 运费字段
+      container: cny(estimatedCustomsFee),    // 编辑页：container → 报关费字段
+      logistics: cny(otherCosts),             // 编辑页：logistics+extras → 其他费用字段
+      extras: estimatedTax > 0 ? [{ name: '预算税费', amount: cny(estimatedTax) }] : [],
+      lines: linesDataCny,
       _currency: isCny ? 'CNY_DIRECT' : 'CNY',
       _revenue_input: totalRevenue,
       _revenue_currency: isCny ? 'CNY' : 'USD',
-      _rate: Number(exchangeRate) || 1,
+      _rate: rate,
     }
     const itemsWithBreakdown = items.length > 0
       ? [{ ...items[0], _cost_breakdown: costBreakdown }, ...items.slice(1)]
@@ -227,12 +247,12 @@ export default function NewBudgetOrderPage() {
 
     const { error } = await createBudgetOrder({
       customer_id: customerId, order_date: orderDate, delivery_date: deliveryDate || undefined,
-      items: itemsWithBreakdown, target_purchase_price: subDocTotal,
-      estimated_freight: estimatedFreight, estimated_commission: estimatedCommission,
-      estimated_customs_fee: estimatedCustomsFee, other_costs: otherCosts + estimatedTax,
-      total_revenue: totalRevenue, total_cost: totalCost,
-      estimated_profit: estimatedProfit, estimated_margin: Number(estimatedMargin.toFixed(2)),
-      currency, exchange_rate: Number(exchangeRate),
+      items: itemsWithBreakdown, target_purchase_price: purchaseCny,
+      estimated_freight: cny(estimatedFreight), estimated_commission: cny(estimatedCommission),
+      estimated_customs_fee: cny(estimatedCustomsFee), other_costs: cny(otherCosts + estimatedTax),
+      total_revenue: totalRevenue, total_cost: totalCostCny,
+      estimated_profit: profitCny, estimated_margin: Number(estimatedMargin.toFixed(2)),
+      currency, exchange_rate: rate,
       status: submitForReview ? 'pending_review' : 'draft',
       notes: [quoteNo && `报价单号: ${quoteNo}`, poNo && `PO号: ${poNo}`, notes].filter(Boolean).join('\n') || undefined,
     })

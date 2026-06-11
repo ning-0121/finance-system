@@ -1,6 +1,8 @@
 // 总账自动记账模块 — 业务单据→记账凭证
 // 对标金蝶/用友的自动凭证生成
 import { createClient } from '@/lib/supabase/server'
+import { fetchAll } from '@/lib/supabase/fetch-all'
+import { bizToday, bizDateOf } from '@/lib/biz-date'
 import type { BudgetOrder } from '@/lib/types'
 import { requireRate, sumAmounts, mulAmount } from './utils'
 
@@ -21,8 +23,10 @@ interface JournalLine {
  * 获取当前会计期间代码
  */
 function getPeriodCode(date?: string): string {
-  const d = date ? new Date(date) : new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  // 会计期间必须按中国时区取月：Vercel 服务器是 UTC，getMonth() 在北京时间
+  // 月初 0-8 点会落到上个月期间，直接影响关账与月报
+  const day = date ? bizDateOf(date) : bizToday()
+  return day.slice(0, 7)
 }
 
 /**
@@ -202,7 +206,7 @@ export async function postCostRecognition(order: BudgetOrder) {
 
   return createJournal({
     periodCode: getPeriodCode(order.order_date),
-    date: new Date().toISOString().substring(0, 10),
+    date: bizToday(),
     description: `结转成本 ${order.order_no}`,
     sourceType: 'settlement',
     sourceId: order.id,
@@ -236,7 +240,7 @@ export async function postPaymentReceived(params: {
 
   return createJournal({
     periodCode: getPeriodCode(),
-    date: new Date().toISOString().substring(0, 10),
+    date: bizToday(),
     description: `收款 ${params.orderNo} ${params.customerName}`,
     sourceType: 'receipt',
     sourceId: params.orderId,
@@ -258,7 +262,7 @@ export async function postPaymentMade(params: {
 }) {
   return createJournal({
     periodCode: getPeriodCode(),
-    date: new Date().toISOString().substring(0, 10),
+    date: bizToday(),
     description: `付款 ${params.orderNo} ${params.supplierName}`,
     sourceType: 'payment',
     sourceId: params.payableId,
@@ -311,7 +315,7 @@ export async function postOrderReceiptSync(orderId: string) {
 
   const res = await createJournal({
     periodCode: getPeriodCode(),
-    date: new Date().toISOString().substring(0, 10),
+    date: bizToday(),
     description: `收款 ${order.order_no} ${customerName}`,
     sourceType: 'receipt',
     sourceId: orderId,
@@ -345,7 +349,7 @@ export async function postSupplierPayment(paymentId: string) {
 
   const res = await createJournal({
     periodCode: getPeriodCode((pay.paid_at as string) || undefined),
-    date: ((pay.paid_at as string) || new Date().toISOString()).substring(0, 10),
+    date: pay.paid_at ? bizDateOf(pay.paid_at as string) : bizToday(),
     description: `付款 ${supplierName}`,
     sourceType: 'supplier_payment',
     sourceId: paymentId,
@@ -377,11 +381,13 @@ export async function getTrialBalance(periodCode: string) {
  */
 export async function getAccountDetail(accountCode: string, periodCode: string) {
   const supabase = await createClient()
-  const { data, error } = await supabase
+  // 分页取全量：科目流水超 1000 行后若被截断，期间过滤会静默丢凭证行
+  const { data, error } = await fetchAll<Record<string, unknown>>((from, to) => supabase
     .from('journal_lines')
     .select('*, journal_entries(voucher_no, voucher_date, description, status)')
     .eq('account_code', accountCode)
-    .order('created_at')
+    .order('created_at').order('id', { ascending: true })
+    .range(from, to))
 
   if (error) throw error
   // 筛选期间

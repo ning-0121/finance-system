@@ -3,6 +3,7 @@
 // ============================================================
 
 import { createClient } from './client'
+import { fetchAll } from './fetch-all'
 import type {
   SubDocument, SubDocumentType, SubDocItem,
   ActualInvoice, ShippingDocument, InventoryReturn,
@@ -17,21 +18,24 @@ import type {
 export async function getReceivablePayments(): Promise<ReceivablePayment[]> {
   try {
     const supabase = createClient()
-    const { data, error } = await supabase
+    const { data, error } = await fetchAll<ReceivablePayment>((from, to) => supabase
       .from('receivable_payments').select('*').is('voided_at', null)
-      .order('received_at', { ascending: false })
+      .order('received_at', { ascending: false }).order('id', { ascending: true })
+      .range(from, to))
     if (error || !data) return []
-    return data as ReceivablePayment[]
+    return data
   } catch { return [] }
 }
 
 export async function getReceivableAllocations(): Promise<ReceivablePaymentAllocation[]> {
   try {
     const supabase = createClient()
-    const { data, error } = await supabase
-      .from('receivable_payment_allocations').select('*').is('voided_at', null).order('created_at', { ascending: true })
+    const { data, error } = await fetchAll<ReceivablePaymentAllocation>((from, to) => supabase
+      .from('receivable_payment_allocations').select('*').is('voided_at', null)
+      .order('created_at', { ascending: true }).order('id', { ascending: true })
+      .range(from, to))
     if (error || !data) return []
-    return data as ReceivablePaymentAllocation[]
+    return data
   } catch { return [] }
 }
 
@@ -329,12 +333,13 @@ export async function generateOrderSettlement(budgetOrderId: string): Promise<{ 
       .select('*')
       .eq('budget_order_id', budgetOrderId)
 
-    // 2. 获取订单级费用（cost_items中直接挂订单的）
+    // 2. 获取订单级费用（cost_items中直接挂订单的）；必须排除已软删的费用
     const { data: orderCosts } = await supabase
       .from('cost_items')
       .select('*')
       .eq('budget_order_id', budgetOrderId)
       .is('sub_document_id', null) // 注意：需先给cost_items添加此列
+      .is('deleted_at', null)
 
     // 3. 获取库存冲减
     const { data: returns } = await supabase
@@ -342,42 +347,59 @@ export async function generateOrderSettlement(budgetOrderId: string): Promise<{ 
       .select('total_value, accounting_treatment')
       .eq('budget_order_id', budgetOrderId)
 
-    // 4. 获取预算单总收入
+    // 4. 获取预算单（收入 + 订单级预算费用，用于预算侧回填与折汇）
     const { data: budget } = await supabase
       .from('budget_orders')
-      .select('total_revenue')
+      .select('total_revenue, currency, exchange_rate, estimated_freight, estimated_commission, estimated_customs_fee, other_costs')
       .eq('id', budgetOrderId)
       .single()
 
-    // 计算
-    const subSettlements: SubSettlement[] = (subDocs || []).map(d => ({
-      sub_document_id: d.id,
-      doc_type: d.doc_type,
-      supplier_name: d.supplier_name,
-      budgeted: d.estimated_total || 0,
-      actual: d.actual_total || d.estimated_total || 0,
-      variance: d.variance || 0,
-      variance_pct: d.estimated_total ? Math.round(((d.variance || 0) / d.estimated_total) * 10000) / 100 : 0,
-    }))
+    // 决算单全部以人民币口径计算（与展示层「实际利润 (CNY)」一致）
+    const r2 = (n: number) => Math.round(n * 100) / 100
+    const toCny = (amount: number | null | undefined, currency?: string | null, rate?: number | null) =>
+      (Number(amount) || 0) * ((currency || 'CNY') === 'CNY' ? 1 : (Number(rate) || 1))
+    const orderRate = budget?.currency === 'CNY' ? 1 : (Number(budget?.exchange_rate) || 1)
 
+    // 计算（用 ?? 而非 ||：实际为 0 是真实决算值，不能回退到预算）
+    const subSettlements: SubSettlement[] = (subDocs || []).map(d => {
+      const budgeted = r2(toCny(d.estimated_total, d.currency, d.exchange_rate))
+      const actual = r2(toCny(d.actual_total ?? d.estimated_total, d.currency, d.exchange_rate))
+      return {
+        sub_document_id: d.id,
+        doc_type: d.doc_type,
+        supplier_name: d.supplier_name,
+        budgeted,
+        actual,
+        variance: r2(actual - budgeted),
+        variance_pct: budgeted ? Math.round(((actual - budgeted) / budgeted) * 10000) / 100 : 0,
+      }
+    })
+
+    // 订单级预算回填：与编辑页口径一致（estimated_commission=加工费、freight=运费、customs_fee=报关费、other_costs=其他）
     const orderLevelCosts: OrderLevelCost[] = [
-      { category: '运费', budgeted: 0, actual: 0, variance: 0 },
-      { category: '佣金', budgeted: 0, actual: 0, variance: 0 },
-      { category: '报关费', budgeted: 0, actual: 0, variance: 0 },
+      { category: '面料', budgeted: 0, actual: 0, variance: 0 },
+      { category: '辅料', budgeted: 0, actual: 0, variance: 0 },
+      { category: '运费', budgeted: r2(toCny(budget?.estimated_freight, budget?.currency, budget?.exchange_rate)), actual: 0, variance: 0 },
+      { category: '加工费', budgeted: r2(toCny(budget?.estimated_commission, budget?.currency, budget?.exchange_rate)), actual: 0, variance: 0 },
+      { category: '报关费', budgeted: r2(toCny(budget?.estimated_customs_fee, budget?.currency, budget?.exchange_rate)), actual: 0, variance: 0 },
       { category: '税费', budgeted: 0, actual: 0, variance: 0 },
-      { category: '其他', budgeted: 0, actual: 0, variance: 0 },
+      { category: '其他', budgeted: r2(toCny(budget?.other_costs, budget?.currency, budget?.exchange_rate)), actual: 0, variance: 0 },
     ]
 
-    // 填充订单级费用
+    // 填充订单级费用（cost_type 映射与订单详情/决算页 CT2CAT 对齐；金额逐条按自身币种折人民币）
     const costTypeMap: Record<string, string> = {
-      freight: '运费', commission: '佣金', customs: '报关费', tax: '税费', other: '其他',
+      fabric: '面料', accessory: '辅料',
+      freight: '运费', forwarder: '运费',
+      commission: '加工费', processing: '加工费',
+      customs: '报关费', container: '报关费',
+      tax: '税费', logistics: '其他', other: '其他',
     }
     for (const c of (orderCosts || [])) {
       const cat = costTypeMap[c.cost_type] || '其他'
       const item = orderLevelCosts.find(o => o.category === cat)
       if (item) {
-        item.actual += c.amount || 0
-        item.variance = item.actual - item.budgeted
+        item.actual = r2(item.actual + toCny(c.amount, c.currency, c.exchange_rate ?? orderRate))
+        item.variance = r2(item.actual - item.budgeted)
       }
     }
 
@@ -385,11 +407,12 @@ export async function generateOrderSettlement(budgetOrderId: string): Promise<{ 
       .filter(r => r.accounting_treatment === 'reduce_cost')
       .reduce((s, r) => s + (r.total_value || 0), 0)
 
-    const totalBudget = subSettlements.reduce((s, d) => s + d.budgeted, 0) + orderLevelCosts.reduce((s, c) => s + c.budgeted, 0)
-    const totalActual = subSettlements.reduce((s, d) => s + d.actual, 0) + orderLevelCosts.reduce((s, c) => s + c.actual, 0) - inventoryCredit
-    const totalVariance = totalActual - totalBudget
-    const totalRevenue = budget?.total_revenue || 0
-    const finalProfit = totalRevenue - totalActual
+    const totalBudget = r2(subSettlements.reduce((s, d) => s + d.budgeted, 0) + orderLevelCosts.reduce((s, c) => s + c.budgeted, 0))
+    const totalActual = r2(subSettlements.reduce((s, d) => s + d.actual, 0) + orderLevelCosts.reduce((s, c) => s + c.actual, 0) - inventoryCredit)
+    const totalVariance = r2(totalActual - totalBudget)
+    // 收入折人民币后再减成本（修复：USD 收入与人民币成本混减）
+    const totalRevenue = r2(toCny(budget?.total_revenue, budget?.currency, budget?.exchange_rate))
+    const finalProfit = r2(totalRevenue - totalActual)
     const finalMargin = totalRevenue > 0 ? Math.round((finalProfit / totalRevenue) * 10000) / 100 : 0
 
     // 5. Upsert 决算单
@@ -531,18 +554,18 @@ export async function getPayableRecords(filters?: {
 }): Promise<PayableRecord[]> {
   try {
     const supabase = createClient()
-    let query = supabase
-      .from('payable_records')
-      .select('*')
-      .order('created_at', { ascending: false })
-
-    if (filters?.budgetOrderId) query = query.eq('budget_order_id', filters.budgetOrderId)
-    if (filters?.paymentStatus) query = query.eq('payment_status', filters.paymentStatus)
-    if (filters?.supplierName) query = query.ilike('supplier_name', `%${filters.supplierName}%`)
-
-    const { data, error } = await query
+    const { data, error } = await fetchAll<PayableRecord>((from, to) => {
+      let query = supabase
+        .from('payable_records')
+        .select('*')
+        .order('created_at', { ascending: false }).order('id', { ascending: true })
+      if (filters?.budgetOrderId) query = query.eq('budget_order_id', filters.budgetOrderId)
+      if (filters?.paymentStatus) query = query.eq('payment_status', filters.paymentStatus)
+      if (filters?.supplierName) query = query.ilike('supplier_name', `%${filters.supplierName}%`)
+      return query.range(from, to)
+    })
     if (error || !data) return []
-    return data as PayableRecord[]
+    return data
   } catch {
     return []
   }
@@ -559,17 +582,17 @@ export async function getSupplierStatements(filters?: {
 }): Promise<Record<string, unknown>[]> {
   try {
     const supabase = createClient()
-    let query = supabase
-      .from('actual_invoices')
-      .select('supplier_name, total_amount, currency, status, invoice_date, invoice_no, budget_order_id')
-      .not('supplier_name', 'is', null)
-      .order('invoice_date', { ascending: false })
-
-    if (filters?.supplierName) query = query.ilike('supplier_name', `%${filters.supplierName}%`)
-    if (filters?.startDate) query = query.gte('invoice_date', filters.startDate)
-    if (filters?.endDate) query = query.lte('invoice_date', filters.endDate)
-
-    const { data, error } = await query
+    const { data, error } = await fetchAll<Record<string, unknown>>((from, to) => {
+      let query = supabase
+        .from('actual_invoices')
+        .select('supplier_name, total_amount, currency, status, invoice_date, invoice_no, budget_order_id')
+        .not('supplier_name', 'is', null)
+        .order('invoice_date', { ascending: false }).order('id', { ascending: true })
+      if (filters?.supplierName) query = query.ilike('supplier_name', `%${filters.supplierName}%`)
+      if (filters?.startDate) query = query.gte('invoice_date', filters.startDate)
+      if (filters?.endDate) query = query.lte('invoice_date', filters.endDate)
+      return query.range(from, to)
+    })
     if (error || !data) return []
     return data
   } catch {
@@ -588,19 +611,19 @@ export async function getSupplierPayments(filters?: {
 }): Promise<SupplierPayment[]> {
   try {
     const supabase = createClient()
-    let query = supabase
-      .from('supplier_payments')
-      .select('*')
-      .is('deleted_at', null)
-      .order('paid_at', { ascending: true })
-
-    if (filters?.supplierName) query = query.ilike('supplier_name', `%${filters.supplierName}%`)
-    if (filters?.startDate) query = query.gte('paid_at', filters.startDate)
-    if (filters?.endDate) query = query.lte('paid_at', filters.endDate)
-
-    const { data, error } = await query
+    const { data, error } = await fetchAll<SupplierPayment>((from, to) => {
+      let query = supabase
+        .from('supplier_payments')
+        .select('*')
+        .is('deleted_at', null)
+        .order('paid_at', { ascending: true }).order('id', { ascending: true })
+      if (filters?.supplierName) query = query.ilike('supplier_name', `%${filters.supplierName}%`)
+      if (filters?.startDate) query = query.gte('paid_at', filters.startDate)
+      if (filters?.endDate) query = query.lte('paid_at', filters.endDate)
+      return query.range(from, to)
+    })
     if (error || !data) return []
-    return data as SupplierPayment[]
+    return data
   } catch {
     return []
   }

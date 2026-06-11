@@ -8,6 +8,7 @@
 // 金额口径：未收/逾期均按人民币(¥)汇总，同时保留原币字段。
 // ============================================================
 
+import { bizToday } from '@/lib/biz-date'
 import { useState, useEffect, useMemo, Fragment } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -167,7 +168,7 @@ export default function ReceivablesPage() {
   const [expandedOrder, setExpandedOrder] = useState<Record<string, boolean>>({})
   // 登记回款 Dialog
   const [regOpen, setRegOpen] = useState(false)
-  const [regForm, setRegForm] = useState({ customer: '', amount: '', currency: 'CNY', rate: '1', date: new Date().toISOString().slice(0, 10), bank: '', ref: '', source: 'manual' as ReceivablePayment['source_type'], notes: '' })
+  const [regForm, setRegForm] = useState({ customer: '', amount: '', currency: 'CNY', rate: '1', date: bizToday(), bank: '', ref: '', source: 'manual' as ReceivablePayment['source_type'], notes: '' })
   const [regSaving, setRegSaving] = useState(false)
   // 匹配 Dialog（把某回款匹配到某订单）
   const [matchReceipt, setMatchReceipt] = useState<ReceivablePayment | null>(null)
@@ -351,7 +352,7 @@ export default function ReceivablesPage() {
     if (error) { toast.error(error); return }
     toast.success('回款已登记，进入「未匹配回款」等待匹配')
     setRegOpen(false)
-    setRegForm({ customer: '', amount: '', currency: 'CNY', rate: '1', date: new Date().toISOString().slice(0, 10), bank: '', ref: '', source: 'manual', notes: '' })
+    setRegForm({ customer: '', amount: '', currency: 'CNY', rate: '1', date: bizToday(), bank: '', ref: '', source: 'manual', notes: '' })
     try { await reload() } catch { /* */ }
   }
 
@@ -412,7 +413,7 @@ export default function ReceivablesPage() {
 
   if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
 
-  const openReceipt = (r: ReceivableRow) => { setReceiptDialog(r); setReceiptAmount(String(r.paid)); setReceiptDate(r.receivedAt ? r.receivedAt.slice(0, 10) : new Date().toISOString().slice(0, 10)); setReceiptBank(r.bank || '') }
+  const openReceipt = (r: ReceivableRow) => { setReceiptDialog(r); setReceiptAmount(String(r.paid)); setReceiptDate(r.receivedAt ? r.receivedAt.slice(0, 10) : bizToday()); setReceiptBank(r.bank || '') }
 
   return (
     <div className="flex flex-col h-full">

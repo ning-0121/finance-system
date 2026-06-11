@@ -11,6 +11,8 @@
 //   - 每张凭证借贷自平衡，且带 relatedOrderId 等 provenance
 // ============================================================
 
+import { bizToday, bizDateOf } from '@/lib/biz-date'
+
 export type GlErrorCode =
   | 'MISSING_RATE'
   | 'PERIOD_CLOSED'
@@ -236,7 +238,7 @@ export function buildArReceipt(input: ReceiptInput): JournalSpec | null {
   const bankCode = input.bankCode || bankAccountForCurrency(order.currency)
   return {
     periodCode: periodCodeOf(),
-    date: new Date().toISOString().slice(0, 10),
+    date: bizToday(),
     description: `收款 ${order.order_no} ${order.customer_company || ''}${input.bankName ? ' @' + input.bankName : ''}`.trim(),
     sourceType: 'receipt',
     sourceId: order.id,
@@ -265,7 +267,7 @@ export function buildApPayment(input: PaymentInput): JournalSpec | null {
   const bankCode = input.bankCode || bankAccountForCurrency(input.currency)
   return {
     periodCode: periodCodeOf(input.paid_at || undefined),
-    date: (input.paid_at || new Date().toISOString()).slice(0, 10),
+    date: input.paid_at ? bizDateOf(input.paid_at) : bizToday(),
     description: `付款 ${input.supplier_name}`,
     sourceType: 'supplier_payment',
     sourceId: input.id,

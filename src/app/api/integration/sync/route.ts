@@ -1,5 +1,6 @@
 // POST /api/integration/sync
 // 从节拍器Supabase主动拉取最新订单，同步到财务系统
+import { bizToday } from '@/lib/biz-date'
 import { NextResponse } from 'next/server'
 import { createClient as createMetronomeClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
@@ -141,7 +142,7 @@ export async function POST() {
         currency: o.currency || 'USD',
         exchange_rate: null, // 同步时不知道实际汇率，需财务人员手动补填
         status: 'draft',
-        order_date: new Date().toISOString().substring(0, 10),
+        order_date: bizToday(),
         created_by: createdBy,
         notes: `来源: 订单节拍器 节拍器订单号: ${o.order_no} 内部单号: ${o.internal_order_no || ''} 客户: ${o.customer_name || ''} 数量: ${o.quantity || ''}${o.quantity_unit || '件'}`,
         has_sub_documents: false,

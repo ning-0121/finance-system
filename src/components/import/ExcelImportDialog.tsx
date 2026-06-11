@@ -19,6 +19,7 @@ import { toast } from 'sonner'
 import { detectFileType, FILE_TYPE_LABELS, FILE_TYPE_TO_COST_TYPE, type ImportFileType } from '@/lib/excel/detect-file-type'
 import { parseNumber, roundAmount } from '@/lib/excel/validators'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 import type { CostType } from '@/lib/types'
 
 interface Props {
@@ -64,7 +65,7 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
   const [costType, setCostType] = useState<CostType>('freight')
 
   // 订单列表（用于关联）
-  const [orderOptions, setOrderOptions] = useState<{ id: string; order_no: string }[]>([])
+  const [orderOptions, setOrderOptions] = useState<{ id: string; order_no: string; currency?: string; exchange_rate?: number }[]>([])
   const [selectedOrderId, setSelectedOrderId] = useState('')
 
   // 加载订单列表
@@ -72,7 +73,7 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
     if (!open) return
     async function loadOrders() {
       const supabase = createClient()
-      const { data } = await supabase.from('budget_orders').select('id, order_no').order('order_no', { ascending: false }).limit(200)
+      const { data } = await supabase.from('budget_orders').select('id, order_no, currency, exchange_rate').is('deleted_at', null).order('order_no', { ascending: false }).limit(200)
       if (data) setOrderOptions(data)
     }
     loadOrders()
@@ -203,8 +204,10 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
     }
     if (!userId) { toast.error('无法获取用户信息'); setImporting(false); return }
 
-    // 去重检测
-    const { data: existing } = await supabase.from('cost_items').select('description, amount').eq('source_module', 'excel_import')
+    // 去重检测（分页取全量：超 1000 行后去重基准不全会导致重复入账）
+    const { data: existing } = await fetchAll<{ description: string; amount: number }>((from, to) =>
+      supabase.from('cost_items').select('description, amount').eq('source_module', 'excel_import')
+        .order('id', { ascending: true }).range(from, to))
     const existingSet = new Set((existing || []).map(e => `${e.description}|${e.amount}`))
 
     for (let i = 0; i < rows.length; i++) {
@@ -230,14 +233,24 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
         }
       }
 
+      // 汇率：CNY 恒为 1；外币用关联订单的汇率，关联不上则拒绝该行（绝不按 1:1 折人民币）
+      const rowCurrency = currencyCol ? String(row[currencyCol] || 'CNY').toUpperCase() : 'CNY'
+      let rowRate = 1
+      if (rowCurrency !== 'CNY' && rowCurrency !== 'RMB') {
+        const linkedOrder = budgetOrderId ? orderOptions.find(o => o.id === budgetOrderId) : null
+        const orderRate = linkedOrder && linkedOrder.currency !== 'CNY' ? Number(linkedOrder.exchange_rate) : 0
+        if (!orderRate) { failCount++; continue }
+        rowRate = orderRate
+      }
+
       try {
         const { error } = await supabase.from('cost_items').insert({
           budget_order_id: budgetOrderId,
           cost_type: costType,
           description: fullDesc || fileName,
           amount,
-          currency: currencyCol ? String(row[currencyCol] || 'CNY').toUpperCase() : 'CNY',
-          exchange_rate: 1,
+          currency: rowCurrency,
+          exchange_rate: rowRate,
           source_module: 'excel_import',
           source_id: fileName,
           created_by: userId,

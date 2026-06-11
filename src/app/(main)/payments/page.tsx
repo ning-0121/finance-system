@@ -142,8 +142,15 @@ export default function PaymentsPage() {
     setProcessing(true)
     try {
       const supabase = createClient()
-      const { error } = await supabase.from('payable_records').update({ payment_status: 'approved', approved_at: new Date().toISOString() }).eq('id', id)
+      // 状态前置条件：只允许从待审批状态变更，防并发重复审批/对已付记录误操作；
+      // .select() 取命中行数——0 行说明状态已被他人变更（PostgREST 0 行更新不报错）
+      const { data: hit, error } = await supabase.from('payable_records')
+        .update({ payment_status: 'approved', approved_at: new Date().toISOString() })
+        .eq('id', id)
+        .in('payment_status', ['unpaid', 'pending_approval'])
+        .select('id')
       if (error) throw error
+      if (!hit || hit.length === 0) { toast.error('该记录状态已变更（可能已被他人审批/付款），请刷新后重试'); setProcessing(false); return }
       setRecords(records.map(r => r.id === id ? { ...r, payment_status: 'approved' as PaymentStatus } : r))
       toast.success('已审批通过')
     } catch (err) { toast.error(`审批失败: ${err instanceof Error ? err.message : '未知错误'}`) }
@@ -155,12 +162,16 @@ export default function PaymentsPage() {
     setProcessing(true)
     try {
       const supabase = createClient()
-      const { error } = await supabase.from('payable_records').update({
+      // 前置条件：仅 approved 可付款（防两个出纳并发重复付款）；
+      // notes 追加而非覆盖（创建时写入的收款账号快照是审计线索，不能丢）
+      const mergedNotes = [payDialog.notes, payNote ? `[付款备注] ${payNote}` : ''].filter(Boolean).join('\n') || null
+      const { data: hit, error } = await supabase.from('payable_records').update({
         payment_status: 'paid', paid_at: new Date().toISOString(),
         paid_amount: payDialog.amount, payment_method: 'bank_transfer',
-        payment_reference: payRef || null, notes: payNote || null,
-      }).eq('id', payDialog.id)
+        payment_reference: payRef || null, notes: mergedNotes,
+      }).eq('id', payDialog.id).eq('payment_status', 'approved').select('id')
       if (error) throw error
+      if (!hit || hit.length === 0) { toast.error('该笔不是「已审批」状态（可能已被付款或被退回），请刷新后重试'); setProcessing(false); return }
 
       if (payDialog.invoice_id) {
         const { error: invoiceErr } = await supabase.from('actual_invoices').update({ status: 'paid' }).eq('id', payDialog.invoice_id)

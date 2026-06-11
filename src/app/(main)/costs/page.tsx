@@ -23,6 +23,7 @@ import { ExcelImportDialog } from '@/components/import/ExcelImportDialog'
 import { toast } from 'sonner'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 import type { BudgetOrder, CostType } from '@/lib/types'
 import { validateCostEntry, type ValidationWarning } from '@/lib/engines/validation-engine'
 import { allocateAmountByOrderQty, orderTotalQty } from '@/lib/engines/cost-allocation'
@@ -119,12 +120,15 @@ export default function CostsPage() {
           setSyncedOrderMap(map)
         }
 
-        // 尝试从Supabase加载费用
+        // 尝试从Supabase加载费用（分页取全量，防 1000 行截断；排除已软删；报错不静默）
         const supabase = createClient()
-        const { data } = await supabase
+        const { data, error } = await fetchAll<Record<string, unknown>>((from, to) => supabase
           .from('cost_items')
           .select('*, budget_orders(order_no)')
-          .order('created_at', { ascending: false })
+          .is('deleted_at', null)
+          .order('created_at', { ascending: false }).order('id', { ascending: true })
+          .range(from, to))
+        if (error) toast.error(`费用台账加载失败：${error.message}`)
 
         if (data && data.length > 0) {
           setCostItems(data.map((r: Record<string, unknown>) => {

@@ -2,6 +2,7 @@
 // 外贸服装公司核心场景：USD收入 → 结汇CNY → 与预算汇率比较 → 产生汇兑损益
 import { createClient } from '@/lib/supabase/client'
 import { safeRate, sumAmounts, mulAmount } from './utils'
+import { bizToday } from '@/lib/biz-date'
 
 interface FxGainResult {
   orderId: string
@@ -126,7 +127,7 @@ export async function createFxRevaluationDraft(
 
   const { data, error } = await supabase.rpc('create_journal_draft', {
     p_period_code: periodCode,
-    p_date: asOfDate ?? new Date().toISOString().substring(0, 10),
+    p_date: asOfDate ?? bizToday(),
     p_description: `期末汇兑损益重估 ${periodCode} 实际汇率${actualRate ?? '-'}`,
     p_source_type: 'fx_revaluation',
     p_source_id: crypto.randomUUID(), // 期末重估无单一源单据，用合成 id 满足 provenance 非空
