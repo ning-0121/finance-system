@@ -69,7 +69,9 @@ export function SupplierPayableDetail({
   const lines = preloaded ? linesProp! : fetchedLines
   const payments = preloaded ? (paymentsProp || []) : fetchedPayments
   const [expandedItem, setExpandedItem] = useState<Record<string, boolean>>({})
-  const [tab, setTab] = useState('byitem')
+  // 默认打开「全部费用明细」：财务要求的表头格式（日期-内部订单号-品名-颜色-匹数-
+  // 数量-单价-金额-已付款-未付）在此标签页，必须是打开供应商后第一眼看到的视图
+  const [tab, setTab] = useState('all')
 
   useEffect(() => {
     if (preloaded) return  // 已有预加载数据，不查库
@@ -408,33 +410,39 @@ export function SupplierPayableDetail({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>日期</TableHead>
+                    <TableHead className="whitespace-nowrap">日期</TableHead>
                     <TableHead>内部订单号</TableHead>
-                    <TableHead>类型</TableHead>
-                    <TableHead className="min-w-[140px]">品名/描述</TableHead>
+                    <TableHead className="min-w-[120px]">品名</TableHead>
+                    <TableHead>颜色</TableHead>
+                    <TableHead className="text-right">匹数</TableHead>
                     <TableHead className="text-right">数量</TableHead>
                     <TableHead className="text-right">单价</TableHead>
-                    <TableHead className="text-right">未付金额(¥)</TableHead>
+                    <TableHead className="text-right">金额(¥)</TableHead>
+                    <TableHead className="text-right">已付款</TableHead>
+                    <TableHead className="text-right">未付</TableHead>
                     <TableHead className="text-right">账龄</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {unpaidLines.map(l => (
                     <TableRow key={l.id}>
-                      <TableCell className="text-xs text-muted-foreground">{new Date(l.createdAt).toLocaleDateString('zh-CN')}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{new Date(l.createdAt).toLocaleDateString('zh-CN')}</TableCell>
                       <TableCell className="text-sm font-medium">{l.orderLabel || '—'}</TableCell>
-                      <TableCell><span className="text-xs text-muted-foreground">{COST_TYPE_LABEL[l.cost_type] || l.cost_type}</span></TableCell>
                       <TableCell className="text-sm">{l.description}</TableCell>
+                      <TableCell className="text-sm">{l.color || '—'}</TableCell>
+                      <TableCell className="text-right text-sm tabular-nums">{l.rollCount != null ? l.rollCount : '—'}</TableCell>
                       <TableCell className="text-right text-sm tabular-nums">{l.qty != null ? `${l.qty}${l.unit || ''}` : '—'}</TableCell>
                       <TableCell className="text-right text-sm tabular-nums">{l.unit_price != null ? `¥${l.unit_price}` : '—'}</TableCell>
+                      <TableCell className="text-right text-sm tabular-nums">¥{l.amountCny.toLocaleString()}</TableCell>
+                      <TableCell className="text-right text-sm tabular-nums text-green-700">{l.amountCny - l.unpaidPortion > 0.005 ? `¥${(Math.round((l.amountCny - l.unpaidPortion) * 100) / 100).toLocaleString()}` : '—'}</TableCell>
                       <TableCell className="text-right text-sm tabular-nums font-semibold text-red-600">¥{l.unpaidPortion.toLocaleString()}</TableCell>
                       <TableCell className={`text-right text-xs ${l.agingDays > 60 ? 'text-red-600' : 'text-muted-foreground'}`}>{l.agingDays}天</TableCell>
                     </TableRow>
                   ))}
-                  {unpaidLines.length === 0 && <TableRow><TableCell colSpan={8} className="text-center py-10 text-muted-foreground">已全部付清 🎉</TableCell></TableRow>}
+                  {unpaidLines.length === 0 && <TableRow><TableCell colSpan={11} className="text-center py-10 text-muted-foreground">已全部付清 🎉</TableCell></TableRow>}
                   {unpaidLines.length > 0 && (
                     <TableRow className="bg-red-50/50 font-semibold border-t-2">
-                      <TableCell colSpan={6} className="text-right">应付余额合计</TableCell>
+                      <TableCell colSpan={9} className="text-right">应付余额合计</TableCell>
                       <TableCell className="text-right text-red-600">¥{summary.unpaid.toLocaleString()}</TableCell>
                       <TableCell />
                     </TableRow>
