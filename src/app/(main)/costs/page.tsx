@@ -24,6 +24,7 @@ import { toast } from 'sonner'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { getSuppliers } from '@/lib/supabase/queries-v2'
 import { normalizeSupplierName } from '@/lib/utils'
+import { bizToday } from '@/lib/biz-date'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import type { BudgetOrder, CostType } from '@/lib/types'
@@ -57,6 +58,7 @@ interface CostRecord {
   detail_meta?: { qty: number; unit: string; unit_price: number }
   color?: string | null
   roll_count?: number | null
+  delivery_date?: string | null // 送货日期（财务对账用，可自选；区别于录入时间）
   created_at: string
 }
 
@@ -84,6 +86,7 @@ export default function CostsPage() {
   const [formUnit, setFormUnit] = useState('件')
   const [formColor, setFormColor] = useState('')       // 颜色（面料等）
   const [formRollCount, setFormRollCount] = useState('') // 匹数
+  const [formDeliveryDate, setFormDeliveryDate] = useState(bizToday()) // 送货日期（可自选，默认今天）
   const [formAmount, setFormAmount] = useState('')
   const [formCurrency, setFormCurrency] = useState('CNY')
   const [formRate, setFormRate] = useState('1')
@@ -159,6 +162,7 @@ export default function CostsPage() {
               detail_meta: detailMeta,
               color: (r.color as string) || null,
               roll_count: r.roll_count != null ? Number(r.roll_count) : null,
+              delivery_date: (r.delivery_date as string) || null,
               created_at: r.created_at as string,
             }
           }))
@@ -301,6 +305,7 @@ export default function CostsPage() {
             supplier: formSupplier || null,
             source_module: formPaid ? 'paid' : null,
             source_id: JSON.stringify(metaObj),
+            delivery_date: formDeliveryDate || null,
           }
           const res = await supabase.from('cost_items').insert({ ...record, created_by: createdBy }).select('*, budget_orders(order_no)').single()
           if (res.error) throw res.error
@@ -336,7 +341,7 @@ export default function CostsPage() {
         setFormUnitPrice('')
         setFormUnit('件')
         setFormColor('')
-        setFormRollCount('')
+        setFormRollCount('');        setFormDeliveryDate(bizToday())
         setFormAmount('')
         setFormOrderId('')
         setFormPaid(false)
@@ -363,6 +368,7 @@ export default function CostsPage() {
         unit_price: (formQty || formUnitPrice) ? unitPriceNum : null,
         color: formColor.trim() || null,
         roll_count: formRollCount ? Number(formRollCount) : null,
+        delivery_date: formDeliveryDate || null,
       }
 
       let data: Record<string, unknown>
@@ -405,6 +411,9 @@ export default function CostsPage() {
         exchange_rate: data.exchange_rate as number,
         is_paid: data.source_module === 'paid',
         detail_meta: savedMeta,
+        color: (data.color as string) || null,
+        roll_count: data.roll_count != null ? Number(data.roll_count) : null,
+        delivery_date: (data.delivery_date as string) || null,
         created_at: data.created_at as string,
       }
       // 保存额外明细行（编辑和新增模式都需要）
@@ -441,6 +450,7 @@ export default function CostsPage() {
             unit_price: (line.qty || line.unitPrice) ? lineUnitPrice : null,
             color: line.color?.trim() || null,
             roll_count: line.roll ? Number(line.roll) : null,
+            delivery_date: formDeliveryDate || null,
             created_by: createdBy,
           }).select('*, budget_orders(order_no)').single()
 
@@ -465,6 +475,9 @@ export default function CostsPage() {
               exchange_rate: lineData.exchange_rate as number,
               is_paid: lineData.source_module === 'paid',
               detail_meta: lm,
+              color: (lineData.color as string) || null,
+              roll_count: lineData.roll_count != null ? Number(lineData.roll_count) : null,
+              delivery_date: (lineData.delivery_date as string) || null,
               created_at: lineData.created_at as string,
             })
           }
@@ -498,7 +511,7 @@ export default function CostsPage() {
     setFormUnitPrice('')
     setFormUnit('件')
     setFormColor('')
-    setFormRollCount('')
+    setFormRollCount('');    setFormDeliveryDate(bizToday())
     setFormAmount('')
     setFormOrderId('')
     setFormPaid(false)
@@ -616,7 +629,7 @@ export default function CostsPage() {
                     <TableHead>关联订单</TableHead>
                     <TableHead className="text-right">金额(¥)</TableHead>
                     <TableHead>付款</TableHead>
-                    <TableHead>日期</TableHead>
+                    <TableHead>送货日期</TableHead>
                     <TableHead className="text-center">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -649,7 +662,8 @@ export default function CostsPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
-                          {new Date(item.created_at).toLocaleDateString('zh-CN')}
+                          {/* 送货日期（财务对账口径）；历史数据无送货日期时回退录入日 */}
+                          {item.delivery_date ? new Date(item.delivery_date + 'T00:00:00').toLocaleDateString('zh-CN') : new Date(item.created_at).toLocaleDateString('zh-CN')}
                         </TableCell>
                         <TableCell className="text-center space-x-1">
                           <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => {
@@ -664,6 +678,7 @@ export default function CostsPage() {
                             setFormUnit(item.detail_meta?.unit || '件')
                             setFormColor(item.color || '')
                             setFormRollCount(item.roll_count != null ? String(item.roll_count) : '')
+                            setFormDeliveryDate(item.delivery_date || item.created_at.slice(0, 10))
                             setFormAmount(item.amount.toString())
                             setFormCurrency(item.currency)
                             setFormRate(item.exchange_rate.toString())
@@ -867,7 +882,7 @@ export default function CostsPage() {
               <Label>费用描述 *</Label>
               <Textarea placeholder="例：拉链、面料尾款、染色费" value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={1} />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div className="space-y-1">
                 <Label className="text-xs">颜色（可选）</Label>
                 <Input placeholder="如：黑色 / 海军蓝" value={formColor} onChange={e => setFormColor(e.target.value)} />
@@ -875,6 +890,10 @@ export default function CostsPage() {
               <div className="space-y-1">
                 <Label className="text-xs">匹数（可选）</Label>
                 <Input type="number" step="0.01" placeholder="0" value={formRollCount} onChange={e => setFormRollCount(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs font-semibold">送货日期 *</Label>
+                <Input type="date" value={formDeliveryDate} onChange={e => setFormDeliveryDate(e.target.value)} />
               </div>
             </div>
             <div className="grid grid-cols-4 gap-3">

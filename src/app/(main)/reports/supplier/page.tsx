@@ -101,7 +101,7 @@ export default function SupplierReportPage() {
       // 没有快照或是草稿 → 从实时数据自动汇总
       // 加载费用（含 数量/单位/单价）+ 供应商付款 + 同步订单（获取内部订单号）
       const [costRes, payList, syncedRes] = await Promise.all([
-        fetchAll<Record<string, unknown>>((from, to) => supabase.from('cost_items').select('id, description, amount, currency, exchange_rate, cost_type, supplier, source_module, quantity, unit, unit_price, budget_order_id, created_at, budget_orders(order_no, quote_no)').is('deleted_at', null).order('created_at', { ascending: false }).order('id', { ascending: true }).range(from, to)),
+        fetchAll<Record<string, unknown>>((from, to) => supabase.from('cost_items').select('id, description, amount, currency, exchange_rate, cost_type, supplier, source_module, quantity, unit, unit_price, budget_order_id, delivery_date, created_at, budget_orders(order_no, quote_no)').is('deleted_at', null).order('created_at', { ascending: false }).order('id', { ascending: true }).range(from, to)),
         getSupplierPayments(),
         // F7: 节拍器同步订单 — 用于把 cost_items 关联到内部订单号 (style_no)
         fetchAll<Record<string, unknown>>((from, to) => supabase.from('synced_orders').select('budget_order_id, order_no, style_no').not('budget_order_id', 'is', null).order('budget_order_id', { ascending: true }).range(from, to)),
@@ -148,7 +148,7 @@ export default function SupplierReportPage() {
             order_no: bo?.order_no || '',
             internal_no: sync?.internal_no || quoteFallback,
             metronome_no: sync?.metronome_no || '',
-            created_at: item.created_at as string,
+            created_at: (item.delivery_date as string) || (item.created_at as string), // 送货日期优先（财务对账口径）
             is_paid: (item.source_module as string) === 'paid',
             unit: (item.unit as string) || '',
             qty: item.quantity != null ? Number(item.quantity) : null,

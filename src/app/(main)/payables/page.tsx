@@ -89,7 +89,7 @@ export default function PayablesPage() {
         const [costRes, payList] = await Promise.all([
           fetchAll<Record<string, unknown>>((from, to) => supabase
             .from('cost_items')
-            .select('id, description, amount, currency, exchange_rate, supplier, cost_type, quantity, unit, unit_price, color, roll_count, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
+            .select('id, description, amount, currency, exchange_rate, supplier, cost_type, quantity, unit, unit_price, color, roll_count, source_id, budget_order_id, delivery_date, created_at, budget_orders(order_no, quote_no)')
             .is('deleted_at', null)
             .order('created_at', { ascending: true }).order('id', { ascending: true })
             .range(from, to)),
@@ -131,7 +131,7 @@ export default function PayablesPage() {
             cost_type: (c.cost_type as string) || '',
             amountCny: Math.round(amt * rate * 100) / 100,
             orderLabel,
-            createdAt: c.created_at as string,
+            createdAt: (c.delivery_date as string) || (c.created_at as string), // 送货日期优先（财务对账口径）
             agingDays: daysSince(c.created_at as string),
             qty, unit, unit_price: price,
             color: (c.color as string) || null,

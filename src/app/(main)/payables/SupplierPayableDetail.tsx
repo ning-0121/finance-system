@@ -84,7 +84,7 @@ export function SupplierPayableDetail({
         const [costRes, payList] = await Promise.all([
           fetchAll<Record<string, unknown>>((from, to) => supabase
             .from('cost_items')
-            .select('id, cost_type, description, supplier, amount, currency, exchange_rate, quantity, unit, unit_price, color, roll_count, source_id, budget_order_id, created_at, budget_orders(order_no, quote_no)')
+            .select('id, cost_type, description, supplier, amount, currency, exchange_rate, quantity, unit, unit_price, color, roll_count, source_id, budget_order_id, delivery_date, created_at, budget_orders(order_no, quote_no)')
             .is('deleted_at', null)
             .ilike('supplier', like)
             .order('created_at', { ascending: true }).order('id', { ascending: true })
@@ -129,7 +129,7 @@ export function SupplierPayableDetail({
               rollCount: c.roll_count != null ? Number(c.roll_count) : null,
               qty, unit, unit_price: price,
               amountCny: r2((Number(c.amount) || 0) * rate),
-              createdAt: c.created_at as string,
+              createdAt: (c.delivery_date as string) || (c.created_at as string), // 送货日期优先（财务对账口径）
               agingDays: daysSince(c.created_at as string),
             }
           })

@@ -243,6 +243,19 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
         rowRate = orderRate
       }
 
+      // 日期列（之前映射了但没写库）→ 送货日期；支持 Excel 序列数与常见文本格式
+      let deliveryDate: string | null = null
+      if (dateCol && row[dateCol] != null && row[dateCol] !== '') {
+        const v = row[dateCol]
+        if (typeof v === 'number' && v > 20000 && v < 60000) {
+          const d = new Date(Math.round((v - 25569) * 86400000)) // Excel 1900 序列 → UTC 日
+          if (!isNaN(d.getTime())) deliveryDate = d.toISOString().slice(0, 10)
+        } else {
+          const d = new Date(String(v).replace(/[年月.]/g, '-').replace(/日/g, ''))
+          if (!isNaN(d.getTime())) deliveryDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        }
+      }
+
       try {
         const { error } = await supabase.from('cost_items').insert({
           budget_order_id: budgetOrderId,
@@ -253,6 +266,7 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
           exchange_rate: rowRate,
           source_module: 'excel_import',
           source_id: fileName,
+          delivery_date: deliveryDate,
           created_by: userId,
         })
 

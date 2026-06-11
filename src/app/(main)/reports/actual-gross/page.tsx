@@ -79,7 +79,7 @@ export default function ActualGrossReportPage() {
         .eq('budget_order_id', orderId).eq('invoice_type', 'customer_statement').eq('status', 'paid')
         .is('deleted_at', null).order('invoice_date', { ascending: true }),
       sb.from('cost_items')
-        .select('cost_type, description, supplier, cost_group, quantity, unit, unit_price, amount, currency, exchange_rate, created_at')
+        .select('cost_type, description, supplier, cost_group, quantity, unit, unit_price, amount, currency, exchange_rate, delivery_date, created_at')
         .eq('budget_order_id', orderId).is('deleted_at', null)
         .order('cost_group, supplier, created_at'),
       sb.from('shipping_documents')
@@ -118,7 +118,9 @@ export default function ActualGrossReportPage() {
     }
     const productName = (order.items as unknown as Record<string, unknown>[])?.[0]?.product_name as string | undefined
     const orderWithCustomer = { ...order, product_name: productName || null, customer_name: order.customer?.company || '' }
-    const exp = (expenses && expenses.length > 0) ? expenses : synthesizeExpensesFromBudget(order)
+    // 支区「时间」列：送货日期优先（财务对账口径），历史数据回退录入时间
+    const expWithDate = (expenses || []).map(e => ({ ...e, created_at: (e as Record<string, unknown>).delivery_date as string || e.created_at }))
+    const exp = expWithDate.length > 0 ? expWithDate : synthesizeExpensesFromBudget(order)
     return buildSettlementBundle(
       orderWithCustomer as never,
       receiptRows,
