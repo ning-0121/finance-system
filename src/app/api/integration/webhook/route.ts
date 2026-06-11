@@ -307,15 +307,10 @@ async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResu
       return { status: 'draft_skipped', budget_order_id: synced.budget_order_id }
     }
 
-    // ────────── 3. 获取 actor profile ──────────
-    const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-    const createdBy = profiles?.[0]?.id
-    if (!createdBy) {
-      await markSyncStatus(supabase, order.id, 'no_actor_skipped', {
-        budget_sync_error: 'profiles 表为空，无可用 actor — 部署初期请先创建至少一个 profile',
-      })
-      return { status: 'no_actor_skipped', error: 'no actor profile available' }
-    }
+    // ────────── 3. actor：系统同步路径无登录人，created_by 记 null ──────────
+    // 旧实现取"第一个 profile"会把系统同步的单据伪造成某个真人创建（污染审计链）。
+    // 来源已由 synced_orders / integration_logs 完整记录（metronome webhook）。
+    const createdBy: string | null = null
 
     // ────────── 4. 查找或创建客户（注意：customers 不是受 trigger 保护的财务表） ──────────
     let customerId: string | null = null

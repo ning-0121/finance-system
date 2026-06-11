@@ -23,9 +23,10 @@ export async function runAllReconciliationChecks(periodCode: string): Promise<Ch
   results.push(await checkDuplicateOrders())
   results.push(await checkOrphanedRecords())
 
-  // 写入对账结果
+  // 写入对账结果 — checked_by 取真实登录人；系统自动巡检（无会话）记 null，
+  // 不冒用"第一个 profile"（防审计归属伪造）
   const supabase = await createClient()
-  const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
+  const { data: userData } = await supabase.auth.getUser()
   for (const r of results) {
     await supabase.from('reconciliation_checks').insert({
       check_type: r.type,
@@ -35,7 +36,7 @@ export async function runAllReconciliationChecks(periodCode: string): Promise<Ch
       actual_value: r.actual,
       variance: r.variance,
       details: r.details,
-      checked_by: profiles?.[0]?.id,
+      checked_by: userData?.user?.id ?? null,
     })
   }
 

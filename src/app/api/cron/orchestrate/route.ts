@@ -11,7 +11,7 @@ import { generateDailyReport, formatReportAsMarkdown } from '@/lib/engines/repor
 import { recordTimelineEvent } from '@/lib/engines/timeline-engine'
 import { notifyPaymentReminder, notifyCollectionReminder } from '@/lib/wecom/notifications'
 import { pushDailyDigestToGroup } from '@/lib/wecom/robot'
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60 // Allow up to 60s for full orchestration run
@@ -159,7 +159,7 @@ export async function GET(request: Request) {
 // 内部函数：逾期应付提醒
 // ============================================================
 async function sendOverduePayableReminders(): Promise<void> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const today = bizToday()
 
   const { data: overdue } = await supabase
@@ -203,7 +203,7 @@ async function sendOverduePayableReminders(): Promise<void> {
 // 内部函数：逾期应收提醒（60天+严重逾期）
 // ============================================================
 async function sendOverdueReceivableReminders(): Promise<void> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const cutoffDate = new Date()
   cutoffDate.setDate(cutoffDate.getDate() - 60) // 60天前到期
   const cutoff = cutoffDate.toISOString().substring(0, 10)

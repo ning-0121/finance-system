@@ -44,13 +44,14 @@ async function createJournal(params: {
 }) {
   const supabase = await createClient()
 
-  // 获取创建者
+  // 获取创建者 — 凭证创建人必须是真实登录人或调用方显式传入，
+  // 不回退"表里第一个 profile"（防审计归属伪造）
   let createdBy = params.createdBy
   if (!createdBy) {
-    const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-    createdBy = profiles?.[0]?.id
+    const { data: userData } = await supabase.auth.getUser()
+    createdBy = userData?.user?.id
   }
-  if (!createdBy) throw new Error('无法确定凭证创建者，请确认用户已登录')
+  if (!createdBy) throw new Error('无法确定凭证创建者，请登录后再过账')
 
   // 精确累加（Decimal.js 避免浮点误差导致借贷不平衡误判）
   const totalDebit = sumAmounts(params.lines.map(l => l.debit))

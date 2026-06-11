@@ -264,9 +264,10 @@ export default function CostsPage() {
     setSaving(true)
     try {
       const supabase = createClient()
-      const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-      const createdBy = profiles?.[0]?.id
-      if (!createdBy) { toast.error('无法获取用户信息'); setSaving(false); return }
+      // created_by 必须是真实登录人（旧实现取"表里第一个 profile"会伪造审计归属）
+      const { data: userData } = await supabase.auth.getUser()
+      const createdBy = userData?.user?.id
+      if (!createdBy) { toast.error('登录态已失效，请重新登录后再录入'); setSaving(false); return }
 
       if (!editItem && entryMode === 'shared') {
         if (sharedOrderIds.length < 2) {

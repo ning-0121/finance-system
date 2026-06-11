@@ -88,8 +88,12 @@ export async function createFxRevaluationDraft(
   asOfDate?: string,
 ): Promise<{ created: boolean; reason?: string; journalId?: string; voucherNo?: string; net: number }> {
   const supabase = createClient()
-  const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-  const createdBy = profiles?.[0]?.id ?? null
+  // 草稿创建人必须是真实登录人（防审计归属伪造）；月结由财务在界面触发，必有会话
+  const { data: userData } = await supabase.auth.getUser()
+  const createdBy = userData?.user?.id ?? null
+  if (!createdBy) {
+    return { created: false, reason: '无法确定操作者（未登录），未生成重估草稿', net: 0 }
+  }
 
   const totalGain = sumAmounts(gains.filter(g => g.isGain).map(g => g.fxGainLoss))
   const totalLoss = sumAmounts(gains.filter(g => !g.isGain).map(g => Math.abs(g.fxGainLoss)))

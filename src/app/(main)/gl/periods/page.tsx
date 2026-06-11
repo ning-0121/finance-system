@@ -52,10 +52,12 @@ export default function PeriodsPage() {
     setProcessing(true)
     try {
       const supabase = createClient()
-      const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
+      // 锁账人必须是真实登录人（审计要件），不回退"第一个 profile"
+      const { data: userData } = await supabase.auth.getUser()
+      if (!userData?.user?.id) { toast.error('登录态已失效，请重新登录后再锁账'); setProcessing(false); return }
       const { error } = await supabase.from('accounting_periods').update({
         status: 'closed',
-        closed_by: profiles?.[0]?.id,
+        closed_by: userData.user.id,
         closed_at: new Date().toISOString(),
         close_notes: closeNotes || null,
       }).eq('id', closeDialog.id)

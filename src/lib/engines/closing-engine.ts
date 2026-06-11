@@ -261,9 +261,26 @@ export async function executeClosingCheck(
 
     // --- Reuse fx-gains.ts ---
     case 'fx_revaluation': {
-      // Use current market rate (default 7.1 if not supplied — real apps would fetch live)
-      const defaultRate = 7.1
-      const fxResults = await calculateAllFxGains(defaultRate)
+      // 重估汇率取自汇率主数据表（exchange_rates 最新一条）；取不到则不做重估，
+      // 绝不臆造汇率生成 GL 草稿（旧实现写死 7.1）
+      const sbRate = await createClient()
+      const { data: rateRows } = await sbRate
+        .from('exchange_rates')
+        .select('rate')
+        .eq('base_currency', 'USD').eq('quote_currency', 'CNY')
+        .order('fetched_at', { ascending: false })
+        .limit(1)
+      const marketRate = Number(rateRows?.[0]?.rate) || 0
+      if (!marketRate) {
+        result = {
+          type: 'fx_revaluation',
+          status: 'warning',
+          actual: 0,
+          details: { message: '未执行汇兑重估：汇率主数据表(exchange_rates)无可用汇率，请财务先录入当期汇率' },
+        }
+        break
+      }
+      const fxResults = await calculateAllFxGains(marketRate)
       const totalGainLoss = fxResults.reduce((s, r) => s + r.fxGainLoss, 0)
       // 接入受控灰度：生成「汇兑重估」草稿凭证（非阻塞、幂等、待人工复核过账）
       let draftMsg = ''
@@ -284,7 +301,7 @@ export async function executeClosingCheck(
         details: {
           orderCount: fxResults.length,
           totalGainLoss: Math.round(totalGainLoss * 100) / 100,
-          rate: defaultRate,
+          rate: marketRate,
           message: (fxResults.length === 0
             ? '无USD订单需要重估'
             : `${fxResults.length}笔USD订单重估, 净损益¥${totalGainLoss.toFixed(2)}`) + draftMsg,

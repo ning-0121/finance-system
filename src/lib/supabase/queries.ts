@@ -105,7 +105,9 @@ export async function createBudgetOrder(order: Partial<BudgetOrder>): Promise<{ 
 
   try {
     const supabase = createClient()
+    // created_by 必须是真实登录人，不回退"第一个 profile"（防审计归属伪造）
     const { data: userData } = await supabase.auth.getUser()
+    if (!userData?.user?.id) return { data: null, error: '登录态已失效，请重新登录后再创建订单' }
 
     const { data, error } = await supabase
       .from('budget_orders')
@@ -127,7 +129,7 @@ export async function createBudgetOrder(order: Partial<BudgetOrder>): Promise<{ 
         currency: order.currency || 'USD',
         exchange_rate: order.exchange_rate || 1,
         status: order.status || 'draft',
-        created_by: userData?.user?.id || (await supabase.from('profiles').select('id').limit(1).then(r => r.data?.[0]?.id)),
+        created_by: userData.user.id,
         notes: order.notes || null,
       })
       .select()

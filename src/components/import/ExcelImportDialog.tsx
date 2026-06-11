@@ -195,14 +195,10 @@ export function ExcelImportDialog({ open, onClose, onSuccess }: Props) {
     let successCount = 0, failCount = 0, skipCount = 0
     const supabase = createClient()
 
-    // 获取用户ID
+    // 获取用户ID — created_by 必须是真实登录人，不回退"第一个 profile"（防审计归属伪造）
     const { data: { user } } = await supabase.auth.getUser()
-    let userId = user?.id
-    if (!userId) {
-      const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-      userId = profiles?.[0]?.id
-    }
-    if (!userId) { toast.error('无法获取用户信息'); setImporting(false); return }
+    const userId = user?.id
+    if (!userId) { toast.error('登录态已失效，请重新登录后再导入'); setImporting(false); return }
 
     // 去重检测（分页取全量：超 1000 行后去重基准不全会导致重复入账）
     const { data: existing } = await fetchAll<{ description: string; amount: number }>((from, to) =>

@@ -85,6 +85,12 @@ export default function NewBudgetOrderPage() {
   useEffect(() => {
     getCustomers().then(setCustomers)
     getProducts().then(setProducts)
+    // 汇率预填：取汇率主数据表最新值（exchange_rates，经 /api/profit/fx）；
+    // 表为空时保留默认 7.24（接口会带 fallback 标记）
+    fetch('/api/profit/fx').then(r => r.ok ? r.json() : null).then(j => {
+      const rate = Number(j?.current_rate)
+      if (rate > 0 && !j?.fallback) setExchangeRate(String(rate))
+    }).catch(() => {})
   }, [])
 
   // 计算

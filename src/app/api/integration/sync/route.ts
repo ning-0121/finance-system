@@ -127,11 +127,12 @@ export async function POST() {
         continue
       }
 
-      // 获取创建者profile
-      const { data: profiles } = await finance.from('profiles').select('id').limit(1)
-      const createdBy = profiles?.[0]?.id
+      // 创建者 = 触发同步的登录人（UI 按钮触发，有会话）；无会话记 null，
+      // 不冒用"第一个 profile"（防审计归属伪造）
+      const { data: syncUser } = await finance.auth.getUser()
+      const createdBy = syncUser?.user?.id ?? null
 
-      if (!createdBy || !customerId) continue
+      if (!customerId) continue
 
       const totalAmount = Number(o.total_amount) || (Number(o.unit_price || 0) * Number(o.quantity || 0))
 
