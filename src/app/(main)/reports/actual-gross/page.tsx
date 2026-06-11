@@ -68,7 +68,12 @@ export default function ActualGrossReportPage() {
     const order = await getBudgetOrderById(orderId)
     if (!order) { toast.error('订单不存在'); return null }
     const sb = createClient()
-    const [{ data: receipts }, { data: expenses }, { data: ship }] = await Promise.all([
+    const [{ data: allocs }, { data: receipts }, { data: expenses }, { data: ship }] = await Promise.all([
+      // 回款流水（权威「已收」口径，与应收账款页一致）：分配明细 join 回款流水
+      sb.from('receivable_payment_allocations')
+        .select('amount_cny, receivable_payments(received_at, customer_name, bank_account, payment_reference, currency, exchange_rate)')
+        .eq('budget_order_id', orderId).is('voided_at', null)
+        .order('created_at', { ascending: true }),
       sb.from('actual_invoices')
         .select('invoice_date, total_amount, currency, exchange_rate, supplier_name, invoice_no')
         .eq('budget_order_id', orderId).eq('invoice_type', 'customer_statement').eq('status', 'paid')
@@ -81,12 +86,42 @@ export default function ActualGrossReportPage() {
         .select('completed_at, updated_at, status').eq('budget_order_id', orderId)
         .eq('status', 'completed').order('updated_at', { ascending: false }).limit(1).maybeSingle(),
     ])
+    // 收款口径统一：有回款流水 → 流水为准（修复「主页有回款、核算单显示暂无回款」）；
+    // 无流水 → 回退发票口径（历史数据兼容）。两者不合并，避免同一笔钱双算。
+    const ledgerReceipts = (allocs || []).map(a => {
+      const p = (a as Record<string, unknown>).receivable_payments as { received_at?: string; customer_name?: string; bank_account?: string; payment_reference?: string; currency?: string; exchange_rate?: number } | null
+      const cny = Number((a as Record<string, unknown>).amount_cny) || 0
+      const rate = Number(p?.exchange_rate) || 0
+      const isUsd = p?.currency === 'USD' && rate > 0
+      return {
+        invoice_date: p?.received_at || null,
+        // USD 回款按流水汇率反推美金额，保留核算单「美金/汇率」两列；CNY 直收按 1
+        total_amount: isUsd ? Math.round((cny / rate) * 100) / 100 : cny,
+        currency: isUsd ? 'USD' : 'CNY',
+        exchange_rate: isUsd ? rate : 1,
+        supplier_name: p?.customer_name || p?.bank_account || null,
+        invoice_no: p?.payment_reference || '回款流水',
+      }
+    })
+    let receiptRows = ledgerReceipts.length > 0 ? ledgerReceipts : (receipts || [])
+    // 第三层回退：历史「登记收款」只写了 ar_received_amount（无流水/无发票明细）。
+    // 合成一行汇总，保证核算单「收」与毛利表主页的实际收款一致，不再显示「暂无回款」。
+    if (receiptRows.length === 0 && Number(order.ar_received_amount) > 0) {
+      receiptRows = [{
+        invoice_date: null,
+        total_amount: Number(order.ar_received_amount) || 0,
+        currency: order.currency || 'CNY',
+        exchange_rate: order.currency === 'CNY' ? 1 : (Number(order.exchange_rate) || 1),
+        supplier_name: order.customer?.company || null,
+        invoice_no: '历史登记已收（无流水明细）',
+      }]
+    }
     const productName = (order.items as unknown as Record<string, unknown>[])?.[0]?.product_name as string | undefined
     const orderWithCustomer = { ...order, product_name: productName || null, customer_name: order.customer?.company || '' }
     const exp = (expenses && expenses.length > 0) ? expenses : synthesizeExpensesFromBudget(order)
     return buildSettlementBundle(
       orderWithCustomer as never,
-      receipts || [],
+      receiptRows,
       exp as never,
       (ship?.completed_at as string | undefined) || (ship?.updated_at as string | undefined) || null,
     )
@@ -365,7 +400,7 @@ export default function ActualGrossReportPage() {
 
       {/* 订单核算单 · 页面查看 */}
       <Dialog open={!!viewBundle} onOpenChange={(o) => { if (!o) setViewBundle(null) }}>
-        <DialogContent className="max-w-4xl max-h-[88vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-[min(1280px,96vw)] max-h-[90vh] overflow-y-auto">
           {viewBundle && (() => {
             const b = viewBundle
             const r2 = (n: number) => Math.round(n * 100) / 100

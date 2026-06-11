@@ -22,6 +22,8 @@ import { Plus, Loader2, Receipt, TrendingUp, Package, Ship, FileText, DollarSign
 import { ExcelImportDialog } from '@/components/import/ExcelImportDialog'
 import { toast } from 'sonner'
 import { getBudgetOrders } from '@/lib/supabase/queries'
+import { getSuppliers } from '@/lib/supabase/queries-v2'
+import { normalizeSupplierName } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import type { BudgetOrder, CostType } from '@/lib/types'
@@ -97,6 +99,8 @@ export default function CostsPage() {
   const [showConfirm, setShowConfirm] = useState(false)
 
   const [syncedOrderMap, setSyncedOrderMap] = useState<Record<string, string>>({}) // budget_order_id → QM订单号
+  // 供应商画像主数据（录入费用时供应商从这里选，可输入筛选）
+  const [supplierMasters, setSupplierMasters] = useState<{ id: string; name: string }[]>([])
 
   useEffect(() => {
     async function load() {
@@ -104,6 +108,7 @@ export default function CostsPage() {
       try {
         const ordersData = await getBudgetOrders()
         setOrders(ordersData)
+        getSuppliers().then(ms => setSupplierMasters(ms.map(m => ({ id: m.id, name: m.name })))).catch(() => {})
 
         // 加载synced_orders获取内部单号+QM号+客户映射
         const supabase2 = createClient()
@@ -849,7 +854,14 @@ export default function CostsPage() {
             </div>
             <div className="space-y-2">
               <Label>供应商</Label>
-              <Input placeholder="如：佛山永兴制衣厂" value={formSupplier} onChange={e => setFormSupplier(e.target.value)} />
+              {/* 读取「供应商画像」主数据，输入即筛选（datalist）；允许录入未建档供应商但给出提示 */}
+              <Input list="cost-supplier-masters" placeholder="输入筛选供应商画像中的供应商" value={formSupplier} onChange={e => setFormSupplier(e.target.value)} />
+              <datalist id="cost-supplier-masters">
+                {supplierMasters.map(s => <option key={s.id} value={s.name} />)}
+              </datalist>
+              {formSupplier.trim() !== '' && supplierMasters.length > 0 && !supplierMasters.some(s => normalizeSupplierName(s.name) === normalizeSupplierName(formSupplier)) && (
+                <p className="text-[11px] text-amber-600">「{formSupplier.trim()}」不在供应商画像中，仍可录入；建议先到供应商画像建档以统一名称（避免对账拆行）</p>
+              )}
             </div>
             <div className="space-y-2">
               <Label>费用描述 *</Label>
@@ -885,7 +897,7 @@ export default function CostsPage() {
                 }} />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs font-semibold">金额 *</Label>
+                <Label className="text-xs font-semibold">金额 *<span className="font-normal text-muted-foreground">（数量×单价自动算）</span></Label>
                 <Input type="number" step="0.01" placeholder="0.00" value={formAmount} onChange={e => setFormAmount(e.target.value)} className="border-primary/30" />
               </div>
               <div className="space-y-2">
