@@ -9,9 +9,11 @@ import { NextResponse } from 'next/server'
 import { runOrchestration, escalateOverdueTasks, getAutomationHealth } from '@/lib/engines/orchestration-engine'
 import { generateDailyReport, formatReportAsMarkdown } from '@/lib/engines/report-engine'
 import { recordTimelineEvent } from '@/lib/engines/timeline-engine'
-import { notifyPaymentReminder, notifyCollectionReminder } from '@/lib/wecom/notifications'
+import { notifyPaymentReminder, notifyCollectionReminder, notifyRiskAlert } from '@/lib/wecom/notifications'
 import { pushDailyDigestToGroup } from '@/lib/wecom/robot'
 import { createServiceClient } from '@/lib/supabase/service'
+import { syncFxRate } from '@/lib/engines/fx-sync'
+import { runIntegrityCheck } from '@/lib/engines/integrity-engine'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60 // Allow up to 60s for full orchestration run
@@ -34,6 +36,30 @@ export async function GET(request: Request) {
     const url = new URL(request.url)
     const isDryRun = url.searchParams.get('dryRun') === 'true'
     const executionId = `cron-${Date.now()}`
+
+    // 0. 同步实时汇率到主数据表（非阻塞：失败不影响后续编排）
+    let fxSyncResult: { ok: boolean; rate?: number; message: string } | null = null
+    if (!isDryRun) {
+      try { fxSyncResult = await syncFxRate(createServiceClient()) }
+      catch (e) { fxSyncResult = { ok: false, message: e instanceof Error ? e.message : '汇率同步异常' } }
+    }
+
+    // 0.5 每日财务可信度巡检（非阻塞）
+    let integrityResult: { score: number; criticalCount: number } | null = null
+    if (!isDryRun) {
+      try {
+        const run = await runIntegrityCheck(createServiceClient(), 'cron')
+        integrityResult = { score: run.score, criticalCount: run.criticalCount }
+        if (run.score < 95 || run.criticalCount > 0) {
+          await notifyRiskAlert({
+            title: `财务可信度 ${run.score}%${run.criticalCount > 0 ? `，${run.criticalCount} 个严重异常` : ''}`,
+            riskLevel: run.criticalCount > 0 ? 'red' : 'yellow',
+            description: run.summaryText,
+            suggestion: '请到 控制中心 → 可信度中心 查看明细并处理',
+          })
+        }
+      } catch (e) { console.error('[integrity] 每日巡检失败:', e) }
+    }
 
     // 1. Run orchestration — evaluate all automation rules
     const orchestrationResult = await runOrchestration({ dryRun: isDryRun, executionId, actor: 'cron' })
@@ -119,6 +145,8 @@ export async function GET(request: Request) {
       },
       reportMarkdown,
       automationHealth: health,
+      fxSync: fxSyncResult,
+      integrity: integrityResult,
     })
   } catch (error) {
     const durationMs = Date.now() - startTime

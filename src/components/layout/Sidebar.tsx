@@ -54,6 +54,7 @@ const baseNavigation = [
 const controlCenterItems = [
   { name: '控制中心总览', href: '/control-center', icon: Shield },
   // GL 复核：灰度过账闭环的最后一步（草稿凭证人工过账），必须有菜单入口
+  { name: '可信度中心', href: '/control-center/integrity', icon: ShieldCheck },
   { name: 'GL 复核', href: '/control-center/gl-review', icon: ClipboardCheck },
   { name: '月结中心', href: '/control-center/closing', icon: Calendar },
   { name: '财务稽核', href: '/control-center/audit', icon: SearchIcon },

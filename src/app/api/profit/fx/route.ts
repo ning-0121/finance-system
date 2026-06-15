@@ -1,12 +1,14 @@
 // ============================================================
 // GET  /api/profit/fx                   — get current/stored rates
 // POST /api/profit/fx                   — manually update rate
+// POST /api/profit/fx?action=sync       — 从外部源实时同步 USD/CNY
 // POST /api/profit/fx?action=simulate   — FX impact simulation
 // ============================================================
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
+import { syncFxRate } from '@/lib/engines/fx-sync'
 import { simulateExchangeRateImpact } from '@/lib/profit-calculator'
 import { z } from 'zod'
 
@@ -64,6 +66,16 @@ export async function POST(request: NextRequest) {
 
   const { searchParams } = request.nextUrl
   const action = searchParams.get('action')
+
+  // 实时同步：从外部汇率源拉取 USD/CNY 写入主数据（财务角色）
+  if (action === 'sync') {
+    if (!['admin', 'finance_manager', 'finance_staff'].includes(auth.role || '')) {
+      return NextResponse.json({ error: '无权同步汇率' }, { status: 403 })
+    }
+    const supabase = await createClient()
+    const result = await syncFxRate(supabase)
+    return NextResponse.json(result, { status: result.ok ? 200 : 502 })
+  }
 
   const raw = await request.json()
 

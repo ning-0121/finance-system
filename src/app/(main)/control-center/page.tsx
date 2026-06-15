@@ -40,6 +40,7 @@ const ROLE_CONFIG: Record<string, { label: string; sections: string[] }> = {
 
 // 控制中心子模块
 const MODULES = [
+  { key: 'integrity', label: '可信度中心', icon: Shield, href: '/control-center/integrity', desc: '勾稽巡检 · 可信度评分' },
   { key: 'closing', label: '月结管理', icon: Clock, href: '/control-center/closing', desc: '期间关闭检查' },
   { key: 'audit', label: '财务稽核', icon: FileSearch, href: '/control-center/audit', desc: '异常检测与处理' },
   { key: 'gl-review', label: 'GL 复核', icon: FileSearch, href: '/control-center/gl-review', desc: '草稿凭证复核 / 过账失败重试' },
