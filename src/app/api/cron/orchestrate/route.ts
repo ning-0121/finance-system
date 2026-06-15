@@ -14,6 +14,7 @@ import { pushDailyDigestToGroup } from '@/lib/wecom/robot'
 import { createServiceClient } from '@/lib/supabase/service'
 import { syncFxRate } from '@/lib/engines/fx-sync'
 import { runIntegrityCheck } from '@/lib/engines/integrity-engine'
+import { runFullAudit } from '@/lib/engines/audit-engine'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60 // Allow up to 60s for full orchestration run
@@ -59,6 +60,24 @@ export async function GET(request: Request) {
           })
         }
       } catch (e) { console.error('[integrity] 每日巡检失败:', e) }
+    }
+
+    // 0.6 每日异常巡检（全规则扫描，写 audit_findings；严重项推企微）
+    let exceptionResult: { total: number; critical: number } | null = null
+    if (!isDryRun) {
+      try {
+        const findings = await runFullAudit(createServiceClient())
+        const critical = findings.filter(f => f.severity === 'critical' && f.status === 'open')
+        exceptionResult = { total: findings.length, critical: critical.length }
+        if (critical.length > 0) {
+          await notifyRiskAlert({
+            title: `异常中心新增 ${critical.length} 项严重异常`,
+            riskLevel: 'red',
+            description: critical.slice(0, 3).map(f => f.title).join('；'),
+            suggestion: '请到 控制中心 → 异常中心 立即认领处理',
+          })
+        }
+      } catch (e) { console.error('[exception] 每日异常巡检失败:', e) }
     }
 
     // 1. Run orchestration — evaluate all automation rules
@@ -147,6 +166,7 @@ export async function GET(request: Request) {
       automationHealth: health,
       fxSync: fxSyncResult,
       integrity: integrityResult,
+      exceptions: exceptionResult,
     })
   } catch (error) {
     const durationMs = Date.now() - startTime

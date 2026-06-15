@@ -1,12 +1,14 @@
 // ============================================================
 // Audit Engine — Financial Anomaly Detection
 // ============================================================
-// 7 automated audit checks that scan for irregularities across
+// 11 automated audit checks that scan for irregularities across
 // orders, payments, invoices, and settlements. Findings are
 // persisted to audit_findings and can be resolved with notes.
 
 import { createClient } from '@/lib/supabase/server'
 import { safeRate } from '@/lib/accounting/utils'
+import { bizToday } from '@/lib/biz-date'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 // --------------- Types ---------------
 
@@ -46,9 +48,9 @@ function mapFinding(row: Record<string, unknown>): AuditFinding {
   }
 }
 
-async function insertFindings(findings: Omit<AuditFinding, 'id' | 'resolvedBy' | 'resolvedAt' | 'resolutionNote' | 'createdAt'>[]): Promise<AuditFinding[]> {
+async function insertFindings(db: SupabaseClient, findings: Omit<AuditFinding, 'id' | 'resolvedBy' | 'resolvedAt' | 'resolutionNote' | 'createdAt'>[]): Promise<AuditFinding[]> {
   if (findings.length === 0) return []
-  const supabase = await createClient()
+  const supabase = db
 
   // Dedup: skip findings where an open record of same type+entity already exists
   const types = [...new Set(findings.map(f => f.findingType))]
@@ -89,17 +91,22 @@ async function insertFindings(findings: Omit<AuditFinding, 'id' | 'resolvedBy' |
 // --------------- Public API ---------------
 
 /**
- * Run all 7 audit checks. Returns combined findings.
+ * Run all 11 audit checks. Returns combined findings.
  */
-export async function runFullAudit(): Promise<AuditFinding[]> {
+export async function runFullAudit(db?: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db ?? await createClient()
   const results = await Promise.all([
-    auditDuplicatePayments(),
-    auditAmountMismatches(),
-    auditMissingVouchers(),
-    auditTimingAnomalies(),
-    auditMarginOutliers(),
-    auditOrphanedPayments(),
-    auditOverdueCollections(),
+    auditDuplicatePayments(supabase),
+    auditAmountMismatches(supabase),
+    auditMissingVouchers(supabase),
+    auditTimingAnomalies(supabase),
+    auditMarginOutliers(supabase),
+    auditOrphanedPayments(supabase),
+    auditOverdueCollections(supabase),
+    auditOverduePayables(supabase),
+    auditDuplicateReceipts(supabase),
+    auditUnmatchedReceipts(supabase),
+    auditFrozenEntityActivity(supabase),
   ])
   return results.flat()
 }
@@ -107,8 +114,8 @@ export async function runFullAudit(): Promise<AuditFinding[]> {
 /**
  * Check 1: Duplicate payments — same supplier + same amount within 7 days.
  */
-export async function auditDuplicatePayments(): Promise<AuditFinding[]> {
-  const supabase = await createClient()
+export async function auditDuplicatePayments(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
   const { data: payables } = await supabase
     .from('payable_records')
     .select('id, order_no, supplier_name, amount, currency, created_at, payment_status')
@@ -158,14 +165,14 @@ export async function auditDuplicatePayments(): Promise<AuditFinding[]> {
     }
   }
 
-  return insertFindings(findings)
+  return insertFindings(supabase, findings)
 }
 
 /**
  * Check 2: Amount mismatches — invoice total vs budget >15% variance.
  */
-export async function auditAmountMismatches(): Promise<AuditFinding[]> {
-  const supabase = await createClient()
+export async function auditAmountMismatches(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
   const { data: invoices } = await supabase
     .from('actual_invoices')
     .select('id, budget_order_id, invoice_no, invoice_type, total_amount, currency')
@@ -226,14 +233,14 @@ export async function auditAmountMismatches(): Promise<AuditFinding[]> {
     }
   }
 
-  return insertFindings(findings)
+  return insertFindings(supabase, findings)
 }
 
 /**
  * Check 3: Missing vouchers — confirmed settlements without journal entries.
  */
-export async function auditMissingVouchers(): Promise<AuditFinding[]> {
-  const supabase = await createClient()
+export async function auditMissingVouchers(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
   const { data: settlements } = await supabase
     .from('order_settlements')
     .select('id, budget_order_id, total_actual, status')
@@ -278,14 +285,14 @@ export async function auditMissingVouchers(): Promise<AuditFinding[]> {
     }
   }
 
-  return insertFindings(findings)
+  return insertFindings(supabase, findings)
 }
 
 /**
  * Check 4: Timing anomalies — invoices dated before the order date.
  */
-export async function auditTimingAnomalies(): Promise<AuditFinding[]> {
-  const supabase = await createClient()
+export async function auditTimingAnomalies(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
   const { data: invoices } = await supabase
     .from('actual_invoices')
     .select('id, budget_order_id, invoice_no, invoice_date, total_amount, supplier_name')
@@ -344,14 +351,14 @@ export async function auditTimingAnomalies(): Promise<AuditFinding[]> {
     }
   }
 
-  return insertFindings(findings)
+  return insertFindings(supabase, findings)
 }
 
 /**
  * Check 5: Margin outliers — orders with margin <5% or >50%.
  */
-export async function auditMarginOutliers(): Promise<AuditFinding[]> {
-  const supabase = await createClient()
+export async function auditMarginOutliers(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
   const { data: orders } = await supabase
     .from('budget_orders')
     .select('id, order_no, customer_id, total_revenue, total_cost, estimated_margin, status')
@@ -421,14 +428,14 @@ export async function auditMarginOutliers(): Promise<AuditFinding[]> {
     }
   }
 
-  return insertFindings(findings)
+  return insertFindings(supabase, findings)
 }
 
 /**
  * Check 6: Orphaned payments — payable_records without matching budget_orders.
  */
-export async function auditOrphanedPayments(): Promise<AuditFinding[]> {
-  const supabase = await createClient()
+export async function auditOrphanedPayments(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
   const { data: payables } = await supabase
     .from('payable_records')
     .select('id, budget_order_id, order_no, supplier_name, amount, currency, payment_status')
@@ -458,14 +465,14 @@ export async function auditOrphanedPayments(): Promise<AuditFinding[]> {
     })
   }
 
-  return insertFindings(findings)
+  return insertFindings(supabase, findings)
 }
 
 /**
  * Check 7: Overdue collections — AR outstanding >60 days.
  */
-export async function auditOverdueCollections(): Promise<AuditFinding[]> {
-  const supabase = await createClient()
+export async function auditOverdueCollections(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
   const { data: orders } = await supabase
     .from('budget_orders')
     .select('id, order_no, customer_id, total_revenue, exchange_rate, currency, order_date, status')
@@ -519,7 +526,144 @@ export async function auditOverdueCollections(): Promise<AuditFinding[]> {
     }
   }
 
-  return insertFindings(findings)
+  return insertFindings(supabase, findings)
+}
+
+/**
+ * Check 8: 应付逾期 — payable_records 未付且已过到期日。
+ */
+export async function auditOverduePayables(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
+  const today = bizToday()
+  const { data: payables } = await supabase
+    .from('payable_records')
+    .select('id, order_no, supplier_name, amount, currency, due_date, payment_status')
+    .in('payment_status', ['unpaid', 'pending_approval', 'approved'])
+    .not('due_date', 'is', null)
+    .lt('due_date', today)
+
+  if (!payables?.length) return []
+  const findings: Omit<AuditFinding, 'id' | 'resolvedBy' | 'resolvedAt' | 'resolutionNote' | 'createdAt'>[] = []
+  for (const p of payables) {
+    const overdueDays = Math.floor((new Date(today).getTime() - new Date(p.due_date as string).getTime()) / 86400000)
+    findings.push({
+      findingType: 'overdue_payable',
+      severity: overdueDays > 30 ? 'critical' : 'warning',
+      entityType: 'payable_record',
+      entityId: p.id as string,
+      title: `应付逾期: ${p.supplier_name}`,
+      description: `供应商"${p.supplier_name}"应付${p.currency} ${p.amount}已逾期${overdueDays}天(到期日${p.due_date})未付`,
+      evidence: { orderNo: p.order_no, supplier: p.supplier_name, amount: p.amount, currency: p.currency, dueDate: p.due_date, overdueDays },
+      status: 'open',
+    })
+  }
+  return insertFindings(supabase, findings)
+}
+
+/**
+ * Check 9: 重复回款 — 同客户 + 同金额 + 同参考号/同日，疑似一笔录两次。
+ */
+export async function auditDuplicateReceipts(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
+  const { data: receipts } = await supabase
+    .from('receivable_payments')
+    .select('id, customer_name, amount_cny, payment_reference, received_at')
+    .is('voided_at', null)
+    .order('received_at', { ascending: true })
+
+  if (!receipts?.length) return []
+  const findings: Omit<AuditFinding, 'id' | 'resolvedBy' | 'resolvedAt' | 'resolutionNote' | 'createdAt'>[] = []
+  const seen = new Map<string, Record<string, unknown>>()
+  for (const r of receipts) {
+    const ref = ((r.payment_reference as string) || '').trim()
+    const day = String(r.received_at || '').slice(0, 10)
+    const key = `${((r.customer_name as string) || '').trim()}|${r.amount_cny}|${ref || day}`
+    const prev = seen.get(key)
+    if (prev) {
+      findings.push({
+        findingType: 'duplicate_receipt',
+        severity: 'critical',
+        entityType: 'receivable_payment',
+        entityId: r.id as string,
+        title: `疑似重复回款: ${r.customer_name}`,
+        description: `客户"${r.customer_name}"出现两笔相同金额(¥${r.amount_cny})${ref ? `、相同水单号(${ref})` : '、同日'}的回款记录`,
+        evidence: { recordA: prev, recordB: { id: r.id, amount: r.amount_cny, ref, date: r.received_at } },
+        status: 'open',
+      })
+    } else { seen.set(key, { id: r.id, amount: r.amount_cny, ref, date: r.received_at }) }
+  }
+  return insertFindings(supabase, findings)
+}
+
+/**
+ * Check 10: 回款未匹配 — 回款流水剩余未分配金额 > 0 且超 7 天。
+ */
+export async function auditUnmatchedReceipts(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
+  const [{ data: receipts }, { data: allocs }] = await Promise.all([
+    supabase.from('receivable_payments').select('id, customer_name, amount_cny, received_at, created_at').is('voided_at', null),
+    supabase.from('receivable_payment_allocations').select('payment_id, amount_cny').is('voided_at', null),
+  ])
+  if (!receipts?.length) return []
+  const allocByPayment = new Map<string, number>()
+  ;(allocs || []).forEach(a => {
+    const k = a.payment_id as string
+    allocByPayment.set(k, (allocByPayment.get(k) || 0) + (Number(a.amount_cny) || 0))
+  })
+  const now = Date.now()
+  const findings: Omit<AuditFinding, 'id' | 'resolvedBy' | 'resolvedAt' | 'resolutionNote' | 'createdAt'>[] = []
+  for (const p of receipts) {
+    const remaining = (Number(p.amount_cny) || 0) - (allocByPayment.get(p.id as string) || 0)
+    const ageDays = (now - new Date((p.received_at || p.created_at) as string).getTime()) / 86400000
+    if (remaining > 0.005 && ageDays > 7) {
+      findings.push({
+        findingType: 'unmatched_receipt',
+        severity: 'warning',
+        entityType: 'receivable_payment',
+        entityId: p.id as string,
+        title: `回款未匹配: ${p.customer_name || '未知客户'}`,
+        description: `回款¥${p.amount_cny}已${Math.floor(ageDays)}天未匹配完，剩余¥${Math.round(remaining * 100) / 100}未分配到订单`,
+        evidence: { customer: p.customer_name, amountCny: p.amount_cny, remaining: Math.round(remaining * 100) / 100, ageDays: Math.floor(ageDays) },
+        status: 'open',
+      })
+    }
+  }
+  return insertFindings(supabase, findings)
+}
+
+/**
+ * Check 11: 冻结对象异常活动 — 实体被冻结(active)但近期仍有时间线变更。
+ */
+export async function auditFrozenEntityActivity(db: SupabaseClient): Promise<AuditFinding[]> {
+  const supabase = db
+  const { data: freezes } = await supabase
+    .from('entity_freezes')
+    .select('entity_type, entity_id, freeze_type, frozen_at')
+    .eq('status', 'frozen')
+  if (!freezes?.length) return []
+  const findings: Omit<AuditFinding, 'id' | 'resolvedBy' | 'resolvedAt' | 'resolutionNote' | 'createdAt'>[] = []
+  for (const f of freezes) {
+    const { data: events } = await supabase
+      .from('entity_timeline')
+      .select('id, event_type, event_title, created_at')
+      .eq('entity_type', f.entity_type as string).eq('entity_id', f.entity_id as string)
+      .gt('created_at', f.frozen_at as string)
+      .not('event_type', 'in', '("freeze","unfreeze","frozen","audit")')
+      .order('created_at', { ascending: false }).limit(5)
+    if (events && events.length > 0) {
+      findings.push({
+        findingType: 'frozen_entity_activity',
+        severity: 'critical',
+        entityType: f.entity_type as string,
+        entityId: f.entity_id as string,
+        title: `冻结对象仍被操作: ${f.entity_type}/${f.entity_id}`,
+        description: `该对象已冻结(${f.freeze_type})，但冻结后仍有${events.length}条变更，存在绕过冻结的风险`,
+        evidence: { freezeType: f.freeze_type, frozenAt: f.frozen_at, recentEvents: events },
+        status: 'open',
+      })
+    }
+  }
+  return insertFindings(supabase, findings)
 }
 
 /**
@@ -543,6 +687,33 @@ export async function resolveAuditFinding(
     .eq('id', findingId)
 
   if (error) throw new Error(`解决稽核发现失败: ${error.message}`)
+}
+
+/**
+ * 认领异常（→ investigating），记录认领人。仅 open 状态可认领。
+ */
+export async function claimAuditFinding(findingId: string, actorId: string): Promise<void> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('audit_findings')
+    .update({ status: 'investigating', assigned_to: actorId, assigned_at: new Date().toISOString() })
+    .eq('id', findingId).eq('status', 'open')
+    .select('id')
+  if (error) throw new Error(`认领失败: ${error.message}`)
+  if (!data || data.length === 0) throw new Error('该异常已被认领或已处理，请刷新')
+}
+
+/**
+ * 忽略异常（→ dismissed），必须填写原因（审计留痕）。
+ */
+export async function dismissAuditFinding(findingId: string, reason: string, actorId: string): Promise<void> {
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from('audit_findings')
+    .update({ status: 'dismissed', resolution_note: reason, resolved_by: actorId, resolved_at: new Date().toISOString() })
+    .eq('id', findingId)
+    .in('status', ['open', 'investigating'])
+  if (error) throw new Error(`忽略失败: ${error.message}`)
 }
 
 /**

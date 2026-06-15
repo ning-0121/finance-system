@@ -7,6 +7,8 @@ import {
   getAuditFindings,
   runFullAudit,
   resolveAuditFinding,
+  claimAuditFinding,
+  dismissAuditFinding,
 } from '@/lib/engines/audit-engine'
 import { notifyRiskAlert, notifyCircuitBreaker } from '@/lib/wecom/notifications'
 
@@ -51,8 +53,9 @@ export async function POST(request: NextRequest) {
 
         // 审计完成后，按严重程度发送通知（非阻塞）
         if (findings?.length) {
+          // severity 枚举只有 info/warning/critical（旧代码用 'high' 永远命中 0 条，已修正为 warning）
           const critical = findings.filter((f: { severity: string; status: string }) => f.severity === 'critical' && f.status === 'open')
-          const high = findings.filter((f: { severity: string; status: string }) => f.severity === 'high' && f.status === 'open')
+          const warning = findings.filter((f: { severity: string; status: string }) => f.severity === 'warning' && f.status === 'open')
 
           if (critical.length > 0) {
             // L4 熔断级通知
@@ -60,20 +63,27 @@ export async function POST(request: NextRequest) {
               customer: '财务系统',
               trigger: `发现 ${critical.length} 项严重审计异常`,
               description: critical.slice(0, 3).map((f: { title: string }) => f.title).join('；'),
-              actions: ['立即查看审计报告', '暂停相关业务操作', '联系财务总监确认'],
+              actions: ['立即查看异常中心', '暂停相关业务操作', '联系财务总监确认'],
             }).catch(err => console.error('[WeChat] 审计熔断通知失败:', err))
-          } else if (high.length > 0) {
+          } else if (warning.length > 0) {
             // L2-L3 风险预警
             notifyRiskAlert({
-              title: `审计发现 ${high.length} 项高风险问题`,
+              title: `异常中心新增 ${warning.length} 项警告`,
               riskLevel: 'yellow',
-              description: high.slice(0, 3).map((f: { title: string }) => f.title).join('；'),
-              suggestion: '请及时处理高风险审计发现',
+              description: warning.slice(0, 3).map((f: { title: string }) => f.title).join('；'),
+              suggestion: '请到 控制中心 → 异常中心 认领并处理',
             }).catch(err => console.error('[WeChat] 审计风险通知失败:', err))
           }
         }
 
         return NextResponse.json({ data: findings })
+      }
+
+      case 'claim': {
+        const { findingId } = body
+        if (!findingId) return NextResponse.json({ error: '缺少 findingId' }, { status: 400 })
+        await claimAuditFinding(findingId, auth.userId!)
+        return NextResponse.json({ success: true })
       }
 
       case 'resolve': {
@@ -82,6 +92,15 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: '缺少 findingId 或 resolution' }, { status: 400 })
         }
         await resolveAuditFinding(findingId, resolution, auth.userId!)
+        return NextResponse.json({ success: true })
+      }
+
+      case 'dismiss': {
+        const { findingId, reason } = body
+        if (!findingId || !reason) {
+          return NextResponse.json({ error: '缺少 findingId 或忽略原因' }, { status: 400 })
+        }
+        await dismissAuditFinding(findingId, reason, auth.userId!)
         return NextResponse.json({ success: true })
       }
 

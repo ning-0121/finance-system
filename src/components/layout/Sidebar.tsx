@@ -57,7 +57,7 @@ const controlCenterItems = [
   { name: '可信度中心', href: '/control-center/integrity', icon: ShieldCheck },
   { name: 'GL 复核', href: '/control-center/gl-review', icon: ClipboardCheck },
   { name: '月结中心', href: '/control-center/closing', icon: Calendar },
-  { name: '财务稽核', href: '/control-center/audit', icon: SearchIcon },
+  { name: '异常中心', href: '/control-center/audit', icon: SearchIcon },
   { name: '冻结控制', href: '/control-center/freeze', icon: Lock },
   { name: '时间线', href: '/control-center/timeline', icon: Clock },
   { name: '沙盘模拟', href: '/control-center/simulation', icon: FlaskConical },
