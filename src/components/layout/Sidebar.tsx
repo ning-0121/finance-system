@@ -34,6 +34,7 @@ const baseNavigation = [
   { name: '应收账款', href: '/receivables', icon: CreditCard },
   { name: '应付账款', href: '/payables', icon: CreditCard },
   { name: '汇总报表', href: '/reports', icon: ScrollText },
+  { name: '出口退税', href: '/tax-refund', icon: FileText },
   { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
   { name: '银行对账', href: '/bank', icon: Scale },
   { name: '工资条发放', href: '/payroll', icon: Users },
