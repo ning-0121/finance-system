@@ -14,7 +14,8 @@ import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { Loader2, Plus, Pencil, Trash2, FileCheck, CheckCircle2 } from 'lucide-react'
+import { Loader2, Plus, Pencil, Trash2, FileCheck, CheckCircle2, Calculator } from 'lucide-react'
+import Link from 'next/link'
 import { toast } from 'sonner'
 import { bizToday } from '@/lib/biz-date'
 import { getTaxRefunds, saveTaxRefund, deleteTaxRefund, computeRefundable, type TaxRefund } from '@/lib/supabase/tax-refund'
@@ -117,7 +118,10 @@ export default function TaxRefundPage() {
               <TabsTrigger value="refunded">已退税 ({rows.filter(r => r.status === 'refunded').length})</TabsTrigger>
             </TabsList>
           </Tabs>
-          <Button size="sm" onClick={openNew}><Plus className="h-4 w-4 mr-1" />新增退税单</Button>
+          <div className="flex gap-2">
+            <Link href="/tax-refund/calculator"><Button size="sm" variant="outline"><Calculator className="h-4 w-4 mr-1" />净收益测算器</Button></Link>
+            <Button size="sm" onClick={openNew}><Plus className="h-4 w-4 mr-1" />新增退税单</Button>
+          </div>
         </div>
 
         {loading ? (
