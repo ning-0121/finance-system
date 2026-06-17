@@ -1,0 +1,85 @@
+// ============================================================
+// 老板驾驶舱数据（全部真实，可追源；不再有估算公式）
+// 复用月结面板(getMonthlyClosingPanel)算本月经营数；现金取银行账户真实余额。
+// ============================================================
+import { NextResponse } from 'next/server'
+import { requireAuth } from '@/lib/auth/api-guard'
+import { createClient } from '@/lib/supabase/server'
+import { getMonthlyClosingPanel } from '@/lib/engines/closing-engine'
+import { bizToday } from '@/lib/biz-date'
+
+export const dynamic = 'force-dynamic'
+
+const r2 = (n: number) => Math.round(n * 100) / 100
+const cnyRate = (c: string | null, r: number | null) => (c || 'CNY') === 'CNY' ? 1 : (Number(r) || 1)
+
+export async function GET() {
+  const auth = await requireAuth()
+  if (!auth.authenticated) return auth.error!
+  try {
+    const supabase = await createClient()
+    const today = bizToday()
+    const period = today.slice(0, 7)
+
+    // 本月经营面板（与月结同口径）
+    const panel = await getMonthlyClosingPanel(period)
+
+    // 现金余额：银行账户真实余额合计（#5 银行对账上锚）；无账户则 null（不估算）
+    const { data: accts } = await supabase.from('bank_accounts').select('current_balance').eq('is_active', true)
+    const hasBank = (accts || []).length > 0
+    const cashBalance = hasBank ? r2((accts || []).reduce((s, a) => s + (Number(a.current_balance) || 0), 0)) : null
+
+    // 今日回款 / 今日付款
+    const [{ data: todayRec }, { data: todayPay }] = await Promise.all([
+      supabase.from('receivable_payments').select('amount_cny').is('voided_at', null).gte('received_at', today).lte('received_at', today + 'T23:59:59'),
+      supabase.from('supplier_payments').select('amount').is('deleted_at', null).gte('paid_at', today).lte('paid_at', today + 'T23:59:59'),
+    ])
+    const todayIn = r2((todayRec || []).reduce((s, p) => s + (Number(p.amount_cny) || 0), 0))
+    const todayOut = r2((todayPay || []).reduce((s, p) => s + (Number(p.amount) || 0), 0))
+
+    // 本周必付：应付到期日在未来 7 天内、未付
+    const in7 = new Date(new Date(today).getTime() + 7 * 86400000).toISOString().slice(0, 10)
+    const { data: duePay } = await supabase.from('payable_records')
+      .select('supplier_name, amount, currency, due_date')
+      .in('payment_status', ['unpaid', 'pending_approval', 'approved']).not('due_date', 'is', null)
+      .lte('due_date', in7).order('due_date')
+    const weekPayables = (duePay || []).map(p => ({ supplier: p.supplier_name as string, amount: Number(p.amount) || 0, due: p.due_date as string }))
+    const weekPayCny = r2(weekPayables.reduce((s, p) => s + p.amount, 0))
+
+    // 风险订单：毛利率 < 10%（含负毛利）
+    const { data: orders } = await supabase.from('budget_orders')
+      .select('order_no, estimated_margin, customer:customers(company)').is('deleted_at', null)
+    const riskOrders = (orders || [])
+      .filter(o => (Number(o.estimated_margin) ?? 100) < 10)
+      .map(o => ({ orderNo: o.order_no as string, customer: (o.customer as unknown as { company?: string })?.company || '', margin: Number(o.estimated_margin) || 0 }))
+      .sort((a, b) => a.margin - b.margin).slice(0, 8)
+    const lossCount = riskOrders.filter(o => o.margin < 0).length
+
+    // 风险客户 + 逾期应收：取自异常中心 open 的 overdue_collection（同口径，不另算）
+    const { data: overdue } = await supabase.from('audit_findings')
+      .select('entity_id, title, evidence').eq('finding_type', 'overdue_collection').eq('status', 'open')
+    const custMap = new Map<string, { name: string; amountCny: number; maxDays: number }>()
+    for (const f of overdue || []) {
+      const ev = (f.evidence as Record<string, unknown>) || {}
+      const name = String(ev.customer || '未知客户')
+      const amt = Number(ev.amountCny) || 0
+      const days = Number(ev.daysOutstanding) || 0
+      const cur = custMap.get(name) || { name, amountCny: 0, maxDays: 0 }
+      cur.amountCny = r2(cur.amountCny + amt); cur.maxDays = Math.max(cur.maxDays, days)
+      custMap.set(name, cur)
+    }
+    const riskCustomers = [...custMap.values()].sort((a, b) => b.amountCny - a.amountCny).slice(0, 8)
+    const overdueArCny = r2(riskCustomers.reduce((s, c) => s + c.amountCny, 0))
+
+    return NextResponse.json({
+      asOf: today,
+      cash: { balance: cashBalance, hasBank, todayIn, todayOut },
+      panel,  // revenueCny/costCny/profitCny/marginPct/arBalanceCny/apBalanceCny/collectedCny/collectionRatePct/orderCount/settled
+      overdue: { arCny: overdueArCny, customers: riskCustomers, count: riskCustomers.length, maxDays: riskCustomers.reduce((m, c) => Math.max(m, c.maxDays), 0) },
+      weekPayables: { totalCny: weekPayCny, list: weekPayables.slice(0, 8), count: weekPayables.length },
+      riskOrders: { list: riskOrders, count: riskOrders.length, lossCount },
+    })
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : '加载失败' }, { status: 500 })
+  }
+}

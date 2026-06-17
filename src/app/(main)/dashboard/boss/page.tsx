@@ -1,227 +1,164 @@
 'use client'
 
+// ============================================================
+// 老板驾驶舱 — 全部真实数据，每个数字可下钻到来源页（无估算）
+// 数据：/api/dashboard/boss（现金=银行账户真实余额；本月数=月结同口径；
+// 风险客户/逾期取自异常中心）。取不到真数的指标直接不显示。
+// ============================================================
 import { useState, useEffect } from 'react'
-import { Loader2 } from 'lucide-react'
-import { getBudgetOrders, getPendingRiskEvents, getHighRiskCustomers } from '@/lib/supabase/queries'
+import { Loader2, DollarSign, AlertTriangle, Users, ArrowUpRight, ArrowDownRight, Shield, Zap, Clock, TrendingUp, TrendingDown } from 'lucide-react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  DollarSign, TrendingDown, TrendingUp, AlertTriangle, Users, Factory,
-  ArrowUpRight, ArrowDownRight, Shield, Zap, Clock,
-} from 'lucide-react'
 import Link from 'next/link'
-import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-} from 'recharts'
 
-// 空数组 — 从DB加载
-const riskCustomers: { name: string; risk: string; outstanding: number; overdueDays: number; action: string }[] = []
-const riskOrders: { orderNo: string; customer: string; margin: number; issue: string }[] = []
-const urgentPayments = [
-  { supplier: '佛山永兴制衣厂', amount: 140000, due: '5天后', priority: 'S2' },
-]
+interface BossData {
+  asOf: string
+  cash: { balance: number | null; hasBank: boolean; todayIn: number; todayOut: number }
+  panel: { revenueCny: number; costCny: number; profitCny: number; marginPct: number; arBalanceCny: number; apBalanceCny: number; collectedCny: number; collectionRatePct: number; orderCount: number; settledCount: number }
+  overdue: { arCny: number; customers: { name: string; amountCny: number; maxDays: number }[]; count: number; maxDays: number }
+  weekPayables: { totalCny: number; list: { supplier: string; amount: number; due: string }[]; count: number }
+  riskOrders: { list: { orderNo: string; customer: string; margin: number }[]; count: number; lossCount: number }
+}
+const fmt = (n: number) => `¥${Math.round(n).toLocaleString()}`
 
 export default function BossDashboardPage() {
+  const [d, setD] = useState<BossData | null>(null)
   const [loading, setLoading] = useState(true)
-  const [realRiskCustomers, setRealRiskCustomers] = useState<Record<string, unknown>[]>([])
-  const [realRiskOrders, setRealRiskOrders] = useState<{ orderNo: string; customer: string; margin: number; issue: string }[]>([])
-  const [riskEventCount, setRiskEventCount] = useState(0)
-  const [allOrders, setAllOrders] = useState<Awaited<ReturnType<typeof getBudgetOrders>>>([])
-
+  const [err, setErr] = useState('')
 
   useEffect(() => {
-    async function load() {
-      const [customers, orders, risks] = await Promise.all([
-        getHighRiskCustomers(),
-        getBudgetOrders(),
-        getPendingRiskEvents(),
-      ])
-      setAllOrders(orders)
-      setRealRiskCustomers(customers.length > 0 ? customers : riskCustomers.map(c => c as Record<string, unknown>))
-      const lowMarginOrders = orders.filter(o => o.estimated_margin < 10).map(o => ({
-        orderNo: o.order_no, customer: o.customer?.company || '', margin: o.estimated_margin,
-        issue: o.estimated_margin < 0 ? '实际亏损' : `毛利率${o.estimated_margin}%低于10%`,
-      })).slice(0, 5)
-      setRealRiskOrders(lowMarginOrders.length > 0 ? lowMarginOrders : riskOrders)
-      setRiskEventCount(risks.length)
-      setLoading(false)
-    }
-    load()
+    fetch('/api/dashboard/boss').then(async r => {
+      const j = await r.json()
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+      setD(j)
+    }).catch(e => setErr(e instanceof Error ? e.message : '加载失败')).finally(() => setLoading(false))
   }, [])
 
   if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
+  if (err || !d) return (
+    <div className="flex flex-col h-full"><Header title="老板驾驶舱" subtitle="实时经营快照" />
+      <div className="flex-1 flex items-center justify-center"><Card className="max-w-sm"><CardContent className="py-12 text-center text-muted-foreground">{err || '无数据'}</CardContent></Card></div>
+    </div>
+  )
 
-  // 从真实订单数据估算现金流（全部转换为CNY口径）
-  const totalRevenueCny = allOrders.reduce((s, o) => {
-    const rate = o.currency === 'CNY' ? 1 : (o.exchange_rate || 7)
-    return s + o.total_revenue * rate
-  }, 0)
-  const totalCost = allOrders.reduce((s, o) => s + o.total_cost, 0) // 已经是CNY
-  const totalProfit = totalRevenueCny - totalCost
-  // 估算：已收回收入的60%作为当前现金余额
-  const cashBalance = Math.round(totalRevenueCny * 0.6 - totalCost * 0.8)
-  // 估算本周收入和支出
-  const avgWeeklyRevenue = allOrders.length > 0 ? Math.round(totalRevenueCny / Math.max(allOrders.length, 1) * 2) : 0
-  const avgWeeklyExpense = allOrders.length > 0 ? Math.round(totalCost / Math.max(allOrders.length, 1) * 2) : 0
-  const weekInflow = avgWeeklyRevenue
-  const weekOutflow = avgWeeklyExpense
+  const { cash, panel, overdue, weekPayables, riskOrders } = d
 
   return (
     <div className="flex flex-col h-full">
-      <Header title="老板驾驶舱" subtitle="AI Agent 实时分析 · 风险预警 · 决策建议" />
-
+      <Header title="老板驾驶舱" subtitle={`经营实时快照 · 截至 ${d.asOf}`} />
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
-        {/* 顶部6卡片 */}
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-          {/* 现金流 */}
-          <Card className="border-l-4 border-l-blue-500">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div>
-                <Badge variant="outline" className="text-[10px]">实时</Badge>
-              </div>
-              <p className="text-xs text-muted-foreground">当前现金余额</p>
-              <p className="text-2xl font-bold">¥{cashBalance.toLocaleString()}</p>
-              <div className="flex items-center gap-3 mt-2 text-xs">
-                <span className="text-green-600 flex items-center"><ArrowUpRight className="h-3 w-3" />本周入 ¥{weekInflow.toLocaleString()}</span>
-                <span className="text-red-600 flex items-center"><ArrowDownRight className="h-3 w-3" />本周出 ¥{weekOutflow.toLocaleString()}</span>
-              </div>
-            </CardContent>
-          </Card>
 
-          {/* 回款风险 */}
-          <Card className="border-l-4 border-l-red-500">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="p-2 rounded-lg bg-red-50"><AlertTriangle className="h-4 w-4 text-red-600" /></div>
-                <Badge variant="destructive" className="text-[10px]">2项</Badge>
-              </div>
-              <p className="text-xs text-muted-foreground">逾期应收</p>
-              <p className="text-2xl font-bold text-red-600">${(42000 + 45000).toLocaleString()}</p>
-              <p className="text-xs text-muted-foreground mt-2">2个客户逾期，最长69天</p>
-            </CardContent>
-          </Card>
-
-          {/* 付款压力 */}
-          <Card className="border-l-4 border-l-amber-500">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="p-2 rounded-lg bg-amber-50"><Clock className="h-4 w-4 text-amber-600" /></div>
-                <Badge variant="secondary" className="text-[10px]">本周</Badge>
-              </div>
-              <p className="text-xs text-muted-foreground">本周必须付款</p>
-              <p className="text-2xl font-bold text-amber-600">${(36000 + 140000).toLocaleString()}</p>
-              <p className="text-xs text-muted-foreground mt-2">2笔，影响生产进度</p>
-            </CardContent>
-          </Card>
-
-          {/* 高风险客户 */}
-          <Card className="border-l-4 border-l-orange-500">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="p-2 rounded-lg bg-orange-50"><Users className="h-4 w-4 text-orange-600" /></div>
-              </div>
-              <p className="text-xs text-muted-foreground">高风险客户</p>
-              <p className="text-2xl font-bold">{realRiskCustomers.length}</p>
-              <p className="text-xs text-muted-foreground mt-2">{realRiskCustomers.map(c => (c as Record<string, unknown>).name as string || '').filter(Boolean).join('、') || '暂无'}</p>
-            </CardContent>
-          </Card>
-
-          {/* 异常利润 */}
-          <Card className="border-l-4 border-l-purple-500">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="p-2 rounded-lg bg-purple-50"><TrendingDown className="h-4 w-4 text-purple-600" /></div>
-              </div>
-              <p className="text-xs text-muted-foreground">利润异常订单</p>
-              <p className="text-2xl font-bold">{realRiskOrders.length}</p>
-              <p className="text-xs text-muted-foreground mt-2">{realRiskOrders.length > 0 ? `${realRiskOrders.filter(o => o.margin < 0).length}笔亏损，${realRiskOrders.filter(o => o.margin >= 0).length}笔低利润` : '暂无异常'}</p>
-            </CardContent>
-          </Card>
-
-          {/* Agent状态 */}
-          <Card className="border-l-4 border-l-green-500">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="p-2 rounded-lg bg-green-50"><Zap className="h-4 w-4 text-green-600" /></div>
-                <Badge className="bg-green-100 text-green-700 text-[10px]">运行中</Badge>
-              </div>
-              <p className="text-xs text-muted-foreground">AI Agent</p>
-              <p className="text-2xl font-bold">8</p>
-              <p className="text-xs text-muted-foreground mt-2">个Agent持续监控中</p>
-            </CardContent>
-          </Card>
+        {/* 今天 */}
+        <div>
+          <h2 className="text-sm font-semibold text-muted-foreground mb-2">今天</h2>
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+            <Card className="border-l-4 border-l-blue-500">
+              <CardContent className="p-4">
+                <div className="p-2 rounded-lg bg-blue-50 w-fit mb-2"><DollarSign className="h-4 w-4 text-blue-600" /></div>
+                <p className="text-xs text-muted-foreground">现金余额</p>
+                {cash.balance == null
+                  ? <><p className="text-lg font-bold text-muted-foreground">未接银行</p><Link href="/bank" className="text-[11px] text-primary hover:underline">去银行对账导入 →</Link></>
+                  : <><p className="text-2xl font-bold">{fmt(cash.balance)}</p>
+                      <div className="flex items-center gap-2 mt-1 text-[11px]">
+                        <span className="text-green-600 flex items-center"><ArrowUpRight className="h-3 w-3" />今入 {fmt(cash.todayIn)}</span>
+                        <span className="text-red-600 flex items-center"><ArrowDownRight className="h-3 w-3" />今出 {fmt(cash.todayOut)}</span>
+                      </div></>}
+              </CardContent>
+            </Card>
+            <KpiCard label="今日回款" value={fmt(cash.todayIn)} href="/receivables" tone="green" />
+            <KpiCard label="今日付款" value={fmt(cash.todayOut)} href="/payments" tone="red" />
+            <KpiCard label="应收余额" value={fmt(panel.arBalanceCny)} href="/receivables" tone="amber" />
+            <KpiCard label="应付余额" value={fmt(panel.apBalanceCny)} href="/payables" tone="red" />
+          </div>
         </div>
 
-        {/* 现金流趋势 */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">现金流预测</CardTitle>
-          </CardHeader>
-          <CardContent className="text-center py-8">
-            <p className="text-muted-foreground">现金流数据从实际收付记录自动生成</p>
-            <a href="/cashflow" className="text-primary text-sm hover:underline mt-2 inline-block">查看详细现金流预测 →</a>
-          </CardContent>
-        </Card>
+        {/* 本月 */}
+        <div>
+          <h2 className="text-sm font-semibold text-muted-foreground mb-2">本月（{d.asOf.slice(0, 7)}）</h2>
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+            <Card><CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">本月利润</p>
+              <p className={`text-2xl font-bold flex items-center gap-1 ${panel.profitCny >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                {panel.profitCny >= 0 ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}{fmt(panel.profitCny)}
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-1">收入 {fmt(panel.revenueCny)}</p>
+            </CardContent></Card>
+            <KpiCard label="毛利率" value={`${panel.marginPct}%`} href="/reports/actual-gross" tone={panel.marginPct >= 0 ? 'green' : 'red'} />
+            <KpiCard label="回款率" value={`${panel.collectionRatePct}%`} sub={`回款 ${fmt(panel.collectedCny)}`} href="/receivables" tone="blue" />
+            <KpiCard label="风险客户" value={`${overdue.count}`} sub={overdue.maxDays > 0 ? `最长逾期 ${overdue.maxDays} 天` : '无逾期'} href="/control-center/audit" tone="orange" />
+            <KpiCard label="风险订单" value={`${riskOrders.count}`} sub={riskOrders.lossCount > 0 ? `${riskOrders.lossCount} 笔亏损` : '低毛利'} href="/control-center/audit" tone="purple" />
+          </div>
+        </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* 高风险客户 */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* 高风险客户（逾期应收） */}
           <Card>
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base flex items-center gap-2"><Shield className="h-4 w-4 text-red-500" />高风险客户</CardTitle>
-                <Link href="/receivables"><Button variant="ghost" size="sm">查看全部</Button></Link>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {riskCustomers.map((c, i) => (
-                <div key={i} className="flex items-center justify-between p-3 bg-red-50/50 rounded-lg">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-sm">{c.name}</span>
-                      <Badge variant="destructive" className="text-[10px]">等级{c.risk}</Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">逾期{c.overdueDays}天 · {c.action}</p>
-                  </div>
-                  <p className="font-semibold text-red-600">${c.outstanding.toLocaleString()}</p>
+            <CardHeader className="pb-3"><div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2"><Shield className="h-4 w-4 text-red-500" />逾期应收 {fmt(overdue.arCny)}</CardTitle>
+              <Link href="/receivables"><Button variant="ghost" size="sm">查看</Button></Link>
+            </div></CardHeader>
+            <CardContent className="space-y-2">
+              {overdue.customers.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">暂无逾期客户 🎉</p>}
+              {overdue.customers.map((c, i) => (
+                <div key={i} className="flex items-center justify-between p-2.5 bg-red-50/50 rounded-lg">
+                  <div><span className="font-medium text-sm">{c.name}</span><p className="text-[11px] text-muted-foreground mt-0.5">逾期 {c.maxDays} 天</p></div>
+                  <p className="font-semibold text-red-600 text-sm">{fmt(c.amountCny)}</p>
                 </div>
               ))}
             </CardContent>
           </Card>
 
-          {/* 需立即处理 */}
+          {/* 本周必付 */}
           <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center gap-2"><Zap className="h-4 w-4 text-amber-500" />建议立即处理</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {urgentPayments.map((p, i) => (
-                <div key={i} className="flex items-center justify-between p-3 bg-amber-50/50 rounded-lg">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="secondary" className="text-[10px]">{p.priority}</Badge>
-                      <span className="text-sm font-medium">{p.supplier}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">{p.due}到期 · 影响生产</p>
-                  </div>
-                  <p className="font-semibold">¥{p.amount.toLocaleString()}</p>
+            <CardHeader className="pb-3"><div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2"><Clock className="h-4 w-4 text-amber-500" />本周必付 {fmt(weekPayables.totalCny)}</CardTitle>
+              <Link href="/payments"><Button variant="ghost" size="sm">查看</Button></Link>
+            </div></CardHeader>
+            <CardContent className="space-y-2">
+              {weekPayables.list.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">本周无到期应付</p>}
+              {weekPayables.list.map((p, i) => (
+                <div key={i} className="flex items-center justify-between p-2.5 bg-amber-50/50 rounded-lg">
+                  <div><span className="text-sm font-medium">{p.supplier}</span><p className="text-[11px] text-muted-foreground mt-0.5">{p.due} 到期</p></div>
+                  <p className="font-semibold text-sm">¥{p.amount.toLocaleString()}</p>
                 </div>
               ))}
-              {riskOrders.map((o, i) => (
-                <div key={i} className="flex items-center justify-between p-3 bg-purple-50/50 rounded-lg">
-                  <div>
-                    <span className="text-sm font-medium">{o.orderNo}</span>
-                    <p className="text-xs text-muted-foreground mt-1">{o.customer} · {o.issue}</p>
-                  </div>
-                  <p className={`font-semibold ${o.margin < 0 ? 'text-red-600' : 'text-amber-600'}`}>{o.margin}%</p>
+            </CardContent>
+          </Card>
+
+          {/* 风险订单 */}
+          <Card>
+            <CardHeader className="pb-3"><div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2"><Zap className="h-4 w-4 text-purple-500" />风险订单</CardTitle>
+              <Link href="/orders"><Button variant="ghost" size="sm">查看</Button></Link>
+            </div></CardHeader>
+            <CardContent className="space-y-2">
+              {riskOrders.list.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">无低毛利/亏损订单 🎉</p>}
+              {riskOrders.list.map((o, i) => (
+                <div key={i} className="flex items-center justify-between p-2.5 bg-purple-50/50 rounded-lg">
+                  <div><span className="text-sm font-medium">{o.orderNo}</span><p className="text-[11px] text-muted-foreground mt-0.5">{o.customer}</p></div>
+                  <p className={`font-semibold text-sm ${o.margin < 0 ? 'text-red-600' : 'text-amber-600'}`}>{o.margin}%</p>
                 </div>
               ))}
             </CardContent>
           </Card>
         </div>
+
+        <p className="text-[11px] text-muted-foreground flex items-center gap-1"><Users className="h-3 w-3" />所有数字来自真实业务表：现金=银行账户余额(银行对账)、本月经营=月结同口径、逾期=异常中心。点卡片可下钻来源页。</p>
       </div>
     </div>
   )
+}
+
+function KpiCard({ label, value, sub, href, tone }: { label: string; value: string; sub?: string; href?: string; tone?: 'green' | 'red' | 'amber' | 'blue' | 'orange' | 'purple' }) {
+  const toneCls: Record<string, string> = { green: 'text-green-600', red: 'text-red-600', amber: 'text-amber-600', blue: 'text-blue-600', orange: 'text-orange-600', purple: 'text-purple-600' }
+  const inner = (
+    <CardContent className="p-4">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className={`text-2xl font-bold ${tone ? toneCls[tone] : ''}`}>{value}</p>
+      {sub && <p className="text-[11px] text-muted-foreground mt-1">{sub}</p>}
+    </CardContent>
+  )
+  return href ? <Link href={href}><Card className="hover:border-primary/40 transition cursor-pointer h-full">{inner}</Card></Link> : <Card>{inner}</Card>
 }
