@@ -36,6 +36,7 @@ const baseNavigation = [
   { name: '汇总报表', href: '/reports', icon: ScrollText },
   { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
   { name: '银行对账', href: '/bank', icon: Scale },
+  { name: '工资条发放', href: '/payroll', icon: Users },
   { name: '客户画像', href: '/profiles/customers', icon: Users },
   { name: '供应商画像', href: '/profiles/suppliers', icon: FileText },
   { name: '利润控制中心', href: '/profit-control', icon: TrendingUp },
