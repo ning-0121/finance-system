@@ -426,6 +426,133 @@ export async function overrideCheck(
 /**
  * Finalize period close — only if all checks passed/overridden.
  */
+// ============================================================
+// 月度经营面板 — 锁账页一屏数字（与各业务页同 CNY 口径）
+// ============================================================
+export interface MonthEndPanel {
+  periodCode: string
+  orderCount: number
+  settledCount: number
+  unsettledCount: number
+  revenueCny: number
+  costCny: number
+  profitCny: number
+  marginPct: number
+  arBalanceCny: number       // 当前应收余额（时点）
+  apBalanceCny: number       // 当前应付余额（时点）
+  collectedCny: number       // 本月回款
+  collectionRatePct: number  // 本月回款 / 本月收入
+}
+
+const r2c = (n: number) => Math.round(n * 100) / 100
+const toCnyRate = (currency: string | null | undefined, rate: number | null | undefined) =>
+  (currency || 'CNY') === 'CNY' ? 1 : (Number(rate) || 1)
+
+export async function getMonthlyClosingPanel(periodCode: string): Promise<MonthEndPanel> {
+  const supabase = await createClient()
+  const { data: period } = await supabase
+    .from('accounting_periods').select('start_date, end_date').eq('period_code', periodCode).maybeSingle()
+  const start = period?.start_date as string | undefined
+  const end = period?.end_date as string | undefined
+
+  // 本期订单（按下单日期落在期间内）
+  let oq = supabase.from('budget_orders')
+    .select('id, total_revenue, total_cost, currency, exchange_rate, order_date, status, ar_received_amount')
+    .is('deleted_at', null)
+  if (start) oq = oq.gte('order_date', start)
+  if (end) oq = oq.lte('order_date', end)
+  const { data: orders } = await oq
+  const orderList = orders || []
+  const orderIds = orderList.map(o => o.id as string)
+
+  // 决算覆盖
+  const settledSet = new Set<string>()
+  for (let i = 0; i < orderIds.length; i += 500) {
+    const { data: st } = await supabase.from('order_settlements').select('budget_order_id').in('budget_order_id', orderIds.slice(i, i + 500))
+    ;(st || []).forEach(s => settledSet.add(s.budget_order_id as string))
+  }
+
+  let revenueCny = 0, costCny = 0
+  for (const o of orderList) {
+    const rate = toCnyRate(o.currency as string, o.exchange_rate as number)
+    revenueCny += (Number(o.total_revenue) || 0) * rate
+    costCny += (Number(o.total_cost) || 0)  // total_cost 已是 CNY 口径（Phase 2 修复后）
+  }
+  revenueCny = r2c(revenueCny); costCny = r2c(costCny)
+  const profitCny = r2c(revenueCny - costCny)
+
+  // 本月回款（按回款日期落在期间内）
+  let pq = supabase.from('receivable_payments').select('amount_cny, received_at').is('voided_at', null)
+  if (start) pq = pq.gte('received_at', start)
+  if (end) pq = pq.lte('received_at', end + 'T23:59:59')
+  const { data: receipts } = await pq
+  const collectedCny = r2c((receipts || []).reduce((s, p) => s + (Number(p.amount_cny) || 0), 0))
+
+  // 当前应收/应付余额（时点，全量）
+  const { data: allOrders } = await supabase.from('budget_orders')
+    .select('id, total_revenue, currency, exchange_rate, ar_received_amount').is('deleted_at', null)
+  const { data: allAlloc } = await supabase.from('receivable_payment_allocations').select('budget_order_id, amount_cny').is('voided_at', null)
+  const allocByOrder = new Map<string, number>()
+  ;(allAlloc || []).forEach(a => allocByOrder.set(a.budget_order_id as string, (allocByOrder.get(a.budget_order_id as string) || 0) + (Number(a.amount_cny) || 0)))
+  let arBalanceCny = 0
+  for (const o of allOrders || []) {
+    const rate = toCnyRate(o.currency as string, o.exchange_rate as number)
+    const contract = (Number(o.total_revenue) || 0) * rate
+    const received = allocByOrder.get(o.id as string) ?? (Number(o.ar_received_amount) || 0) * rate
+    arBalanceCny += Math.max(0, contract - received)
+  }
+  const { data: costAll } = await supabase.from('cost_items').select('amount, currency, exchange_rate, supplier').is('deleted_at', null)
+  const { data: payAll } = await supabase.from('supplier_payments').select('amount').is('deleted_at', null)
+  const totalCostCny = (costAll || []).reduce((s, c) => s + (Number(c.amount) || 0) * toCnyRate(c.currency as string, c.exchange_rate as number), 0)
+  const totalPaidCny = (payAll || []).reduce((s, p) => s + (Number(p.amount) || 0), 0)
+  const apBalanceCny = Math.max(0, r2c(totalCostCny - totalPaidCny))
+
+  return {
+    periodCode,
+    orderCount: orderList.length,
+    settledCount: orderIds.filter(id => settledSet.has(id)).length,
+    unsettledCount: orderIds.filter(id => !settledSet.has(id)).length,
+    revenueCny, costCny, profitCny,
+    marginPct: revenueCny > 0 ? r2c((profitCny / revenueCny) * 100) : 0,
+    arBalanceCny: r2c(arBalanceCny),
+    apBalanceCny,
+    collectedCny,
+    collectionRatePct: revenueCny > 0 ? r2c((collectedCny / revenueCny) * 100) : 0,
+  }
+}
+
+// ============================================================
+// 解锁审批：财务经理发起 → admin 批准
+// ============================================================
+export async function requestPeriodReopen(periodCode: string, reason: string, actorId: string): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient()
+  const { data: hit, error } = await supabase.from('accounting_periods')
+    .update({ reopen_requested_by: actorId, reopen_requested_at: new Date().toISOString(), reopen_reason: reason })
+    .eq('period_code', periodCode).eq('status', 'closed').select('id')
+  if (error) return { success: false, error: error.message }
+  if (!hit || hit.length === 0) return { success: false, error: '该期间不是已关账状态，无法申请解锁' }
+  await recordTimelineEvent({
+    entityType: 'period_close', entityId: periodCode, eventType: 'reopen_requested',
+    eventTitle: `申请解锁会计期间 ${periodCode}`, eventDetail: { reason }, sourceType: 'user', actorId,
+  })
+  return { success: true }
+}
+
+export async function approvePeriodReopen(periodCode: string, actorId: string): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient()
+  const { data: period } = await supabase.from('accounting_periods').select('reopen_requested_at').eq('period_code', periodCode).maybeSingle()
+  if (!period?.reopen_requested_at) return { success: false, error: '该期间无待批准的解锁申请' }
+  const { error } = await supabase.from('accounting_periods')
+    .update({ status: 'open', closed_by: null, closed_at: null, reopen_requested_by: null, reopen_requested_at: null, reopen_reason: null })
+    .eq('period_code', periodCode)
+  if (error) return { success: false, error: error.message }
+  await recordTimelineEvent({
+    entityType: 'period_close', entityId: periodCode, eventType: 'reopen_approved',
+    eventTitle: `批准解锁会计期间 ${periodCode}`, eventDetail: {}, sourceType: 'user', actorId,
+  })
+  return { success: true }
+}
+
 export async function finalizePeriodClose(
   periodCode: string,
   closedBy: string
@@ -459,6 +586,15 @@ export async function finalizePeriodClose(
   if (periodErr) {
     return { success: false, error: `关闭期间失败: ${periodErr.message}` }
   }
+
+  // 锁账产物：固化月度经营面板为快照（老板月报数据源）
+  try {
+    const panel = await getMonthlyClosingPanel(periodCode)
+    await supabase.from('month_end_snapshots').upsert(
+      { period_code: periodCode, panel: panel as unknown as Record<string, unknown>, closed_by: closedBy, closed_at: new Date().toISOString() },
+      { onConflict: 'period_code' }
+    )
+  } catch (e) { console.error('[closing] 月结快照失败:', e) }
 
   await recordTimelineEvent({
     entityType: 'period_close',

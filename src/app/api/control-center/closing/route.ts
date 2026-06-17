@@ -10,7 +10,11 @@ import {
   executeClosingCheck,
   overrideCheck,
   finalizePeriodClose,
+  getMonthlyClosingPanel,
+  requestPeriodReopen,
+  approvePeriodReopen,
 } from '@/lib/engines/closing-engine'
+import { createClient } from '@/lib/supabase/server'
 import { notifyRiskAlert } from '@/lib/wecom/notifications'
 
 export async function GET(request: NextRequest) {
@@ -24,8 +28,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '缺少 period 参数' }, { status: 400 })
     }
 
-    const data = await getClosingStatus(period)
-    return NextResponse.json({ data })
+    const [data, panel, periodRow] = await Promise.all([
+      getClosingStatus(period),
+      getMonthlyClosingPanel(period),
+      (await createClient()).from('accounting_periods')
+        .select('status, closed_at, reopen_requested_by, reopen_requested_at, reopen_reason')
+        .eq('period_code', period).maybeSingle().then(r => r.data),
+    ])
+    return NextResponse.json({ data, panel, period: periodRow })
   } catch (error) {
     console.error('[closing GET]', error)
     return NextResponse.json(
@@ -96,6 +106,34 @@ export async function POST(request: NextRequest) {
         }).catch(err => console.error('[WeChat] 关账通知失败:', err))
 
         return NextResponse.json({ data: result })
+      }
+
+      case 'request_reopen': {
+        const { period, reason } = body
+        if (!period || !reason) return NextResponse.json({ error: '缺少 period 或解锁原因' }, { status: 400 })
+        if (!['finance_manager', 'admin'].includes(auth.role || '')) {
+          return NextResponse.json({ error: '仅财务经理/管理员可申请解锁' }, { status: 403 })
+        }
+        const result = await requestPeriodReopen(period, reason, auth.userId!)
+        if (!result.success) return NextResponse.json({ error: result.error }, { status: 400 })
+        notifyRiskAlert({
+          title: `${period} 解锁申请`,
+          riskLevel: 'yellow',
+          description: `财务申请解锁已关账期间 ${period}：${reason}`,
+          suggestion: '请管理员到月结中心审批',
+        }).catch(err => console.error('[WeChat] 解锁申请通知失败:', err))
+        return NextResponse.json({ success: true })
+      }
+
+      case 'approve_reopen': {
+        const { period } = body
+        if (!period) return NextResponse.json({ error: '缺少 period' }, { status: 400 })
+        if (auth.role !== 'admin') {
+          return NextResponse.json({ error: '仅管理员可批准解锁' }, { status: 403 })
+        }
+        const result = await approvePeriodReopen(period, auth.userId!)
+        if (!result.success) return NextResponse.json({ error: result.error }, { status: 400 })
+        return NextResponse.json({ success: true })
       }
 
       default:

@@ -9,8 +9,19 @@ import { Textarea } from '@/components/ui/textarea'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { Loader2, CheckCircle, XCircle, Clock, Play, ShieldCheck, RefreshCw, Lock, AlertTriangle } from 'lucide-react'
+import { Loader2, CheckCircle, XCircle, Clock, Play, ShieldCheck, RefreshCw, Lock, Unlock, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
+import { useCurrentUser } from '@/lib/hooks/use-current-user'
+
+interface MonthEndPanel {
+  orderCount: number; settledCount: number; unsettledCount: number
+  revenueCny: number; costCny: number; profitCny: number; marginPct: number
+  arBalanceCny: number; apBalanceCny: number; collectedCny: number; collectionRatePct: number
+}
+interface PeriodInfo {
+  status: 'open' | 'closing' | 'closed'; closed_at: string | null
+  reopen_requested_by: string | null; reopen_requested_at: string | null; reopen_reason: string | null
+}
 
 // ---------- Types ----------
 interface ClosingCheckItem {
@@ -59,13 +70,19 @@ const periods = generatePeriods()
 
 // ---------- Page ----------
 export default function ClosingPage() {
+  const { user } = useCurrentUser()
+  const role = user?.role || ''
   const [period, setPeriod] = useState(periods[1].value) // 上月
   const [data, setData] = useState<ClosingResult | null>(null)
+  const [panel, setPanel] = useState<MonthEndPanel | null>(null)
+  const [periodInfo, setPeriodInfo] = useState<PeriodInfo | null>(null)
   const [loading, setLoading] = useState(false)
   const [runningKey, setRunningKey] = useState<string | null>(null)
   const [overrideItem, setOverrideItem] = useState<ClosingCheckItem | null>(null)
   const [overrideReason, setOverrideReason] = useState('')
   const [closing, setClosing] = useState(false)
+  const [reopenOpen, setReopenOpen] = useState(false)
+  const [reopenReason, setReopenReason] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -74,6 +91,8 @@ export default function ClosingPage() {
       const d = await res.json()
       if (!res.ok) throw new Error(d.error)
       setData(d.data)
+      setPanel(d.panel ?? null)
+      setPeriodInfo(d.period ?? null)
     } catch (e) {
       toast.error(`加载失败: ${e instanceof Error ? e.message : '未知'}`)
     } finally {
@@ -172,10 +191,40 @@ export default function ClosingPage() {
     setClosing(false)
   }
 
+  const requestReopen = async () => {
+    if (!reopenReason.trim()) { toast.error('请填写解锁原因'); return }
+    try {
+      const res = await fetch('/api/control-center/closing', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'request_reopen', period, reason: reopenReason.trim() }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error)
+      toast.success('解锁申请已提交，待管理员审批')
+      setReopenOpen(false); setReopenReason(''); load()
+    } catch (e) { toast.error(`申请失败: ${e instanceof Error ? e.message : '未知'}`) }
+  }
+  const approveReopen = async () => {
+    if (!confirm(`确认批准解锁 ${period}？解锁后该期间业务数据将可再次修改。`)) return
+    try {
+      const res = await fetch('/api/control-center/closing', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve_reopen', period }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error)
+      toast.success(`${period} 已解锁`)
+      load()
+    } catch (e) { toast.error(`审批失败: ${e instanceof Error ? e.message : '未知'}`) }
+  }
+
   const passedCount = data?.items.filter(i => i.status === 'passed' || i.status === 'overridden').length ?? 0
   const totalCount = data?.items.length ?? 0
   const allClear = data?.allClear ?? false
   const hasItems = totalCount > 0
+  const isClosed = periodInfo?.status === 'closed'
+  const reopenPending = !!periodInfo?.reopen_requested_at
+  const fmtCny = (n: number) => `¥${Math.round(n).toLocaleString()}`
 
   return (
     <div className="flex flex-col h-full">
@@ -212,6 +261,53 @@ export default function ClosingPage() {
             </div>
           )}
         </div>
+
+        {/* 已关账横幅 */}
+        {isClosed && (
+          <Card className="border-l-4 border-l-green-600 bg-green-50/40">
+            <CardContent className="p-3 flex items-center gap-3 flex-wrap">
+              <Lock className="h-5 w-5 text-green-700" />
+              <span className="text-sm font-medium text-green-800">{period} 已关账{periodInfo?.closed_at ? `（${new Date(periodInfo.closed_at).toLocaleDateString('zh-CN')}）` : ''}</span>
+              <span className="text-xs text-muted-foreground">该期间的费用/回款/付款/决算已锁定，不可修改</span>
+              <div className="ml-auto flex items-center gap-2">
+                {reopenPending
+                  ? <>
+                      <Badge className="bg-amber-100 text-amber-700">解锁待审批</Badge>
+                      {role === 'admin' && <Button size="sm" variant="outline" onClick={approveReopen}><Unlock className="h-4 w-4 mr-1" />批准解锁</Button>}
+                    </>
+                  : ['finance_manager', 'admin'].includes(role) && <Button size="sm" variant="outline" onClick={() => setReopenOpen(true)}><Unlock className="h-4 w-4 mr-1" />申请解锁</Button>}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+        {reopenPending && periodInfo?.reopen_reason && (
+          <p className="text-xs text-amber-700 -mt-2">解锁申请原因：{periodInfo.reopen_reason}</p>
+        )}
+
+        {/* 月度经营面板 */}
+        {panel && (
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm">{period} 月度经营面板</CardTitle></CardHeader>
+            <CardContent className="grid grid-cols-3 md:grid-cols-6 gap-y-3 gap-x-4">
+              {[
+                { label: '订单数', value: panel.orderCount, sub: `已决算 ${panel.settledCount} / 未决算 ${panel.unsettledCount}` },
+                { label: '收入', value: fmtCny(panel.revenueCny), cls: 'text-foreground' },
+                { label: '成本', value: fmtCny(panel.costCny), cls: 'text-foreground' },
+                { label: '利润', value: fmtCny(panel.profitCny), cls: panel.profitCny >= 0 ? 'text-green-600' : 'text-red-600' },
+                { label: '毛利率', value: `${panel.marginPct}%`, cls: panel.marginPct >= 0 ? 'text-green-600' : 'text-red-600' },
+                { label: '本月回款', value: fmtCny(panel.collectedCny), sub: `回款率 ${panel.collectionRatePct}%` },
+                { label: '应收余额', value: fmtCny(panel.arBalanceCny), cls: 'text-amber-600' },
+                { label: '应付余额', value: fmtCny(panel.apBalanceCny), cls: 'text-red-600' },
+              ].map(k => (
+                <div key={k.label}>
+                  <p className="text-xs text-muted-foreground">{k.label}</p>
+                  <p className={`text-lg font-bold ${k.cls || ''}`}>{k.value}</p>
+                  {k.sub && <p className="text-[11px] text-muted-foreground">{k.sub}</p>}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
 
         {/* KPI 卡片 */}
         {data && (
@@ -301,8 +397,8 @@ export default function ClosingPage() {
           </Card>
         )}
 
-        {/* 关账按钮 */}
-        {hasItems && (
+        {/* 关账按钮（已关账则不再显示，改由顶部横幅的解锁流程接管） */}
+        {hasItems && !isClosed && (
           <div className="flex justify-end">
             <Button
               size="lg"
@@ -316,6 +412,21 @@ export default function ClosingPage() {
           </div>
         )}
       </div>
+
+      {/* 解锁申请弹窗 */}
+      <Dialog open={reopenOpen} onOpenChange={o => { if (!o) { setReopenOpen(false); setReopenReason('') } }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>申请解锁 {period}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">解锁需管理员批准。解锁后该期间业务数据可再次修改，重新关账时会强制重跑全部检查。请填写原因（记录审计）：</p>
+            <Textarea value={reopenReason} onChange={e => setReopenReason(e.target.value)} rows={4} placeholder="例：6月一笔货代费入错期间，需调整后重新关账..." />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReopenOpen(false)}>取消</Button>
+            <Button onClick={requestReopen} disabled={!reopenReason.trim()}>提交申请</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 覆盖原因弹窗 */}
       <Dialog open={!!overrideItem} onOpenChange={o => { if (!o) { setOverrideItem(null); setOverrideReason('') } }}>
