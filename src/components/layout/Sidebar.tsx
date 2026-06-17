@@ -50,6 +50,8 @@ const baseNavigation = [
   { name: '记账凭证', href: '/gl/journal', icon: FileText },
   { name: '试算平衡表', href: '/gl/trial-balance', icon: Scale },
   { name: '利润表', href: '/gl/profit-loss', icon: BarChart3 },
+  { name: '资产负债表', href: '/gl/balance-sheet', icon: Scale },
+  { name: '现金流量表', href: '/gl/cash-flow', icon: BarChart3 },
   { name: '会计期间', href: '/gl/periods', icon: Calendar },
 ]
 
