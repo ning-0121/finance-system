@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
 import { Loader2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 
 type Txn = { direction: 'in' | 'out'; amount: number; summary: string | null; matched_type: string | null }
 const r2 = (n: number) => Math.round(n * 100) / 100
@@ -56,8 +57,8 @@ export default function CashFlowPage() {
       setLoading(true)
       const supabase = createClient()
       const [{ data: tx }, { data: accts }] = await Promise.all([
-        supabase.from('bank_transactions').select('direction, amount, summary, matched_type')
-          .gte('txn_date', p.start).lte('txn_date', p.end).neq('match_status', 'ignored').limit(5000),
+        fetchAll<Txn>((f, t2) => supabase.from('bank_transactions').select('direction, amount, summary, matched_type, id')
+          .gte('txn_date', p.start).lte('txn_date', p.end).neq('match_status', 'ignored').order('id', { ascending: true }).range(f, t2)),
         supabase.from('bank_accounts').select('current_balance').eq('is_active', true),
       ])
       setTxns((tx || []) as Txn[])

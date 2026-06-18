@@ -1,6 +1,7 @@
 // 外汇损益核算模块
 // 外贸服装公司核心场景：USD收入 → 结汇CNY → 与预算汇率比较 → 产生汇兑损益
 import { createClient } from '@/lib/supabase/client'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 import { safeRate, sumAmounts, mulAmount } from './utils'
 import { bizToday } from '@/lib/biz-date'
 
@@ -40,11 +41,11 @@ export function calculateFxGainLoss(
  */
 export async function calculateAllFxGains(actualRate: number): Promise<FxGainResult[]> {
   const supabase = createClient()
-  const { data: orders } = await supabase
+  const { data: orders } = await fetchAll<Record<string, unknown>>((f, t) => supabase
     .from('budget_orders')
     .select('id, order_no, total_revenue, exchange_rate, currency')
     .eq('currency', 'USD')
-    .in('status', ['approved', 'closed'])
+    .in('status', ['approved', 'closed']).order('id', { ascending: true }).range(f, t))
 
   if (!orders?.length) return []
 

@@ -6,6 +6,7 @@ import { NextResponse } from 'next/server'
 import { requireAuth } from '@/lib/auth/api-guard'
 import { createClient } from '@/lib/supabase/server'
 import { getMonthlyClosingPanel } from '@/lib/engines/closing-engine'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 import { bizToday } from '@/lib/biz-date'
 
 export const dynamic = 'force-dynamic'
@@ -39,16 +40,17 @@ export async function GET() {
 
     // 本周必付：应付到期日在未来 7 天内、未付
     const in7 = new Date(new Date(today).getTime() + 7 * 86400000).toISOString().slice(0, 10)
-    const { data: duePay } = await supabase.from('payable_records')
+    const { data: duePay } = await fetchAll<Record<string, unknown>>((from, to) => supabase.from('payable_records')
       .select('supplier_name, amount, currency, due_date')
       .in('payment_status', ['unpaid', 'pending_approval', 'approved']).not('due_date', 'is', null)
-      .lte('due_date', in7).order('due_date')
+      .lte('due_date', in7).order('due_date').order('id', { ascending: true }).range(from, to))
     const weekPayables = (duePay || []).map(p => ({ supplier: p.supplier_name as string, amount: Number(p.amount) || 0, due: p.due_date as string }))
     const weekPayCny = r2(weekPayables.reduce((s, p) => s + p.amount, 0))
 
-    // 风险订单：毛利率 < 10%（含负毛利）
-    const { data: orders } = await supabase.from('budget_orders')
+    // 风险订单：毛利率 < 10%（含负毛利）；分页取全量 + 仅已审批/已关闭（与口径一致）
+    const { data: orders } = await fetchAll<Record<string, unknown>>((from, to) => supabase.from('budget_orders')
       .select('order_no, estimated_margin, customer:customers(company)').is('deleted_at', null)
+      .in('status', ['approved', 'closed']).order('id', { ascending: true }).range(from, to))
     const riskOrders = (orders || [])
       .filter(o => (Number(o.estimated_margin) ?? 100) < 10)
       .map(o => ({ orderNo: o.order_no as string, customer: (o.customer as unknown as { company?: string })?.company || '', margin: Number(o.estimated_margin) || 0 }))

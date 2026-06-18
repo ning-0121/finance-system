@@ -6,6 +6,8 @@
 // auditing, and year-end carry-forward journal entries.
 
 import { createClient } from '@/lib/supabase/server'
+import { fetchAll } from '@/lib/supabase/fetch-all'
+import { normalizeSupplierName } from '@/lib/utils'
 import { recordTimelineEvent } from './timeline-engine'
 import {
   checkGLBalance,
@@ -455,13 +457,17 @@ export async function getMonthlyClosingPanel(periodCode: string): Promise<MonthE
   const start = period?.start_date as string | undefined
   const end = period?.end_date as string | undefined
 
-  // 本期订单（按下单日期落在期间内）
-  let oq = supabase.from('budget_orders')
-    .select('id, total_revenue, total_cost, currency, exchange_rate, order_date, status, ar_received_amount')
-    .is('deleted_at', null)
-  if (start) oq = oq.gte('order_date', start)
-  if (end) oq = oq.lte('order_date', end)
-  const { data: orders } = await oq
+  // 本期订单（按下单日期落在期间内）；分页取全量防 1000 行截断。
+  // 口径统一：收入/成本/利润/订单数只认「已审批+已关闭」订单（与应收页一致，草稿单不计）。
+  const { data: orders } = await fetchAll<Record<string, unknown>>((from, to) => {
+    let oq = supabase.from('budget_orders')
+      .select('id, total_revenue, total_cost, currency, exchange_rate, order_date, status, ar_received_amount')
+      .is('deleted_at', null).in('status', ['approved', 'closed'])
+      .order('id', { ascending: true })
+    if (start) oq = oq.gte('order_date', start)
+    if (end) oq = oq.lte('order_date', end)
+    return oq.range(from, to)
+  })
   const orderList = orders || []
   const orderIds = orderList.map(o => o.id as string)
 
@@ -481,17 +487,21 @@ export async function getMonthlyClosingPanel(periodCode: string): Promise<MonthE
   revenueCny = r2c(revenueCny); costCny = r2c(costCny)
   const profitCny = r2c(revenueCny - costCny)
 
-  // 本月回款（按回款日期落在期间内）
-  let pq = supabase.from('receivable_payments').select('amount_cny, received_at').is('voided_at', null)
-  if (start) pq = pq.gte('received_at', start)
-  if (end) pq = pq.lte('received_at', end + 'T23:59:59')
-  const { data: receipts } = await pq
+  // 本月回款（按回款日期落在期间内）；分页取全量
+  const { data: receipts } = await fetchAll<Record<string, unknown>>((from, to) => {
+    let pq = supabase.from('receivable_payments').select('amount_cny, received_at, id').is('voided_at', null).order('id', { ascending: true })
+    if (start) pq = pq.gte('received_at', start)
+    if (end) pq = pq.lte('received_at', end + 'T23:59:59')
+    return pq.range(from, to)
+  })
   const collectedCny = r2c((receipts || []).reduce((s, p) => s + (Number(p.amount_cny) || 0), 0))
 
-  // 当前应收/应付余额（时点，全量）
-  const { data: allOrders } = await supabase.from('budget_orders')
-    .select('id, total_revenue, currency, exchange_rate, ar_received_amount').is('deleted_at', null)
-  const { data: allAlloc } = await supabase.from('receivable_payment_allocations').select('budget_order_id, amount_cny').is('voided_at', null)
+  // 当前应收余额（时点）：已审批+已关闭订单（与应收页同口径），分页取全量
+  const { data: allOrders } = await fetchAll<Record<string, unknown>>((from, to) => supabase.from('budget_orders')
+    .select('id, total_revenue, currency, exchange_rate, ar_received_amount, status').is('deleted_at', null)
+    .in('status', ['approved', 'closed']).order('id', { ascending: true }).range(from, to))
+  const { data: allAlloc } = await fetchAll<Record<string, unknown>>((from, to) => supabase.from('receivable_payment_allocations')
+    .select('budget_order_id, amount_cny').is('voided_at', null).order('id', { ascending: true }).range(from, to))
   const allocByOrder = new Map<string, number>()
   ;(allAlloc || []).forEach(a => allocByOrder.set(a.budget_order_id as string, (allocByOrder.get(a.budget_order_id as string) || 0) + (Number(a.amount_cny) || 0)))
   let arBalanceCny = 0
@@ -501,11 +511,26 @@ export async function getMonthlyClosingPanel(periodCode: string): Promise<MonthE
     const received = allocByOrder.get(o.id as string) ?? (Number(o.ar_received_amount) || 0) * rate
     arBalanceCny += Math.max(0, contract - received)
   }
-  const { data: costAll } = await supabase.from('cost_items').select('amount, currency, exchange_rate, supplier').is('deleted_at', null)
-  const { data: payAll } = await supabase.from('supplier_payments').select('amount').is('deleted_at', null)
-  const totalCostCny = (costAll || []).reduce((s, c) => s + (Number(c.amount) || 0) * toCnyRate(c.currency as string, c.exchange_rate as number), 0)
-  const totalPaidCny = (payAll || []).reduce((s, p) => s + (Number(p.amount) || 0), 0)
-  const apBalanceCny = Math.max(0, r2c(totalCostCny - totalPaidCny))
+  // 当前应付余额：按供应商正向汇总（与应付页同口径——多付的供应商不冲减其他供应商），分页取全量
+  const { data: costAll } = await fetchAll<Record<string, unknown>>((from, to) => supabase.from('cost_items')
+    .select('amount, currency, exchange_rate, supplier, id').is('deleted_at', null).order('id', { ascending: true }).range(from, to))
+  const { data: payAll } = await fetchAll<Record<string, unknown>>((from, to) => supabase.from('supplier_payments')
+    .select('amount, supplier_name, id').is('deleted_at', null).order('id', { ascending: true }).range(from, to))
+  const costBySupplier = new Map<string, number>()
+  ;(costAll || []).forEach(c => {
+    const k = normalizeSupplierName(c.supplier as string) || '未指定'
+    costBySupplier.set(k, (costBySupplier.get(k) || 0) + (Number(c.amount) || 0) * toCnyRate(c.currency as string, c.exchange_rate as number))
+  })
+  const paidBySupplier = new Map<string, number>()
+  ;(payAll || []).forEach(p => {
+    const k = normalizeSupplierName(p.supplier_name as string) || '未指定'
+    paidBySupplier.set(k, (paidBySupplier.get(k) || 0) + (Number(p.amount) || 0))
+  })
+  let apBalanceCny = 0
+  for (const [sup, cost] of costBySupplier) {
+    apBalanceCny += Math.max(0, cost - (paidBySupplier.get(sup) || 0))
+  }
+  apBalanceCny = r2c(apBalanceCny)
 
   return {
     periodCode,

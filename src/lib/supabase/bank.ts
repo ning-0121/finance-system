@@ -4,6 +4,7 @@
 // 收(in)→匹配回款；付(out)→匹配付款。幂等导入靠 dedup_key 唯一约束。
 // ============================================================
 import { createClient } from './client'
+import { fetchAll } from './fetch-all'
 
 export interface BankTxn {
   id: string
@@ -44,7 +45,7 @@ export async function getBankAccounts() {
 
 export async function getBankTransactions(accountId: string): Promise<BankTxn[]> {
   const supabase = createClient()
-  const { data } = await supabase.from('bank_transactions').select('*').eq('bank_account_id', accountId).order('txn_date', { ascending: false }).order('created_at', { ascending: false }).limit(2000)
+  const { data } = await fetchAll<BankTxn>((f, t) => supabase.from('bank_transactions').select('*').eq('bank_account_id', accountId).order('txn_date', { ascending: false }).order('id', { ascending: true }).range(f, t))
   return (data || []) as BankTxn[]
 }
 

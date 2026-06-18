@@ -1,5 +1,6 @@
 // 定时对账引擎 — 自动检测数据异常
 import { createClient } from '@/lib/supabase/server'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 import { safeRate, sumAmounts, mulAmount } from './utils'
 
 export interface CheckResult {
@@ -75,10 +76,10 @@ export async function checkGLBalance(periodCode: string): Promise<CheckResult> {
  */
 export async function checkARConsistency(): Promise<CheckResult> {
   const supabase = await createClient()
-  const { data: orders } = await supabase
+  const { data: orders } = await fetchAll<Record<string, unknown>>((f, t) => supabase
     .from('budget_orders')
     .select('total_revenue, exchange_rate, currency, status')
-    .in('status', ['approved', 'closed'])
+    .in('status', ['approved', 'closed']).order('id', { ascending: true }).range(f, t))
 
   if (!orders?.length) return { type: 'ar_consistency', status: 'passed', details: { message: '无已审批订单' } }
 
@@ -114,9 +115,9 @@ export async function checkARConsistency(): Promise<CheckResult> {
  */
 export async function checkAPConsistency(): Promise<CheckResult> {
   const supabase = await createClient()
-  const { data: payables } = await supabase
+  const { data: payables } = await fetchAll<Record<string, unknown>>((f, t) => supabase
     .from('payable_records')
-    .select('amount, payment_status')
+    .select('amount, payment_status').order('id', { ascending: true }).range(f, t))
 
   if (!payables?.length) return { type: 'ap_consistency', status: 'passed', details: { message: '无应付记录' } }
 
@@ -139,7 +140,8 @@ export async function checkAPConsistency(): Promise<CheckResult> {
  */
 export async function checkDuplicateOrders(): Promise<CheckResult> {
   const supabase = await createClient()
-  const { data } = await supabase.from('budget_orders').select('order_no')
+  const { data } = await fetchAll<Record<string, unknown>>((f, t) => supabase.from('budget_orders')
+    .select('order_no').order('id', { ascending: true }).range(f, t))
 
   if (!data?.length) return { type: 'duplicate_orders', status: 'passed' }
 
@@ -166,9 +168,9 @@ export async function checkDuplicateOrders(): Promise<CheckResult> {
  */
 export async function checkOrphanedRecords(): Promise<CheckResult> {
   const supabase = await createClient()
-  const { data: synced } = await supabase
+  const { data: synced } = await fetchAll<Record<string, unknown>>((f, t) => supabase
     .from('synced_orders')
-    .select('id, order_no, budget_order_id')
+    .select('id, order_no, budget_order_id').order('id', { ascending: true }).range(f, t))
 
   if (!synced?.length) return { type: 'orphaned_records', status: 'passed' }
 

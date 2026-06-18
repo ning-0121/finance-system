@@ -3,6 +3,7 @@
 // 应退税额 = 采购增值税专票不含税额 × 退税率（默认值，可手工覆盖）。
 // ============================================================
 import { createClient } from './client'
+import { fetchAll } from './fetch-all'
 
 export interface TaxRefund {
   id: string
@@ -35,7 +36,7 @@ export function computeRefundable(inputAmount: number, refundRate: number): numb
 
 export async function getTaxRefunds(): Promise<TaxRefund[]> {
   const supabase = createClient()
-  const { data } = await supabase.from('tax_refunds').select('*').order('export_date', { ascending: false }).order('created_at', { ascending: false }).limit(2000)
+  const { data } = await fetchAll<TaxRefund>((f, t) => supabase.from('tax_refunds').select('*').order('export_date', { ascending: false }).order('id', { ascending: true }).range(f, t))
   return (data || []) as TaxRefund[]
 }
 
