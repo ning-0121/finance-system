@@ -68,7 +68,13 @@ export async function saveTaxRefund(payload: Partial<TaxRefund> & { id?: string 
     const { error } = await supabase.from('tax_refunds').update(row).eq('id', payload.id)
     return { error: error?.message || null }
   }
+  // 防重复登记：同一报关单号只允许一条退税记录（避免重复申报/重复退税）
+  if (row.customs_no) {
+    const { data: dup } = await supabase.from('tax_refunds').select('id').eq('customs_no', row.customs_no).limit(1)
+    if (dup && dup.length > 0) return { error: `报关单号 ${row.customs_no} 已存在退税记录，不可重复登记` }
+  }
   const { error } = await supabase.from('tax_refunds').insert({ ...row, created_by: userData?.user?.id || null })
+  if (error && /tax_refunds_customs_no/.test(error.message)) return { error: `报关单号 ${row.customs_no} 已存在退税记录（唯一约束）` }
   return { error: error?.message || null }
 }
 
