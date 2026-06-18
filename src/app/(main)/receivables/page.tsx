@@ -20,7 +20,7 @@ import {
 import { DollarSign, AlertTriangle, Search, Loader2, CheckCircle2, Pencil, Download, X, Plus, Link2, ChevronDown, ChevronRight, Trash2, Inbox } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { getBudgetOrders, writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
-import { getReceivablePayments, getReceivableAllocations, createReceivablePayment, allocateReceipt, unallocateReceipt, voidReceivablePayment } from '@/lib/supabase/queries-v2'
+import { getReceivablePayments, getReceivableAllocations, createReceivablePayment, allocateReceipt, unallocateReceipt, voidReceivablePayment, correctReceivableRate } from '@/lib/supabase/queries-v2'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import Link from 'next/link'
 import type { BudgetOrder, ReceivablePayment, ReceivablePaymentAllocation } from '@/lib/types'
@@ -365,19 +365,14 @@ export default function ReceivablesPage() {
           toast.error('该笔回款流水还匹配了其他订单，请到「回款流水」修正汇率，以免影响其他订单。')
           setReceiptSaving(false); return
         } else {
-          // 作废原流水（含解匹配 + 回写 projection）→ 按新汇率重建并匹配
-          const { error: vErr } = await voidReceivablePayment(pid, `汇率修正 ${payRow?.exchange_rate}→${effRate}`)
-          if (vErr) { toast.error(`修正汇率失败（作废原流水需财务主管权限）：${vErr}`); setReceiptSaving(false); return }
-          const { data: np, error: cErr } = await createReceivablePayment({
-            customer_name: row.customer, budget_order_id: row.id, amount_original: r2(amt),
-            currency: row.currency || 'CNY', exchange_rate: effRate, received_at: at,
-            bank_account: receiptBank.trim() || null, source_type: 'manual', notes: `按实际结汇汇率 ${effRate} 重建（原汇率 ${payRow?.exchange_rate}）`,
+          // 单事务 RPC：作废原流水→按新汇率重建→重新匹配，原子完成（无中途失败的中间态）
+          const { data: corr, error: cErr } = await correctReceivableRate({
+            old_payment_id: pid, budget_order_id: row.id, amount_original: r2(amt),
+            currency: row.currency || 'CNY', rate: effRate, received_at: at, bank: receiptBank.trim() || null,
+            reason: `汇率修正 ${payRow?.exchange_rate}→${effRate}`,
           })
-          if (cErr || !np) { toast.error(`原流水已作废，但重建失败：${cErr || '未知'}。请到「回款流水」补登记`); setReceiptSaving(false); try { await reload() } catch { /* */ }; return }
-          const newCny = r2(r2(amt) * effRate)
-          const { error: aErr } = await allocateReceipt({ receipt_id: np.id, budget_order_id: row.id, amount_cny: newCny, amount_original: r2(amt) })
-          if (aErr) { toast.error(`重建流水已生成但匹配失败：${aErr}。请到「回款流水」手动匹配`); setReceiptSaving(false); try { await reload() } catch { /* */ }; return }
-          toast.success(`已按结汇汇率 ${effRate} 修正，折人民币 ¥${newCny.toLocaleString()}`)
+          if (cErr || !corr) { toast.error(`汇率修正失败：${cErr || '未知'}（作废需财务主管权限）`); setReceiptSaving(false); return }
+          toast.success(`已按结汇汇率 ${effRate} 修正，折人民币 ¥${corr.amount_cny.toLocaleString()}`)
         }
       } else {
         toast.success('金额无变化，已更新收款银行/日期')

@@ -101,6 +101,25 @@ export async function allocateReceipt(a: {
   } catch (e) { return { error: e instanceof Error ? e.message : '未知错误' } }
 }
 
+// 收款汇率修正（RPC：单事务 作废原流水→按新汇率重建→重新匹配，防中途失败的中间态）
+export async function correctReceivableRate(a: {
+  old_payment_id: string; budget_order_id: string; amount_original: number
+  currency: string; rate: number; received_at?: string | null; bank?: string | null; reason?: string
+}): Promise<{ data: { new_payment_id: string; amount_cny: number } | null; error: string | null }> {
+  try {
+    const supabase = createClient()
+    const { data: userData } = await supabase.auth.getUser()
+    const { data, error } = await supabase.rpc('correct_receivable_payment_rate', {
+      p_old_payment_id: a.old_payment_id, p_budget_order_id: a.budget_order_id,
+      p_amount_original: a.amount_original, p_currency: a.currency, p_rate: a.rate,
+      p_received_at: a.received_at ? a.received_at.slice(0, 10) : null,
+      p_bank: a.bank || null, p_actor: userData?.user?.id || null, p_reason: a.reason || null,
+    })
+    if (error) return { data: null, error: error.message }
+    return { data: data as { new_payment_id: string; amount_cny: number }, error: null }
+  } catch (e) { return { data: null, error: e instanceof Error ? e.message : '未知错误' } }
+}
+
 // 撤销匹配（RPC：void 分配 + 自动状态 + 回写 projection）
 export async function unallocateReceipt(allocationId: string, reason?: string): Promise<{ error: string | null }> {
   try {
