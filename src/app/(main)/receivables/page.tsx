@@ -182,6 +182,7 @@ export default function ReceivablesPage() {
   const [receiptAmount, setReceiptAmount] = useState('')
   const [receiptDate, setReceiptDate] = useState('')
   const [receiptBank, setReceiptBank] = useState('')
+  const [receiptRate, setReceiptRate] = useState('1')  // 实际结汇汇率（美金等外币收款用）
   const [receiptSaving, setReceiptSaving] = useState(false)
 
   const [writeOffDialog, setWriteOffDialog] = useState<ReceivableRow | null>(null)
@@ -310,6 +311,9 @@ export default function ReceivablesPage() {
     setReceiptSaving(true)
     const at = receiptDate ? new Date(receiptDate + 'T12:00:00').toISOString() : null
     const row = receiptDialog
+    // 实际结汇汇率：CNY 恒 1；外币用本次收款填写的汇率（而非订单预算汇率）
+    const effRate = row.currency === 'CNY' ? 1 : (Number(receiptRate) || 0)
+    if (row.currency !== 'CNY' && effRate <= 0) { toast.error('请输入有效的结汇汇率'); return }
     const delta = r2(amt - row.paid)
     try {
       if (delta < -0.005) {
@@ -325,14 +329,14 @@ export default function ReceivablesPage() {
           budget_order_id: row.id,
           amount_original: amountOriginal,
           currency: row.currency || 'CNY',
-          exchange_rate: row.rate || 1,
+          exchange_rate: effRate,
           received_at: at,
           bank_account: receiptBank.trim() || null,
           source_type: 'manual',
           notes: row.hasLedger ? '快捷登记收款（自动建流水）' : '快捷登记收款（含历史已收合并入流水）',
         })
         if (payErr || !pay) { toast.error(`生成回款流水失败：${payErr || '未知错误'}`); setReceiptSaving(false); return }
-        const amountCny = r2(amountOriginal * (row.currency === 'CNY' ? 1 : (row.rate || 1)))
+        const amountCny = r2(amountOriginal * effRate)
         const { error: allocErr } = await allocateReceipt({ receipt_id: pay.id, budget_order_id: row.id, amount_cny: amountCny, amount_original: amountOriginal })
         if (allocErr) {
           toast.error(`流水已生成但自动匹配失败：${allocErr}。请到「回款流水」手动匹配该笔（金额 ¥${amountCny.toLocaleString()}）`)
@@ -353,7 +357,7 @@ export default function ReceivablesPage() {
       setReceiptSaving(false)
     }
     fetch('/api/gl/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ businessEvent: 'receipt_saved', sourceType: 'receipt', sourceId: receiptDialog.id }) }).catch(err => console.error('[GL] 收款入队失败:', err))
-    setReceiptDialog(null); setReceiptAmount(''); setReceiptDate(''); setReceiptBank('')
+    setReceiptDialog(null); setReceiptAmount(''); setReceiptDate(''); setReceiptBank(''); setReceiptRate('1')
     try { await reload() } catch { /* */ }
   }
 
@@ -460,7 +464,7 @@ export default function ReceivablesPage() {
 
   if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
 
-  const openReceipt = (r: ReceivableRow) => { setReceiptDialog(r); setReceiptAmount(String(r.paid)); setReceiptDate(r.receivedAt ? r.receivedAt.slice(0, 10) : bizToday()); setReceiptBank(r.bank || '') }
+  const openReceipt = (r: ReceivableRow) => { setReceiptDialog(r); setReceiptAmount(String(r.paid)); setReceiptDate(r.receivedAt ? r.receivedAt.slice(0, 10) : bizToday()); setReceiptBank(r.bank || ''); setReceiptRate(String(r.currency === 'CNY' ? 1 : (r.rate || 1))) }
 
   return (
     <div className="flex flex-col h-full">
@@ -779,6 +783,18 @@ export default function ReceivablesPage() {
             <div className="space-y-4 py-2">
               <p className="text-sm text-muted-foreground">订单 <span className="font-medium text-foreground">{receiptDialog.internalNo || receiptDialog.orderNo}</span>{' · '}应收 {receiptDialog.currency} {receiptDialog.amount.toLocaleString()}</p>
               <div className="space-y-2"><Label>实际收款金额（{receiptDialog.currency}）</Label><Input type="number" step="0.01" min={0} value={receiptAmount} onChange={e => setReceiptAmount(e.target.value)} placeholder={`最大 ${receiptDialog.amount}`} /></div>
+              {receiptDialog.currency !== 'CNY' && (
+                <div className="space-y-2">
+                  <Label>实际结汇汇率（{receiptDialog.currency}→CNY）</Label>
+                  <Input type="number" step="0.0001" min={0} value={receiptRate} onChange={e => setReceiptRate(e.target.value)} placeholder="如 7.18（按实际结汇填，可不同于订单预算汇率）" />
+                  <p className="text-[11px] text-muted-foreground">
+                    折人民币约 ¥{(((Number(receiptAmount) || 0) - receiptDialog.paid) * (Number(receiptRate) || 0) > 0
+                      ? ((Number(receiptAmount) || 0) - receiptDialog.paid) * (Number(receiptRate) || 0)
+                      : (Number(receiptAmount) || 0) * (Number(receiptRate) || 0)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                    （订单预算汇率 {receiptDialog.rate}，本次按实际结汇汇率入账）
+                  </p>
+                </div>
+              )}
               <div className="space-y-2"><Label>实际收款日期</Label><Input type="date" value={receiptDate} onChange={e => setReceiptDate(e.target.value)} /></div>
               <div className="space-y-2">
                 <Label>收款银行 / 账户</Label>
