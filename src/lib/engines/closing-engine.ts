@@ -320,9 +320,9 @@ export async function executeClosingCheck(
       }
   }
 
-  // Get current user
-  const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-  const userId = profiles?.[0]?.id
+  // 真实操作人（不再冒用"表里第一个 profile"，保审计追踪可信）
+  const { data: { user } } = await supabase.auth.getUser()
+  const userId = user?.id ?? null
 
   // Persist result
   await supabase
@@ -661,9 +661,9 @@ export async function yearEndCarryForward(year: number): Promise<{ voucherNo: st
     return { voucherNo: '' }
   }
 
-  // Get current user
-  const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-  const createdBy = profiles?.[0]?.id
+  // 真实操作人（不冒用首个 profile）
+  const { data: { user } } = await supabase.auth.getUser()
+  const createdBy = user?.id ?? null
 
   // Build carry-forward journal lines
   // Debit: Revenue accounts (to zero them out)

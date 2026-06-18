@@ -74,11 +74,16 @@ export async function POST(request: NextRequest) {
           await supabase.from('payroll_slips').update({ send_status: 'skipped', send_error: '无企业微信账号，未匹配到花名册' }).eq('id', s.id)
           skipped++; continue
         }
+        // CAS 领取：原子把本条从 pending/failed 翻成 sent，只有一个请求能领到。
+        // 防并发/双击重复私发同一员工工资条（企微侧无幂等键）。领不到=已被其他请求处理。
+        const { data: claimed } = await supabase.from('payroll_slips')
+          .update({ send_status: 'sent', sent_at: new Date().toISOString(), send_error: null })
+          .eq('id', s.id).in('send_status', ['pending', 'failed']).select('id')
+        if (!claimed || claimed.length === 0) continue
         try {
           const md = buildSlipMarkdown(batch.title as string, s.employee_name as string, Number(s.net_pay), (s.items as { label: string; amount: number }[]) || [])
           const res = await sendMarkdownMessage({ touser: s.wecom_userid as string, content: md }) as { errcode?: number; errmsg?: string }
           if (res.errcode && res.errcode !== 0) throw new Error(res.errmsg || `errcode ${res.errcode}`)
-          await supabase.from('payroll_slips').update({ send_status: 'sent', sent_at: new Date().toISOString(), send_error: null }).eq('id', s.id)
           sent++
         } catch (e) {
           await supabase.from('payroll_slips').update({ send_status: 'failed', send_error: e instanceof Error ? e.message : '发送失败' }).eq('id', s.id)

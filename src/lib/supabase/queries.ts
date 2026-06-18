@@ -229,7 +229,7 @@ export async function createApprovalLog(log: Partial<ApprovalLog>): Promise<{ er
         action: log.action,
         from_status: log.from_status,
         to_status: log.to_status,
-        operator_id: log.operator_id || (await supabase.from('profiles').select('id').limit(1).then(r => r.data?.[0]?.id)),
+        operator_id: log.operator_id || (await supabase.auth.getUser()).data.user?.id || null,
         comment: log.comment ? String(log.comment).slice(0, 500) : null, // 限制长度
       })
 

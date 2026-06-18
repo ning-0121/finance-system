@@ -53,6 +53,16 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { action } = body
 
+    // 关账类写操作需财务经理/管理员；override(强制跳过检查)更敏感，限管理员
+    const role = auth.role || ''
+    const managerActions = ['init', 'run_all', 'run_one', 'finalize', 'override']
+    if (managerActions.includes(action) && !['finance_manager', 'admin'].includes(role)) {
+      return NextResponse.json({ error: '关账操作需财务经理或管理员权限' }, { status: 403 })
+    }
+    if (action === 'override' && role !== 'admin') {
+      return NextResponse.json({ error: '强制跳过检查项(override)仅管理员可操作' }, { status: 403 })
+    }
+
     switch (action) {
       case 'init': {
         const { period, closeType } = body

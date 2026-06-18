@@ -34,8 +34,8 @@ export async function createOverride(params: {
 
   let overriddenBy = params.overriddenBy
   if (!overriddenBy) {
-    const { data: profiles } = await supabase.from('profiles').select('id').limit(1)
-    overriddenBy = profiles?.[0]?.id
+    const { data: { user } } = await supabase.auth.getUser()
+    overriddenBy = user?.id
   }
 
   const { data, error } = await supabase
