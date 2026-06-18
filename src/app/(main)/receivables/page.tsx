@@ -345,6 +345,40 @@ export default function ReceivablesPage() {
           return
         }
         toast.success(row.hasLedger ? `已生成回款流水并匹配 ¥${amountCny.toLocaleString()}` : '已将累计已收合并为回款流水并匹配')
+      } else if (row.currency !== 'CNY' && row.hasLedger) {
+        // 金额没变但可能要改汇率：把原流水作废、按新结汇汇率重建（可追溯）
+        const supabase = createClient()
+        const { data: allocs } = await supabase.from('receivable_payment_allocations')
+          .select('payment_id').eq('budget_order_id', row.id).is('voided_at', null)
+        const payIds = [...new Set((allocs || []).map(a => a.payment_id as string))]
+        if (payIds.length !== 1) {
+          toast.error('该订单由多笔回款流水构成，请到「回款流水」逐笔修正汇率，以免影响其他订单。')
+          setReceiptSaving(false); return
+        }
+        const pid = payIds[0]
+        const { data: payRow } = await supabase.from('receivable_payments').select('exchange_rate').eq('id', pid).maybeSingle()
+        const { data: otherAllocs } = await supabase.from('receivable_payment_allocations').select('budget_order_id').eq('payment_id', pid).is('voided_at', null)
+        const exclusive = (otherAllocs || []).every(a => a.budget_order_id === row.id)
+        if (Math.abs((Number(payRow?.exchange_rate) || 0) - effRate) < 0.0001) {
+          toast.success('金额与汇率均无变化，已更新收款银行/日期')
+        } else if (!exclusive) {
+          toast.error('该笔回款流水还匹配了其他订单，请到「回款流水」修正汇率，以免影响其他订单。')
+          setReceiptSaving(false); return
+        } else {
+          // 作废原流水（含解匹配 + 回写 projection）→ 按新汇率重建并匹配
+          const { error: vErr } = await voidReceivablePayment(pid, `汇率修正 ${payRow?.exchange_rate}→${effRate}`)
+          if (vErr) { toast.error(`修正汇率失败（作废原流水需财务主管权限）：${vErr}`); setReceiptSaving(false); return }
+          const { data: np, error: cErr } = await createReceivablePayment({
+            customer_name: row.customer, budget_order_id: row.id, amount_original: r2(amt),
+            currency: row.currency || 'CNY', exchange_rate: effRate, received_at: at,
+            bank_account: receiptBank.trim() || null, source_type: 'manual', notes: `按实际结汇汇率 ${effRate} 重建（原汇率 ${payRow?.exchange_rate}）`,
+          })
+          if (cErr || !np) { toast.error(`原流水已作废，但重建失败：${cErr || '未知'}。请到「回款流水」补登记`); setReceiptSaving(false); try { await reload() } catch { /* */ }; return }
+          const newCny = r2(r2(amt) * effRate)
+          const { error: aErr } = await allocateReceipt({ receipt_id: np.id, budget_order_id: row.id, amount_cny: newCny, amount_original: r2(amt) })
+          if (aErr) { toast.error(`重建流水已生成但匹配失败：${aErr}。请到「回款流水」手动匹配`); setReceiptSaving(false); try { await reload() } catch { /* */ }; return }
+          toast.success(`已按结汇汇率 ${effRate} 修正，折人民币 ¥${newCny.toLocaleString()}`)
+        }
       } else {
         toast.success('金额无变化，已更新收款银行/日期')
       }
