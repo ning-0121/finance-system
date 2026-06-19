@@ -38,13 +38,23 @@ export async function GET() {
     const todayIn = r2((todayRec || []).reduce((s, p) => s + (Number(p.amount_cny) || 0), 0))
     const todayOut = r2((todayPay || []).reduce((s, p) => s + (Number(p.amount) || 0), 0))
 
-    // 本周必付：应付到期日在未来 7 天内、未付
+    // 本周必付：应付到期日在未来 7 天内、未付。外币按所属订单汇率折人民币（payable_records 无汇率列）
     const in7 = new Date(new Date(today).getTime() + 7 * 86400000).toISOString().slice(0, 10)
-    const { data: duePay } = await fetchAll<Record<string, unknown>>((from, to) => supabase.from('payable_records')
-      .select('supplier_name, amount, currency, due_date')
-      .in('payment_status', ['unpaid', 'pending_approval', 'approved']).not('due_date', 'is', null)
-      .lte('due_date', in7).order('due_date').order('id', { ascending: true }).range(from, to))
-    const weekPayables = (duePay || []).map(p => ({ supplier: p.supplier_name as string, amount: Number(p.amount) || 0, due: p.due_date as string }))
+    const [{ data: duePay }, { data: rateOrders }] = await Promise.all([
+      fetchAll<Record<string, unknown>>((from, to) => supabase.from('payable_records')
+        .select('supplier_name, amount, currency, due_date, budget_order_id')
+        .in('payment_status', ['unpaid', 'pending_approval', 'approved']).not('due_date', 'is', null)
+        .lte('due_date', in7).order('due_date').order('id', { ascending: true }).range(from, to)),
+      fetchAll<Record<string, unknown>>((from, to) => supabase.from('budget_orders')
+        .select('id, currency, exchange_rate').is('deleted_at', null).order('id', { ascending: true }).range(from, to)),
+    ])
+    const ordRate = new Map<string, number>()
+    ;(rateOrders || []).forEach(o => ordRate.set(o.id as string, (o.currency as string) === 'CNY' ? 1 : (Number(o.exchange_rate) || 0)))
+    const weekPayables = (duePay || []).map(p => {
+      const cur = (p.currency as string) || 'CNY'
+      const rate = cur === 'CNY' ? 1 : (ordRate.get(p.budget_order_id as string) || 0)
+      return { supplier: p.supplier_name as string, amount: r2((Number(p.amount) || 0) * rate), due: p.due_date as string }
+    })
     const weekPayCny = r2(weekPayables.reduce((s, p) => s + p.amount, 0))
 
     // 风险订单：毛利率 < 10%（含负毛利）；分页取全量 + 仅已审批/已关闭（与口径一致）

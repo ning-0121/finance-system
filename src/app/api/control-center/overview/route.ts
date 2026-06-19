@@ -85,8 +85,9 @@ export async function GET() {
     const glCheck = closingChecks.find(c => c.checkKey === 'gl_balance')
     const glBalanced = glCheck ? glCheck.status === 'passed' : true
 
-    // 高风险订单（利润率<10%）
+    // 高风险订单（利润率<10%）；仅已审批/已关闭（与 KPI/驾驶舱口径一致，草稿单不计）
     const highRiskOrders = allOrders.filter(o => {
+      if (o.status !== 'approved' && o.status !== 'closed') return false
       if (o.total_revenue <= 0) return false
       const margin = ((o.total_revenue - o.total_cost) / o.total_revenue) * 100
       return margin < 10

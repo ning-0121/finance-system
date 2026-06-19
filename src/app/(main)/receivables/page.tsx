@@ -349,15 +349,15 @@ export default function ReceivablesPage() {
         // 金额没变但可能要改汇率：把原流水作废、按新结汇汇率重建（可追溯）
         const supabase = createClient()
         const { data: allocs } = await supabase.from('receivable_payment_allocations')
-          .select('payment_id').eq('budget_order_id', row.id).is('voided_at', null)
-        const payIds = [...new Set((allocs || []).map(a => a.payment_id as string))]
+          .select('receipt_id').eq('budget_order_id', row.id).is('voided_at', null)
+        const payIds = [...new Set((allocs || []).map(a => a.receipt_id as string))]
         if (payIds.length !== 1) {
           toast.error('该订单由多笔回款流水构成，请到「回款流水」逐笔修正汇率，以免影响其他订单。')
           setReceiptSaving(false); return
         }
         const pid = payIds[0]
         const { data: payRow } = await supabase.from('receivable_payments').select('exchange_rate').eq('id', pid).maybeSingle()
-        const { data: otherAllocs } = await supabase.from('receivable_payment_allocations').select('budget_order_id').eq('payment_id', pid).is('voided_at', null)
+        const { data: otherAllocs } = await supabase.from('receivable_payment_allocations').select('budget_order_id').eq('receipt_id', pid).is('voided_at', null)
         const exclusive = (otherAllocs || []).every(a => a.budget_order_id === row.id)
         if (Math.abs((Number(payRow?.exchange_rate) || 0) - effRate) < 0.0001) {
           toast.success('金额与汇率均无变化，已更新收款银行/日期')

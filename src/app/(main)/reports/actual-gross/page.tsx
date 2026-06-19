@@ -183,7 +183,7 @@ export default function ActualGrossReportPage() {
         const supabase = createClient()
         const approvedIds = approved.map(o => o.id)
         // 分页取全量（防 1000 行静默截断）；汇总必须与明细同口径：排除已软删费用、已作废应付
-        const [{ data: costs }, { data: payables }] = await Promise.all([
+        const [{ data: costs }, { data: payables }, { data: allocs }] = await Promise.all([
           fetchAll<{ budget_order_id: string; amount: number; currency: string; exchange_rate: number }>((from, to) =>
             supabase.from('cost_items').select('budget_order_id, amount, currency, exchange_rate')
               .not('budget_order_id', 'is', null).is('deleted_at', null)
@@ -192,7 +192,13 @@ export default function ActualGrossReportPage() {
             supabase.from('payable_records').select('budget_order_id, amount, currency')
               .not('budget_order_id', 'is', null).neq('payment_status', 'cancelled')
               .order('id', { ascending: true }).range(from, to)),
+          // 已收权威口径=回款流水分配合计（与应收页/核算单弹窗同源），避免主表用 ar_received_amount 各算各的
+          fetchAll<{ budget_order_id: string; amount_cny: number }>((from, to) =>
+            supabase.from('receivable_payment_allocations').select('budget_order_id, amount_cny')
+              .is('voided_at', null).order('id', { ascending: true }).range(from, to)),
         ])
+        const arCnyByOrder = new Map<string, number>()
+        ;(allocs || []).forEach(a => arCnyByOrder.set(a.budget_order_id, (arCnyByOrder.get(a.budget_order_id) || 0) + (Number(a.amount_cny) || 0)))
         // 内部订单号 = synced_orders.style_no（非 BO 财务单号、非 QM 号）；.in 分批防超长/截断
         const internalMap = new Map<string, string>()
         for (let i = 0; i < approvedIds.length; i += 500) {
@@ -223,10 +229,12 @@ export default function ActualGrossReportPage() {
         })
 
         const list: Row[] = approved.map(o => {
-          const rate = o.exchange_rate || 1
+          const rate = o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 1)  // CNY 行恒 1，防历史脏数据虚增
           const revOrig = o.total_revenue || 0
           const recOrig = receivedAmount(o)
-          const recCny = recOrig * rate
+          // 已收：有回款流水→用流水合计(CNY，权威)；无流水→回退 ar_received_amount×rate
+          const allocCny = arCnyByOrder.get(o.id)
+          const recCny = allocCny != null ? allocCny : recOrig * rate
           const costCny = costByOrder.get(o.id) || 0
           const payCny = payableByOrder.get(o.id) || 0
           const gross = recCny - costCny

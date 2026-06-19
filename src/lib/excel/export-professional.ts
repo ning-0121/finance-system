@@ -153,12 +153,13 @@ export function exportBudgetSettlementReport(orders: {
 // --- 利润分析表 ---
 export function exportProfitAnalysisReport(orders: BudgetOrder[]) {
   const now = new Date().toLocaleDateString('zh-CN')
-  const totalRevenue = orders.reduce((s, o) => s + o.total_revenue, 0)
-  const totalCost = orders.reduce((s, o) => s + o.total_cost, 0)
-  const totalProfit = orders.reduce((s, o) => s + o.estimated_profit, 0)
-  const avgMargin = orders.length > 0
-    ? orders.reduce((s, o) => s + o.estimated_margin, 0) / orders.length
-    : 0
+  // 合计折人民币（total_revenue 原币不能跨币种裸加；total_cost/estimated_profit 已是 CNY）
+  const orderRate = (o: BudgetOrder) => o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 1)
+  const totalRevenue = Math.round(orders.reduce((s, o) => s + (o.total_revenue || 0) * orderRate(o), 0) * 100) / 100
+  const totalCost = orders.reduce((s, o) => s + (o.total_cost || 0), 0)
+  const totalProfit = orders.reduce((s, o) => s + (o.estimated_profit || 0), 0)
+  // 合计毛利率用加权（总利润/总收入），非各单毛利率算术平均
+  const avgMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0
 
   const rows: (string | number)[][] = [
     [companyInfo.full_name],
@@ -182,7 +183,7 @@ export function exportProfitAnalysisReport(orders: BudgetOrder[]) {
     ])
   })
 
-  rows.push(['', '合计', '', '', totalRevenue, totalCost, totalProfit, Math.round(avgMargin * 100) / 100, ''])
+  rows.push(['', '合计', '', '¥折算', totalRevenue, totalCost, totalProfit, Math.round(avgMargin * 100) / 100, ''])
   rows.push([`利润合计大写: ${toChineseUppercase(totalProfit)}`])
   rows.push([])
   rows.push([])

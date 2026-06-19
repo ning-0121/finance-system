@@ -602,12 +602,12 @@ export async function auditUnmatchedReceipts(db: SupabaseClient): Promise<AuditF
   const supabase = db
   const [{ data: receipts }, { data: allocs }] = await Promise.all([
     supabase.from('receivable_payments').select('id, customer_name, amount_cny, received_at, created_at').is('voided_at', null),
-    supabase.from('receivable_payment_allocations').select('payment_id, amount_cny').is('voided_at', null),
+    supabase.from('receivable_payment_allocations').select('receipt_id, amount_cny').is('voided_at', null),
   ])
   if (!receipts?.length) return []
   const allocByPayment = new Map<string, number>()
   ;(allocs || []).forEach(a => {
-    const k = a.payment_id as string
+    const k = a.receipt_id as string
     allocByPayment.set(k, (allocByPayment.get(k) || 0) + (Number(a.amount_cny) || 0))
   })
   const now = Date.now()

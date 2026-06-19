@@ -86,8 +86,8 @@ export function exportOrdersComprehensiveToExcel(
     }
   })
 
-  // 计算合计行（仅汇总数值列）
-  const totalRevenue = orders.reduce((s, o) => s + o.total_revenue, 0)
+  // 计算合计行（仅汇总数值列）；合同金额折人民币再加（原币不能跨币种裸加）
+  const totalRevenue = orders.reduce((s, o) => s + (o.total_revenue || 0) * (o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 1)), 0)
   const totalCost = orders.reduce((s, o) => s + o.total_cost, 0)
   const totalEstProfit = orders.reduce((s, o) => s + o.estimated_profit, 0)
   const totalActualProfit = orders.reduce((s, o) => {
@@ -141,6 +141,8 @@ export function exportOrdersComprehensiveToExcel(
     const idxCost    = headers.indexOf('预算总成本(¥)')
     const idxEstP    = headers.indexOf('预估利润(¥)')
     const idxActP    = headers.indexOf('实际利润(¥)')
+    const idxCur = headers.indexOf('币种')
+    if (idxCur >= 0) totalsRow[idxCur] = '¥折算'  // 合计为折人民币口径（各单原币不可直加）
     if (idxRevenue >= 0) totalsRow[idxRevenue] = Math.round(totalRevenue * 100) / 100
     if (idxCost >= 0)    totalsRow[idxCost] = Math.round(totalCost * 100) / 100
     if (idxEstP >= 0)    totalsRow[idxEstP] = Math.round(totalEstProfit * 100) / 100

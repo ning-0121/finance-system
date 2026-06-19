@@ -376,10 +376,11 @@ export async function getProfitSummary(): Promise<ProfitSummary> {
 
   try {
     const supabase = createClient()
-    const { data, error } = await supabase
+    const { data, error } = await fetchAll<Record<string, unknown>>((from, to) => supabase
       .from('budget_orders')
       .select('total_revenue, total_cost, estimated_profit, estimated_margin, currency, exchange_rate')
-      .in('status', ['approved', 'closed'])
+      .in('status', ['approved', 'closed']).is('deleted_at', null)
+      .order('id', { ascending: true }).range(from, to))
 
     if (error) {
       console.error('[getProfitSummary] DB error:', error.message)
@@ -392,10 +393,10 @@ export async function getProfitSummary(): Promise<ProfitSummary> {
 
     // 全部转CNY口径
     const totalRevenueCny = data.reduce((s, o) => {
-      const rate = (o.currency as string) === 'CNY' ? 1 : ((o.exchange_rate as number) ?? 7)
-      return s + (o.total_revenue || 0) * rate
+      const rate = (o.currency as string) === 'CNY' ? 1 : (Number(o.exchange_rate) || 7)
+      return s + (Number(o.total_revenue) || 0) * rate
     }, 0)
-    const totalCost = data.reduce((s, o) => s + (o.total_cost || 0), 0) // 已经是CNY
+    const totalCost = data.reduce((s, o) => s + (Number(o.total_cost) || 0), 0) // 已经是CNY
     const totalProfit = totalRevenueCny - totalCost
     const avgMargin = totalRevenueCny > 0 ? totalProfit / totalRevenueCny * 100 : 0
 
@@ -417,12 +418,12 @@ export async function getMonthlyProfitData() {
   if (!isSupabaseConfigured()) return demoMonthlyProfit
   try {
     const supabase = createClient()
-    const { data: orders } = await supabase
+    // 与控制中心 KPI(getProfitSummary)同口径：仅已审批/已关闭、排除软删；分页取全量
+    const { data: orders } = await fetchAll<Record<string, unknown>>((from, to) => supabase
       .from('budget_orders')
       .select('order_date, total_revenue, total_cost, estimated_profit, estimated_margin, currency, exchange_rate')
-      .not('order_date', 'is', null)
-      .order('order_date')
-      .limit(1000)
+      .not('order_date', 'is', null).is('deleted_at', null).in('status', ['approved', 'closed'])
+      .order('order_date').order('id', { ascending: true }).range(from, to))
     if (!orders || orders.length === 0) return []
 
     // 按月聚合（全部转CNY）

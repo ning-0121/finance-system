@@ -9,6 +9,7 @@
 // 引擎接受 SupabaseClient 注入：cron 用 service-role，手动触发用用户会话。
 // ============================================================
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { normalizeSupplierName } from '@/lib/utils'
 
 type Severity = 'critical' | 'warning' | 'info'
 
@@ -64,7 +65,7 @@ export async function runIntegrityCheck(supabase: SupabaseClient, trigger: 'cron
     fetchAllRows<Record<string, unknown>>((f, t) => supabase.from('receivable_payments')
       .select('id, customer_name, amount_cny, payment_reference, received_at, created_at').is('voided_at', null).order('id').range(f, t)),
     fetchAllRows<Record<string, unknown>>((f, t) => supabase.from('receivable_payment_allocations')
-      .select('id, payment_id, budget_order_id, amount_cny').is('voided_at', null).order('id').range(f, t)),
+      .select('id, receipt_id, budget_order_id, amount_cny').is('voided_at', null).order('id').range(f, t)),
     fetchAllRows<Record<string, unknown>>((f, t) => supabase.from('supplier_payments')
       .select('id, supplier_name, amount, paid_at, note').is('deleted_at', null).order('id').range(f, t)),
     fetchAllRows<Record<string, unknown>>((f, t) => supabase.from('cost_items')
@@ -134,7 +135,7 @@ export async function runIntegrityCheck(supabase: SupabaseClient, trigger: 'cron
   // 3b. 未匹配回款（>7 天）
   const allocByPayment = new Map<string, number>()
   allocations.forEach(a => {
-    const k = a.payment_id as string
+    const k = a.receipt_id as string
     allocByPayment.set(k, (allocByPayment.get(k) || 0) + (Number(a.amount_cny) || 0))
   })
   const now = Date.now()
@@ -155,13 +156,13 @@ export async function runIntegrityCheck(supabase: SupabaseClient, trigger: 'cron
   // 4a. 供应商多付：已付 > 费用总额
   const costBySupplier = new Map<string, number>()
   costItems.forEach(c => {
-    const k = ((c.supplier as string) || '').trim()
+    const k = normalizeSupplierName(c.supplier as string)  // 与月结面板/应付页同口径，避免全半角差异误判
     if (!k) return
     costBySupplier.set(k, (costBySupplier.get(k) || 0) + (Number(c.amount) || 0) * cnyRate(c.currency as string, c.exchange_rate as number))
   })
   const paidBySupplier = new Map<string, number>()
   payments.forEach(p => {
-    const k = ((p.supplier_name as string) || '').trim()
+    const k = normalizeSupplierName(p.supplier_name as string)
     paidBySupplier.set(k, (paidBySupplier.get(k) || 0) + (Number(p.amount) || 0))
   })
   const overpaid: { id: string; label: string }[] = []
@@ -196,12 +197,14 @@ export async function runIntegrityCheck(supabase: SupabaseClient, trigger: 'cron
     .filter(b => String(b.account_code || '').startsWith(prefix))
     .reduce((s, b) => s + (Number(b.period_debit) || 0) - (Number(b.period_credit) || 0), 0))
   const glHasData = glBalances.length > 0
-  const bizArCny = r2(orders.reduce((s, o) => {
-    const rate = cnyRate(o.currency as string, o.exchange_rate as number)
-    const contract = (Number(o.total_revenue) || 0) * rate
-    const received = allocByOrder.get(o.id as string) ?? (Number(o.ar_received_amount) || 0) * rate
-    return s + Math.max(0, contract - received)
-  }, 0))
+  const bizArCny = r2(orders
+    .filter(o => o.status === 'approved' || o.status === 'closed')  // 与应收页/月结面板同口径（草稿单不计）
+    .reduce((s, o) => {
+      const rate = cnyRate(o.currency as string, o.exchange_rate as number)
+      const contract = (Number(o.total_revenue) || 0) * rate
+      const received = allocByOrder.get(o.id as string) ?? (Number(o.ar_received_amount) || 0) * rate
+      return s + Math.max(0, contract - received)
+    }, 0))
   const glArCny = glBal('1122')
   checks.push({
     key: 'ar_vs_gl', label: '应收 → GL（1122）',
