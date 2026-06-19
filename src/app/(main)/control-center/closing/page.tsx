@@ -295,7 +295,7 @@ export default function ClosingPage() {
                 { label: '成本', value: fmtCny(panel.costCny), cls: 'text-foreground' },
                 { label: '利润', value: fmtCny(panel.profitCny), cls: panel.profitCny >= 0 ? 'text-green-600' : 'text-red-600' },
                 { label: '毛利率', value: `${panel.marginPct}%`, cls: panel.marginPct >= 0 ? 'text-green-600' : 'text-red-600' },
-                { label: '本月回款', value: fmtCny(panel.collectedCny), sub: `回款率 ${panel.collectionRatePct}%` },
+                { label: '本月回款', value: fmtCny(panel.collectedCny), sub: `本月回款率 ${panel.collectionRatePct}%` },
                 { label: '应收余额', value: fmtCny(panel.arBalanceCny), cls: 'text-amber-600' },
                 { label: '应付余额', value: fmtCny(panel.apBalanceCny), cls: 'text-red-600' },
               ].map(k => (

@@ -86,7 +86,7 @@ export default function BossDashboardPage() {
               <p className="text-[11px] text-muted-foreground mt-1">收入 {fmt(panel.revenueCny)}</p>
             </CardContent></Card>
             <KpiCard label="毛利率" value={`${panel.marginPct}%`} href="/reports/actual-gross" tone={panel.marginPct >= 0 ? 'green' : 'red'} />
-            <KpiCard label="回款率" value={`${panel.collectionRatePct}%`} sub={`回款 ${fmt(panel.collectedCny)}`} href="/receivables" tone="blue" />
+            <KpiCard label="本月回款率" value={`${panel.collectionRatePct}%`} sub={`本月回款 ${fmt(panel.collectedCny)}`} href="/receivables" tone="blue" />
             <KpiCard label="风险客户" value={`${overdue.count}`} sub={overdue.maxDays > 0 ? `最长逾期 ${overdue.maxDays} 天` : '无逾期'} href="/control-center/audit" tone="orange" />
             <KpiCard label="风险订单" value={`${riskOrders.count}`} sub={riskOrders.lossCount > 0 ? `${riskOrders.lossCount} 笔亏损` : '低毛利'} href="/control-center/audit" tone="purple" />
           </div>

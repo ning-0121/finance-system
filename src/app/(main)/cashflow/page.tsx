@@ -10,13 +10,13 @@ import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine,
 } from 'recharts'
 import { createClient } from '@/lib/supabase/client'
-import { getBudgetOrders } from '@/lib/supabase/queries'
 import type { CashflowScenario } from '@/lib/types/agent'
 
 export default function CashflowPage() {
   const [scenario, setScenario] = useState<CashflowScenario>('normal')
   const [loading, setLoading] = useState(true)
   const [cashData, setCashData] = useState<{ date: string; inflow: number; outflow: number; balance: number }[]>([])
+  const [currentCash, setCurrentCash] = useState<number | null>(null)  // 真实银行余额合计（无预测数据时展示）
 
   useEffect(() => {
     async function load() {
@@ -38,24 +38,10 @@ export default function CashflowPage() {
             balance: f.expected_cash_balance as number,
           })))
         } else {
-          // 没有预测数据时，从订单数据估算
-          const orders = await getBudgetOrders()
-          const costItems = await supabase.from('cost_items').select('amount, created_at').order('created_at', { ascending: false }).limit(50)
-
-          // 简单估算：近7天每天的收入和支出
-          const today = new Date()
-          const estimated: typeof cashData = []
-          let runningBalance = orders.reduce((s, o) => s + o.total_revenue, 0) * 0.3 // 估算当前余额为总营收30%
-
-          for (let i = 0; i < 10; i++) {
-            const d = new Date(today); d.setDate(d.getDate() + i)
-            const dateStr = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
-            const dailyInflow = i % 3 === 0 ? Math.round(orders.length * 500 * (scenario === 'conservative' ? 0.3 : scenario === 'extreme' ? 0 : 0.7)) : 0
-            const dailyOutflow = Math.round(orders.length * 300 * (scenario === 'extreme' ? 1.5 : scenario === 'conservative' ? 1.2 : 1))
-            runningBalance = runningBalance + dailyInflow - dailyOutflow
-            estimated.push({ date: dateStr, inflow: dailyInflow, outflow: dailyOutflow, balance: Math.max(0, runningBalance) })
-          }
-          setCashData(estimated)
+          // 无预测数据：不臆造曲线。取真实银行余额展示，曲线留空，引导用 GL 现金流量表
+          const { data: accts } = await supabase.from('bank_accounts').select('current_balance').eq('is_active', true)
+          setCurrentCash((accts || []).reduce((s, a) => s + (Number(a.current_balance) || 0), 0))
+          setCashData([])
         }
       } catch {
         setCashData([])
@@ -76,10 +62,16 @@ export default function CashflowPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <Header title="现金流预测" subtitle="基于订单数据估算 · 三种情景模拟" />
+      <Header title="现金流预测" subtitle="预测来自 cashflow_forecasts；无预测时展示真实银行余额（不臆造）" />
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
+        {cashData.length === 0 && (
+          <Card className="border-l-4 border-l-amber-400 bg-amber-50/40"><CardContent className="p-3 text-sm">
+            暂无现金流预测数据。当前真实现金余额（银行账户合计）：<b>¥{(currentCash ?? 0).toLocaleString()}</b>。
+            需要按期间看真实现金流入流出，请用 <a href="/gl/cash-flow" className="text-primary underline">GL → 现金流量表</a>（基于银行对账流水）。
+          </CardContent></Card>
+        )}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div><div><p className="text-xs text-muted-foreground">当前余额(估)</p><p className="text-xl font-bold">${currentBalance.toLocaleString()}</p></div></CardContent></Card>
+          <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div><div><p className="text-xs text-muted-foreground">{cashData.length > 0 ? '当前余额(预测)' : '当前现金余额'}</p><p className="text-xl font-bold">¥{(cashData.length > 0 ? currentBalance : (currentCash ?? 0)).toLocaleString()}</p></div></CardContent></Card>
           <Card className={minBalance < 200000 ? 'border-red-200' : ''}><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-red-50"><TrendingDown className="h-4 w-4 text-red-600" /></div><div><p className="text-xs text-muted-foreground">最低余额</p><p className={`text-xl font-bold ${minBalance < 200000 ? 'text-red-600' : ''}`}>${minBalance.toLocaleString()}</p></div></CardContent></Card>
           <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-amber-50"><Calendar className="h-4 w-4 text-amber-600" /></div><div><p className="text-xs text-muted-foreground">最危险日期</p><p className="text-xl font-bold">{lowestDay?.date || '-'}</p></div></CardContent></Card>
           <Card><CardContent className="p-4 flex items-center gap-3"><div className={`p-2 rounded-lg ${dangerDays.length > 0 ? 'bg-red-50' : 'bg-green-50'}`}><AlertTriangle className={`h-4 w-4 ${dangerDays.length > 0 ? 'text-red-600' : 'text-green-600'}`} /></div><div><p className="text-xs text-muted-foreground">危险天数</p><p className={`text-xl font-bold ${dangerDays.length > 0 ? 'text-red-600' : 'text-green-600'}`}>{dangerDays.length}天</p></div></CardContent></Card>

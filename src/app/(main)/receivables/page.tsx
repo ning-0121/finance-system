@@ -22,6 +22,7 @@ import { createClient } from '@/lib/supabase/client'
 import { getBudgetOrders, writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
 import { getReceivablePayments, getReceivableAllocations, createReceivablePayment, allocateReceipt, unallocateReceipt, voidReceivablePayment, correctReceivableRate } from '@/lib/supabase/queries-v2'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
+import { normalizeCustomerName } from '@/lib/utils'
 import Link from 'next/link'
 import type { BudgetOrder, ReceivablePayment, ReceivablePaymentAllocation } from '@/lib/types'
 import { Button } from '@/components/ui/button'
@@ -127,7 +128,7 @@ function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, a
 
       return {
         id: o.id,
-        customer: o.customer?.company || '未指定客户',
+        customer: normalizeCustomerName(o.customer?.company) || '未指定客户',
         country: o.customer?.country || '',
         orderNo: o.order_no,
         internalNo, customerPO,
@@ -269,7 +270,7 @@ export default function ReceivablesPage() {
   // 客户 → 回款流水
   const receiptsByCustomer = useMemo(() => {
     const m = new Map<string, ReceivablePayment[]>()
-    for (const r of receipts) { const k = (r.customer_name || '未指定客户'); const arr = m.get(k) || []; arr.push(r); m.set(k, arr) }
+    for (const r of receipts) { const k = (normalizeCustomerName(r.customer_name) || '未指定客户'); const arr = m.get(k) || []; arr.push(r); m.set(k, arr) }
     return m
   }, [receipts])
   // 未匹配回款（有未分配余额）
@@ -442,7 +443,7 @@ export default function ReceivablesPage() {
     const remain = Math.round(((Number(r.amount_cny) || 0) - (allocatedByReceipt.get(r.id) || 0)) * 100) / 100
     setMatchAmount(String(remain))
     // 自动建议：同客户、未结清、PO/金额接近的第一笔
-    const cand = receivables.filter(o => o.customer === (r.customer_name || '') && o.balanceCny > 0.01)
+    const cand = receivables.filter(o => normalizeCustomerName(o.customer) === normalizeCustomerName(r.customer_name) && o.balanceCny > 0.01)
       .sort((a, b) => Math.abs(a.balanceCny - remain) - Math.abs(b.balanceCny - remain))
     setMatchOrderId(cand[0]?.id || '')
   }
@@ -504,7 +505,7 @@ export default function ReceivablesPage() {
         <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div><div><p className="text-xs text-muted-foreground">未收总额(¥)</p><p className="text-xl font-bold">¥{totalUnpaid.toLocaleString()}</p></div></CardContent></Card>
         <Card className={totalOverdue > 0 ? 'border-red-200' : ''}><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-red-50"><AlertTriangle className="h-4 w-4 text-red-600" /></div><div><p className="text-xs text-muted-foreground">逾期金额(¥)</p><p className="text-xl font-bold text-red-600">¥{r2(totalOverdue).toLocaleString()}</p></div></CardContent></Card>
         <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">客户数</p><p className="text-xl font-bold">{customers.length}</p></CardContent></Card>
-        <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">整体回款率</p><p className="text-xl font-bold">{totalContract > 0 ? Math.round(totalReceived / totalContract * 100) : 0}%</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">累计回款率</p><p className="text-xl font-bold">{totalContract > 0 ? Math.round(totalReceived / totalContract * 100) : 0}%</p></CardContent></Card>
       </div>
 
       {draftCount > 0 && receivables.length === 0 && (
@@ -641,7 +642,7 @@ export default function ReceivablesPage() {
                         <Card><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">已收合计</p><p className="text-lg font-bold text-green-600">¥{c.receivedCny.toLocaleString()}</p></CardContent></Card>
                         <Card className={c.unpaidCny > 0.01 ? 'border-red-200' : ''}><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">未收合计</p><p className={`text-lg font-bold ${c.unpaidCny > 0.01 ? 'text-red-600' : 'text-green-600'}`}>¥{c.unpaidCny.toLocaleString()}</p></CardContent></Card>
                         <Card className={c.overdueCny > 0.01 ? 'border-red-200 bg-red-50/40' : ''}><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">逾期金额</p><p className={`text-lg font-bold ${c.overdueCny > 0.01 ? 'text-red-600' : ''}`}>¥{c.overdueCny.toLocaleString()}</p></CardContent></Card>
-                        <Card><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">回款率</p><p className="text-lg font-bold">{c.recoveryRate}%</p></CardContent></Card>
+                        <Card><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">累计回款率</p><p className="text-lg font-bold">{c.recoveryRate}%</p></CardContent></Card>
                         <Card><CardContent className="p-3"><p className="text-[11px] text-muted-foreground">平均账期</p><p className="text-lg font-bold">{c.avgAgingDays}天</p></CardContent></Card>
                       </div>
 
@@ -921,7 +922,7 @@ export default function ReceivablesPage() {
           {matchReceipt && (() => {
             const allocated = allocatedByReceipt.get(matchReceipt.id) || 0
             const remain = Math.round(((Number(matchReceipt.amount_cny) || 0) - allocated) * 100) / 100
-            const candidates = receivables.filter(o => o.customer === (matchReceipt.customer_name || '') && o.balanceCny > 0.01)
+            const candidates = receivables.filter(o => normalizeCustomerName(o.customer) === normalizeCustomerName(matchReceipt.customer_name) && o.balanceCny > 0.01)
             return (
               <div className="space-y-3 py-2">
                 <div className="rounded-md bg-muted/40 p-2 text-sm">

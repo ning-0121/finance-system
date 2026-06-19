@@ -29,9 +29,11 @@ export interface TaxRefund {
 
 const r2 = (n: number) => Math.round(n * 100) / 100
 
-/** 默认应退税额 = 进项不含税额 × 退税率% */
+/** 默认应退税额 = 进项不含税额 × 退税率%（负值/非法输入按 0，避免算出负应退） */
 export function computeRefundable(inputAmount: number, refundRate: number): number {
-  return r2((Number(inputAmount) || 0) * (Number(refundRate) || 0) / 100)
+  const amt = Math.max(0, Number(inputAmount) || 0)
+  const rate = Math.max(0, Number(refundRate) || 0)
+  return r2(amt * rate / 100)
 }
 
 export async function getTaxRefunds(): Promise<TaxRefund[]> {

@@ -31,3 +31,10 @@ export function normalizeSupplierName(s: string | null | undefined): string {
   if (!s) return ''
   return s.normalize('NFKC').replace(/\s+/g, ' ').trim()
 }
+
+// 客户名归一化（与供应商同口径）：NFKC 折叠全/半角 + 压缩空格 + trim。
+// 用于应收分组、回款→订单匹配，避免同一客户因全半角/空格差异被拆行或匹配不上。
+export function normalizeCustomerName(s: string | null | undefined): string {
+  if (!s) return ''
+  return s.normalize('NFKC').replace(/\s+/g, ' ').trim()
+}

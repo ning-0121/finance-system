@@ -582,43 +582,6 @@ function mapDbBudgetOrder(row: Record<string, unknown>): BudgetOrder {
   }
 }
 
-/** 登记应收账款实际收款（不改变订单审批金额字段） */
-export async function updateBudgetOrderReceivable(
-  id: string,
-  payload: { ar_received_amount: number | null; ar_received_at: string | null; ar_received_bank?: string | null }
-): Promise<{ error: string | null }> {
-  if (!isSupabaseConfigured()) {
-    return { error: '当前为演示模式或未连接数据库，无法保存' }
-  }
-
-  try {
-    const supabase = createClient()
-    const base = {
-      ar_received_amount: payload.ar_received_amount,
-      ar_received_at: payload.ar_received_at,
-      updated_at: new Date().toISOString(),
-    }
-    const { error } = await supabase
-      .from('budget_orders')
-      .update({ ...base, ar_received_bank: payload.ar_received_bank ?? null })
-      .eq('id', id)
-
-    // 容错：迁移未跑时 ar_received_bank 列不存在 → 不让收款金额/日期一起失败，
-    // 退回只更新金额与日期（银行暂不保存，提示需补跑迁移）。
-    if (error) {
-      if (/ar_received_bank/.test(error.message)) {
-        const retry = await supabase.from('budget_orders').update(base).eq('id', id)
-        if (retry.error) return { error: retry.error.message }
-        return { error: '收款金额/日期已保存，但"收款银行"未保存：数据库缺列，请先执行迁移 20260528_ar_received_bank.sql' }
-      }
-      return { error: error.message }
-    }
-    return { error: null }
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : 'Unknown error' }
-  }
-}
-
 /**
  * 核销应收余额 — 财务化（决议④A）：不再直写 ar_received_amount（旧实现对已有
  * 匹配流水的订单会被 projection 刷新覆盖、且不可追溯）。改为：

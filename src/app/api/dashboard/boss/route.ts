@@ -30,10 +30,13 @@ export async function GET() {
     const hasBank = (accts || []).length > 0
     const cashBalance = hasBank ? r2((accts || []).reduce((s, a) => s + (Number(a.current_balance) || 0), 0)) : null
 
-    // 今日回款 / 今日付款
+    // 今日回款 / 今日付款 —— 用中国时区的当日边界（received_at 是 timestamptz，
+    // 若按裸 UTC 边界会把北京时间凌晨的收付款算到昨天）
+    const dayStart = `${today}T00:00:00+08:00`
+    const dayEnd = `${today}T23:59:59+08:00`
     const [{ data: todayRec }, { data: todayPay }] = await Promise.all([
-      supabase.from('receivable_payments').select('amount_cny').is('voided_at', null).gte('received_at', today).lte('received_at', today + 'T23:59:59'),
-      supabase.from('supplier_payments').select('amount').is('deleted_at', null).gte('paid_at', today).lte('paid_at', today + 'T23:59:59'),
+      supabase.from('receivable_payments').select('amount_cny').is('voided_at', null).gte('received_at', dayStart).lte('received_at', dayEnd),
+      supabase.from('supplier_payments').select('amount').is('deleted_at', null).gte('paid_at', dayStart).lte('paid_at', dayEnd),
     ])
     const todayIn = r2((todayRec || []).reduce((s, p) => s + (Number(p.amount_cny) || 0), 0))
     const todayOut = r2((todayPay || []).reduce((s, p) => s + (Number(p.amount) || 0), 0))

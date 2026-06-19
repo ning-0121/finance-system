@@ -151,7 +151,7 @@ export function SupplierPayableDetail({
     let remaining = paid
     let oldestAging = 0
     for (const l of lines) {
-      if (remaining >= l.amountCny) { remaining -= l.amountCny; continue }
+      if (remaining >= l.amountCny - 0.005) { remaining -= l.amountCny; continue }
       oldestAging = l.agingDays; break
     }
     return { totalCharge, paid, unpaid, count: lines.length, orderCount: orders.length, oldestAging }
@@ -182,7 +182,7 @@ export function SupplierPayableDetail({
     let remaining = summary.paid
     const out: (Line & { unpaidPortion: number })[] = []
     for (const l of lines) {
-      if (remaining >= l.amountCny) { remaining -= l.amountCny; continue }
+      if (remaining >= l.amountCny - 0.005) { remaining -= l.amountCny; continue }
       out.push({ ...l, unpaidPortion: r2(l.amountCny - remaining) })
       remaining = 0
     }

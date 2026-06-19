@@ -132,7 +132,5 @@ export const COST_IMPORT_RULES: ValidationRule[] = [
   { field: 'currency', label: '币种', type: 'string', enum: ['USD', 'EUR', 'CNY', 'GBP', 'JPY', 'HKD'] },
 ]
 
-// 将金额精确到2位小数
-export function roundAmount(value: number): number {
-  return Math.round(value * 100) / 100
-}
+// 将金额精确到2位小数（统一走 Decimal.js，避免 1.005 类 IEEE754 临界误差）
+export { roundAmount } from '@/lib/accounting/utils'

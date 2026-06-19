@@ -178,7 +178,7 @@ export default function PayablesPage() {
         let remaining = paid
         let oldestAging = 0
         for (const c of s.items) {  // items 已按日期升序
-          if (remaining >= c.amountCny) { remaining -= c.amountCny; continue }
+          if (remaining >= c.amountCny - 0.005) { remaining -= c.amountCny; continue }
           oldestAging = c.agingDays
           break
         }
