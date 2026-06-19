@@ -18,19 +18,22 @@ export const norm = (s: string) => (s || '').replace(/\s+/g, '').trim()
 
 export async function getEmployees(): Promise<Employee[]> {
   const supabase = createClient()
-  const { data } = await supabase.from('employees').select('id, name, wecom_userid, department').eq('active', true).order('name')
+  const { data, error } = await supabase.from('employees').select('id, name, wecom_userid, department').eq('active', true).order('name')
+  if (error) console.error('[payroll] getEmployees:', error.message)
   return (data || []) as Employee[]
 }
 
 export async function getBatches(): Promise<PayrollBatch[]> {
   const supabase = createClient()
-  const { data } = await supabase.from('payroll_batches').select('*').order('created_at', { ascending: false }).limit(50)
+  const { data, error } = await supabase.from('payroll_batches').select('*').order('created_at', { ascending: false }).limit(50)
+  if (error) console.error('[payroll] getBatches:', error.message)
   return (data || []) as PayrollBatch[]
 }
 
 export async function getSlips(batchId: string): Promise<PayrollSlip[]> {
   const supabase = createClient()
-  const { data } = await supabase.from('payroll_slips').select('*').eq('batch_id', batchId).order('employee_name')
+  const { data, error } = await supabase.from('payroll_slips').select('*').eq('batch_id', batchId).order('employee_name')
+  if (error) console.error('[payroll] getSlips:', error.message)
   return (data || []) as PayrollSlip[]
 }
 

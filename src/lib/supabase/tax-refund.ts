@@ -36,7 +36,8 @@ export function computeRefundable(inputAmount: number, refundRate: number): numb
 
 export async function getTaxRefunds(): Promise<TaxRefund[]> {
   const supabase = createClient()
-  const { data } = await fetchAll<TaxRefund>((f, t) => supabase.from('tax_refunds').select('*').order('export_date', { ascending: false }).order('id', { ascending: true }).range(f, t))
+  const { data, error } = await fetchAll<TaxRefund>((f, t) => supabase.from('tax_refunds').select('*').order('export_date', { ascending: false }).order('id', { ascending: true }).range(f, t))
+  if (error) console.error('[tax-refund] getTaxRefunds:', error.message)
   return (data || []) as TaxRefund[]
 }
 

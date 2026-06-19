@@ -32,7 +32,7 @@ export default function CashFlowPage() {
   const [period, setPeriod] = useState('')
   const [periods, setPeriods] = useState<{ code: string; start: string; end: string }[]>([])
   const [txns, setTxns] = useState<Txn[]>([])
-  const [closingCash, setClosingCash] = useState(0)
+  const [openingCash, setOpeningCash] = useState(0)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -56,13 +56,19 @@ export default function CashFlowPage() {
     (async () => {
       setLoading(true)
       const supabase = createClient()
-      const [{ data: tx }, { data: accts }] = await Promise.all([
+      // 本期流水（算流入流出）+ 期初前的历史流水（取各账户期初前最后一条 balance_after 作期初现金）
+      const [{ data: tx }, { data: prior }] = await Promise.all([
         fetchAll<Txn>((f, t2) => supabase.from('bank_transactions').select('direction, amount, summary, matched_type, id')
           .gte('txn_date', p.start).lte('txn_date', p.end).neq('match_status', 'ignored').order('id', { ascending: true }).range(f, t2)),
-        supabase.from('bank_accounts').select('current_balance').eq('is_active', true),
+        fetchAll<{ bank_account_id: string; balance_after: number | null; txn_date: string }>((f, t2) => supabase.from('bank_transactions')
+          .select('bank_account_id, balance_after, txn_date').lt('txn_date', p.start).not('balance_after', 'is', null)
+          .order('txn_date', { ascending: true }).order('id', { ascending: true }).range(f, t2)),
       ])
       setTxns((tx || []) as Txn[])
-      setClosingCash((accts || []).reduce((s, a) => s + (Number(a.current_balance) || 0), 0))
+      // 期初现金 = 各账户在期间开始前最后一条余额之和（按账户取最新 txn_date）
+      const lastBal = new Map<string, number>()
+      ;(prior || []).forEach(r => { lastBal.set(r.bank_account_id, Number(r.balance_after) || 0) })  // 已按 txn_date 升序，后者覆盖前者=最新
+      setOpeningCash(r2([...lastBal.values()].reduce((s, v) => s + v, 0)))
       setLoading(false)
     })()
   }, [period, periods])
@@ -75,7 +81,7 @@ export default function CashFlowPage() {
   }
   const op = bucket('operating'), inv = bucket('investing'), fin = bucket('financing')
   const netChange = r2(op.net + inv.net + fin.net)
-  const openingCash = r2(closingCash - netChange)
+  const closingCash = r2(openingCash + netChange)  // 期末 = 期初 + 本期净额（自洽，选历史期间也正确）
   const empty = txns.length === 0
 
   const Row = ({ label, value, bold }: { label: string; value: number; bold?: boolean }) => (
@@ -120,11 +126,11 @@ export default function CashFlowPage() {
                   <Row label="　筹资活动现金流入" value={fin.inflow} />
                   <Row label="　筹资活动现金流出" value={-fin.outflow} />
                   <Row label="四、现金净增加额" value={netChange} bold />
-                  <Row label="　加：期初现金余额（倒推）" value={openingCash} />
-                  <Row label="　期末现金余额（银行账户合计）" value={closingCash} bold />
+                  <Row label="　加：期初现金余额" value={openingCash} />
+                  <Row label="　期末现金余额" value={closingCash} bold />
                 </TableBody>
               </Table>
-              <p className="text-[11px] text-muted-foreground p-3">说明：期末现金 = 各银行账户当前余额合计；期初现金 = 期末 − 本期净增加（倒推）。投资/筹资按摘要关键词识别，其余归经营活动。</p>
+              <p className="text-[11px] text-muted-foreground p-3">说明：期初现金 = 各银行账户在本期开始前最后一条对账单余额之和；期末现金 = 期初 + 本期净增加（选历史期间也准确）。投资/筹资按摘要关键词识别，其余归经营活动。</p>
             </CardContent>
           </Card>
         )}

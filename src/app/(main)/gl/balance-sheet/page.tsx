@@ -78,7 +78,7 @@ export default function BalanceSheetPage() {
   const totalEquity = r2(totalEquityBase + netProfit)
   const rightTotal = r2(totalLiab + totalEquity)
   const diff = r2(totalAssets - rightTotal)
-  const balanced = Math.abs(diff) < 1
+  const balanced = Math.abs(diff) < 0.01  // 会计报表按分平衡（原 ±1 偏松，会掩盖小额过账错误）
   const empty = rows.length === 0
 
   const Section = ({ title, items, total }: { title: string; items: { account_code: string; account_name: string; amount: number }[]; total: number }) => (

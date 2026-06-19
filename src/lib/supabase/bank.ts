@@ -39,13 +39,15 @@ export function computeDedupKey(row: { txn_date: string; direction: string; amou
 
 export async function getBankAccounts() {
   const supabase = createClient()
-  const { data } = await supabase.from('bank_accounts').select('id, account_name, bank_name, account_number, currency, current_balance, is_active').eq('is_active', true).order('account_name')
+  const { data, error } = await supabase.from('bank_accounts').select('id, account_name, bank_name, account_number, currency, current_balance, is_active').eq('is_active', true).order('account_name')
+  if (error) console.error('[bank] getBankAccounts:', error.message)
   return data || []
 }
 
 export async function getBankTransactions(accountId: string): Promise<BankTxn[]> {
   const supabase = createClient()
-  const { data } = await fetchAll<BankTxn>((f, t) => supabase.from('bank_transactions').select('*').eq('bank_account_id', accountId).order('txn_date', { ascending: false }).order('id', { ascending: true }).range(f, t))
+  const { data, error } = await fetchAll<BankTxn>((f, t) => supabase.from('bank_transactions').select('*').eq('bank_account_id', accountId).order('txn_date', { ascending: false }).order('id', { ascending: true }).range(f, t))
+  if (error) console.error('[bank] getBankTransactions:', error.message)
   return (data || []) as BankTxn[]
 }
 
@@ -87,7 +89,8 @@ export async function refreshAccountBalance(accountId: string): Promise<number |
     .select('balance_after, txn_date').eq('bank_account_id', accountId).not('balance_after', 'is', null)
     .order('txn_date', { ascending: false }).order('created_at', { ascending: false }).limit(1).maybeSingle()
   if (data?.balance_after == null) return null
-  await supabase.from('bank_accounts').update({ current_balance: data.balance_after }).eq('id', accountId)
+  const { error: updErr } = await supabase.from('bank_accounts').update({ current_balance: data.balance_after }).eq('id', accountId)
+  if (updErr) { console.error('[bank] refreshAccountBalance update:', updErr.message); return null }  // 失败返回 null，调用方不显示"已更新"
   return Number(data.balance_after)
 }
 
@@ -95,14 +98,16 @@ export async function refreshAccountBalance(accountId: string): Promise<number |
 export async function getMatchCandidates(direction: 'in' | 'out'): Promise<MatchCandidate[]> {
   const supabase = createClient()
   if (direction === 'in') {
-    const { data } = await supabase.from('receivable_payments')
+    const { data, error } = await supabase.from('receivable_payments')
       .select('id, customer_name, amount_cny, received_at').is('voided_at', null)
       .order('received_at', { ascending: false }).limit(500)
+    if (error) console.error('[bank] getMatchCandidates(in):', error.message)
     return (data || []).map(r => ({ id: r.id as string, label: `${r.customer_name || '回款'} ¥${Number(r.amount_cny).toLocaleString()}`, amount: Number(r.amount_cny) || 0, date: (r.received_at as string) || '' }))
   }
-  const { data } = await supabase.from('supplier_payments')
+  const { data, error } = await supabase.from('supplier_payments')
     .select('id, supplier_name, amount, paid_at').is('deleted_at', null)
     .order('paid_at', { ascending: false }).limit(500)
+  if (error) console.error('[bank] getMatchCandidates(out):', error.message)
   return (data || []).map(p => ({ id: p.id as string, label: `${p.supplier_name || '付款'} ¥${Number(p.amount).toLocaleString()}`, amount: Number(p.amount) || 0, date: (p.paid_at as string) || '' }))
 }
 

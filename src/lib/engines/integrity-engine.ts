@@ -270,7 +270,7 @@ export async function runIntegrityCheck(supabase: SupabaseClient, trigger: 'cron
 
   // ── 落库 ───────────────────────────────────────────
   const { data: userData } = await supabase.auth.getUser()
-  await supabase.from('integrity_runs').insert({
+  const { error: insErr } = await supabase.from('integrity_runs').insert({
     trigger,
     score,
     dimension_scores: dimensionScores,
@@ -282,6 +282,7 @@ export async function runIntegrityCheck(supabase: SupabaseClient, trigger: 'cron
     summary_text: summaryText,
     created_by: userData?.user?.id ?? null,
   })
+  if (insErr) console.error('[integrity] 巡检结果落库失败:', insErr.message)
 
   return { score, dimensionScores, counts, checks, criticalCount, warningCount, infoCount, summaryText }
 }
