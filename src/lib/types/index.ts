@@ -444,6 +444,7 @@ export interface PayableRecord {
   supplier_name: string
   description: string
   cost_category: string | null
+  bill_no: string | null      // 单据号：货代账单号/报关单号/发票号（防重复付款唯一键）
   amount: number
   currency: string
   budget_amount: number | null

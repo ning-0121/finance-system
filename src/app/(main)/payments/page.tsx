@@ -40,6 +40,9 @@ export default function PaymentsPage() {
   const [payDialog, setPayDialog] = useState<PayableRecord | null>(null)
   const [payRef, setPayRef] = useState('')
   const [payNote, setPayNote] = useState('')
+  // 付款前实时查重：null=未查；[]=查过无重复；[...]=有疑似重复，需二次确认
+  const [dupSuspects, setDupSuspects] = useState<{ label: string; detail: string }[] | null>(null)
+  const [dupChecking, setDupChecking] = useState(false)
   const [processing, setProcessing] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [orders, setOrders] = useState<BudgetOrder[]>([])
@@ -174,14 +177,55 @@ export default function PaymentsPage() {
     setProcessing(false)
   }
 
-  const handlePay = async () => {
+  // 付款前实时查重：同供应商近30天「相同单据号」或「相同金额已付」即疑似重复
+  const checkPaymentDuplicate = async (rec: PayableRecord): Promise<{ label: string; detail: string }[]> => {
+    const supabase = createClient()
+    const sinceDays = 30
+    const since = new Date(Date.now() - sinceDays * 86400000).toISOString()
+    const amt = Number(rec.amount) || 0
+    const sup = (rec.supplier_name || '').trim()
+    const billNo = (rec.bill_no || '').trim()
+    const suspects: { label: string; detail: string }[] = []
+    // ① 同供应商已付的应付：同单据号(最强) 或 同金额(近30天)
+    const { data: pays } = await supabase.from('payable_records')
+      .select('id, amount, bill_no, paid_at, description, order_no')
+      .eq('supplier_name', sup).eq('payment_status', 'paid').neq('id', rec.id).limit(200)
+    for (const p of pays || []) {
+      const sameBill = billNo && (p.bill_no as string || '').trim() === billNo
+      const sameAmt = Math.abs((Number(p.amount) || 0) - amt) < 0.01
+      const recent = p.paid_at && new Date(p.paid_at as string).getTime() >= Date.parse(since)
+      if (sameBill) suspects.push({ label: `同单据号已付：${p.order_no || p.description || ''}`, detail: `单据号 ${billNo}，金额 ${rec.currency} ${Number(p.amount).toLocaleString()}` })
+      else if (sameAmt && recent) suspects.push({ label: `同金额已付（${sinceDays}天内）：${p.order_no || p.description || ''}`, detail: `${rec.currency} ${Number(p.amount).toLocaleString()} · 付于 ${(p.paid_at as string).slice(0, 10)}` })
+    }
+    // ② 供应商付款流水：同金额近30天（CNY 口径，外币不比金额避免误报）
+    if ((rec.currency || 'CNY') === 'CNY') {
+      const { data: sps } = await supabase.from('supplier_payments')
+        .select('amount, paid_at, note').eq('supplier_name', sup).is('deleted_at', null).gte('paid_at', since.slice(0, 10)).limit(200)
+      for (const s of sps || []) {
+        if (Math.abs((Number(s.amount) || 0) - amt) < 0.01) suspects.push({ label: `付款流水同金额（${sinceDays}天内）`, detail: `¥${Number(s.amount).toLocaleString()} · ${(s.paid_at as string || '').slice(0, 10)}` })
+      }
+    }
+    return suspects
+  }
+
+  const handlePay = async (force = false) => {
     if (!payDialog) return
+    // 付款前实时查重：未强制时先查，命中则拦下要求二次确认
+    if (!force) {
+      setDupChecking(true)
+      const suspects = await checkPaymentDuplicate(payDialog)
+      setDupChecking(false)
+      if (suspects.length > 0) { setDupSuspects(suspects); return }
+      setDupSuspects([])
+    }
     setProcessing(true)
     try {
       const supabase = createClient()
       // 前置条件：仅 approved 可付款（防两个出纳并发重复付款）；
       // notes 追加而非覆盖（创建时写入的收款账号快照是审计线索，不能丢）
-      const mergedNotes = [payDialog.notes, payNote ? `[付款备注] ${payNote}` : ''].filter(Boolean).join('\n') || null
+      // force=用户在"疑似重复"提示后仍坚持付款 → 留痕（谁、何时确认的重复付款）
+      const dupMark = force ? `[重复付款已人工确认 ${new Date().toLocaleString('zh-CN')}]` : ''
+      const mergedNotes = [payDialog.notes, payNote ? `[付款备注] ${payNote}` : '', dupMark].filter(Boolean).join('\n') || null
       const { data: hit, error } = await supabase.from('payable_records').update({
         payment_status: 'paid', paid_at: new Date().toISOString(),
         paid_amount: payDialog.amount, payment_method: 'bank_transfer',
@@ -230,7 +274,7 @@ export default function PaymentsPage() {
 
       setRecords(records.map(r => r.id === payDialog.id ? { ...r, payment_status: 'paid' as PaymentStatus } : r))
       toast.success('付款完成（已同步应付工作台）')
-      setPayDialog(null); setPayRef(''); setPayNote('')
+      setPayDialog(null); setPayRef(''); setPayNote(''); setDupSuspects(null)
     } catch (err) { toast.error(`付款失败: ${err instanceof Error ? err.message : '未知错误'}`) }
     setProcessing(false)
   }
@@ -296,7 +340,7 @@ export default function PaymentsPage() {
                       <TableCell><Badge className={`${statusConfig[r.payment_status]?.color || ''} border-0`}>{statusConfig[r.payment_status]?.label}</Badge></TableCell>
                       <TableCell className="text-center">
                         {r.payment_status === 'unpaid' && <Button size="sm" onClick={() => handleApprove(r.id)} disabled={processing}><CheckCircle className="h-3.5 w-3.5 mr-1" />审批</Button>}
-                        {r.payment_status === 'approved' && <Button size="sm" onClick={() => setPayDialog(r)} disabled={processing}><DollarSign className="h-3.5 w-3.5 mr-1" />付款</Button>}
+                        {r.payment_status === 'approved' && <Button size="sm" onClick={() => { setPayDialog(r); setDupSuspects(null) }} disabled={processing}><DollarSign className="h-3.5 w-3.5 mr-1" />付款</Button>}
                         {r.payment_status === 'paid' && <span className="text-xs text-green-600">✓ 已付</span>}
                       </TableCell>
                     </TableRow>
@@ -326,10 +370,23 @@ export default function PaymentsPage() {
               )}
               <div className="space-y-2"><p className="text-sm font-medium">付款凭证号</p><Input placeholder="银行流水号" value={payRef} onChange={e => setPayRef(e.target.value)} /></div>
               <div className="space-y-2"><p className="text-sm font-medium">备注</p><Textarea placeholder="付款备注" value={payNote} onChange={e => setPayNote(e.target.value)} rows={2} /></div>
+              {dupSuspects && dupSuspects.length > 0 && (
+                <div className="p-3 bg-red-50 border border-red-300 rounded-lg space-y-1">
+                  <p className="text-sm font-semibold text-red-700 flex items-center gap-1"><AlertTriangle className="h-4 w-4" />疑似重复付款（{dupSuspects.length} 条），请务必核对后再付！</p>
+                  {dupSuspects.slice(0, 5).map((s, i) => (
+                    <p key={i} className="text-xs text-red-700">· {s.label} —— {s.detail}</p>
+                  ))}
+                  <p className="text-[11px] text-muted-foreground mt-1">确认不是重复（如分批付款/不同票）才继续；坚持付款将记录到付款备注备查。</p>
+                </div>
+              )}
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setPayDialog(null)}>取消</Button>
-              <Button onClick={handlePay} disabled={processing}>{processing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}确认付款</Button>
+              {dupSuspects && dupSuspects.length > 0 ? (
+                <Button variant="destructive" onClick={() => handlePay(true)} disabled={processing}>{processing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <AlertTriangle className="h-4 w-4 mr-1" />}已核对无重复，仍要付款</Button>
+              ) : (
+                <Button onClick={() => handlePay(false)} disabled={processing || dupChecking}>{(processing || dupChecking) ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}{dupChecking ? '查重中…' : '确认付款'}</Button>
+              )}
             </DialogFooter>
           </DialogContent>
         </Dialog>
