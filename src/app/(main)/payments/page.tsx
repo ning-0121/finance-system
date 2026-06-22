@@ -47,6 +47,7 @@ export default function PaymentsPage() {
   const [newSupplierId, setNewSupplierId] = useState('')
   const [newSupplier, setNewSupplier] = useState('')
   const [newDesc, setNewDesc] = useState('')
+  const [newBillNo, setNewBillNo] = useState('')  // 单据号：货代账单号/报关单号/发票号（防重复付款）
   const [newAmount, setNewAmount] = useState('')
   const [newOrderId, setNewOrderId] = useState('')
   const [newDueDate, setNewDueDate] = useState('')
@@ -105,6 +106,16 @@ export default function PaymentsPage() {
       const bankSnapshot = selectedSupplier
         ? ['收款信息：', selectedSupplier.account_name && `户名 ${selectedSupplier.account_name}`, selectedSupplier.account_no && `账号 ${selectedSupplier.account_no}`, selectedSupplier.bank_name && `开户行 ${selectedSupplier.bank_name}`].filter(Boolean).join(' ')
         : ''
+      // 防重复付款：同一供应商同一单据号只能有一条应付（应用层预检 + DB 唯一约束兜底）
+      const billNo = newBillNo.trim()
+      if (billNo) {
+        const { data: dup } = await supabase.from('payable_records')
+          .select('id').eq('supplier_name', newSupplier.trim()).eq('bill_no', billNo).limit(1)
+        if (dup && dup.length > 0) {
+          toast.error(`单据号「${billNo}」在该供应商下已有应付记录，不可重复登记（疑似重复付款）`)
+          setProcessing(false); return
+        }
+      }
       const { data, error } = await supabase.from('payable_records').insert({
         supplier_name: newSupplier,
         description: newDesc || newSupplier,
@@ -113,15 +124,21 @@ export default function PaymentsPage() {
         payment_status: 'unpaid',
         budget_order_id: newOrderId || null,
         order_no: orders.find(o => o.id === newOrderId)?.order_no || null,
+        bill_no: billNo || null,
         due_date: newDueDate || null,
         notes: bankSnapshot || null,
         attachment_url: newAttachment || null,
       }).select().single()
-      if (error) throw error
+      if (error) {
+        if (/payable_records_supplier_bill/.test(error.message)) {
+          toast.error(`单据号「${billNo}」该供应商下已存在，不可重复登记（疑似重复付款）`); setProcessing(false); return
+        }
+        throw error
+      }
       setRecords([data as unknown as PayableRecord, ...records])
       toast.success('付款申请已创建')
       setShowCreate(false)
-      setNewSupplierId(''); setNewSupplier(''); setNewDesc(''); setNewAmount(''); setNewOrderId(''); setNewDueDate(''); setNewAttachment('')
+      setNewSupplierId(''); setNewSupplier(''); setNewDesc(''); setNewAmount(''); setNewOrderId(''); setNewDueDate(''); setNewAttachment(''); setNewBillNo('')
     } catch (err) {
       toast.error(`创建失败: ${err instanceof Error ? err.message : '未知错误'}`)
     }
@@ -351,6 +368,11 @@ export default function PaymentsPage() {
             <div className="space-y-2">
               <Label>费用说明</Label>
               <Input placeholder="如：2024春季面料尾款" value={newDesc} onChange={e => setNewDesc(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>单据号（货代账单号 / 报关单号 / 发票号）</Label>
+              <Input placeholder="货代费务必填报关单号/航次号——防同一票重复付款" value={newBillNo} onChange={e => setNewBillNo(e.target.value)} />
+              <p className="text-[11px] text-muted-foreground">同一供应商同一单据号只能登记一次，系统自动拦截重复。</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
