@@ -23,6 +23,7 @@ import { ExcelImportDialog } from '@/components/import/ExcelImportDialog'
 import { toast } from 'sonner'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { getSuppliers } from '@/lib/supabase/queries-v2'
+import { getFabricPriceReference, getProcessingPriceReference, type PriceReference } from '@/lib/supabase/price-history'
 import { normalizeSupplierName } from '@/lib/utils'
 import { bizToday } from '@/lib/biz-date'
 import { createClient } from '@/lib/supabase/client'
@@ -85,6 +86,8 @@ export default function CostsPage() {
   const [formUnitPrice, setFormUnitPrice] = useState('')
   const [formUnit, setFormUnit] = useState('件')
   const [formColor, setFormColor] = useState('')       // 颜色（面料等）
+  const [priceRef, setPriceRef] = useState<PriceReference | null>(null)  // 历史比价（布料按品名+颜色、加工费按款号）
+  const [priceRefLoading, setPriceRefLoading] = useState(false)
   const [formRollCount, setFormRollCount] = useState('') // 匹数
   const [formDeliveryDate, setFormDeliveryDate] = useState(bizToday()) // 送货日期（可自选，默认今天）
   const [formAmount, setFormAmount] = useState('')
@@ -175,6 +178,26 @@ export default function CostsPage() {
     }
     load()
   }, [])
+
+  // 历史比价：录入布料(品名+颜色)/加工费(款号)时实时拉历史同款价（防抖 400ms）
+  useEffect(() => {
+    if (!showAdd || (formType !== 'fabric' && formType !== 'processing')) { setPriceRef(null); return }
+    const key = formType === 'fabric' ? `f:${formDesc}|${formColor}` : `p:${formOrderId}`
+    if (formType === 'fabric' ? !formDesc.trim() : !formOrderId) { setPriceRef(null); return }
+    let alive = true
+    setPriceRefLoading(true)
+    const timer = setTimeout(async () => {
+      try {
+        const ref = formType === 'fabric'
+          ? await getFabricPriceReference(formDesc, formColor, editItem?.budget_order_id || undefined)
+          : await getProcessingPriceReference(formOrderId, editItem?.budget_order_id || undefined)
+        if (alive) setPriceRef(ref)
+      } catch { if (alive) setPriceRef(null) }
+      finally { if (alive) setPriceRefLoading(false) }
+    }, 400)
+    return () => { alive = false; clearTimeout(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAdd, formType, formDesc, formColor, formOrderId])
 
   const [costSearch, setCostSearch] = useState('')
 
@@ -923,6 +946,30 @@ export default function CostsPage() {
                 <Input type="number" step="0.01" placeholder="0.00" value={formAmount} onChange={e => setFormAmount(e.target.value)} className="border-primary/30" />
               </div>
             </div>
+            {/* 历史比价：布料(品名+颜色)/加工费(款号) 实时参考价 */}
+            {(formType === 'fabric' || formType === 'processing') && (priceRefLoading || (priceRef && priceRef.count > 0)) && (() => {
+              const curUnitCny = (Number(formUnitPrice) || 0) * (formCurrency === 'CNY' ? 1 : (Number(formRate) || 1))
+              const overAvg = priceRef && priceRef.avgCny > 0 && curUnitCny > 0 && curUnitCny > priceRef.avgCny * 1.0001
+              const overPct = overAvg && priceRef ? Math.round((curUnitCny / priceRef.avgCny - 1) * 100) : 0
+              return (
+                <div className={`rounded-lg p-3 text-xs space-y-1.5 border ${overAvg ? 'bg-red-50 border-red-300' : 'bg-blue-50/50 border-blue-200'}`}>
+                  {priceRefLoading ? <p className="text-muted-foreground">查历史同款价中…</p> : priceRef && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium">{formType === 'fabric' ? '历史同款布料价' : '历史同款加工费'}（{priceRef.count} 笔）</span>
+                        <span>最低 <b className="text-green-600">¥{priceRef.minCny.toLocaleString()}</b> · 均 <b>¥{priceRef.avgCny.toLocaleString()}</b> · 最高 <b className="text-red-500">¥{priceRef.maxCny.toLocaleString()}</b></span>
+                      </div>
+                      {overAvg && <p className="text-red-600 font-medium">⚠ 本次单价 ¥{curUnitCny.toLocaleString()} 高于历史均价 {overPct}%，请核对是否被加价</p>}
+                      <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-muted-foreground">
+                        {priceRef.items.slice(0, 6).map((it, i) => (
+                          <span key={i}>{it.supplier}：¥{it.unitPriceCny.toLocaleString()}{it.unit ? `/${it.unit}` : ''} <span className="opacity-60">({it.date})</span></span>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )
+            })()}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label className="text-xs">币种</Label>
