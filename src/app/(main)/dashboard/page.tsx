@@ -16,13 +16,13 @@ import Link from 'next/link'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line,
 } from 'recharts'
-import { getBudgetOrders, getProfitSummary, getAlerts, getMonthlyProfitData, getPendingRiskEvents, getPendingDocumentActions, getTrustScoreSummary } from '@/lib/supabase/queries'
+import { getBudgetOrdersLite, getProfitSummary, getAlerts, getMonthlyProfitData, getPendingRiskEvents, getPendingDocumentActions, getTrustScoreSummary, type BudgetOrderLite } from '@/lib/supabase/queries'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
-import type { BudgetOrder, Alert, ProfitSummary, BudgetOrderStatus } from '@/lib/types'
+import type { Alert, ProfitSummary, BudgetOrderStatus } from '@/lib/types'
 
 export default function DashboardPage() {
-  const [orders, setOrders] = useState<BudgetOrder[]>([])
+  const [orders, setOrders] = useState<BudgetOrderLite[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [summary, setSummary] = useState<ProfitSummary | null>(null)
   const [riskEvents, setRiskEvents] = useState<Record<string, unknown>[]>([])
@@ -35,7 +35,7 @@ export default function DashboardPage() {
   useEffect(() => {
     async function load() {
       const [ordersData, alertsData, summaryData, risks, actions, trust, monthly] = await Promise.all([
-        getBudgetOrders(), getAlerts(), getProfitSummary(),
+        getBudgetOrdersLite(), getAlerts(), getProfitSummary(),
         getPendingRiskEvents(), getPendingDocumentActions(), getTrustScoreSummary(),
         getMonthlyProfitData(),
       ])

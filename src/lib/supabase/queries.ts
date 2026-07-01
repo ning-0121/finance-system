@@ -52,9 +52,11 @@ export async function getBudgetOrders(statusFilter?: string): Promise<BudgetOrde
     const supabase = createClient()
     // 分页取全量（服务端 max-rows 默认 1000，.limit(2000) 也会被截断）；排除软删订单
     const { data, error } = await fetchAll<Record<string, unknown>>((from, to) => {
+      // 列表不取 items 大 jsonb（_cost_breakdown 全部明细）——那是全表拉取卡死主线程的元凶；
+      // 需要 items 的走 getBudgetOrderById（单条全量）。其余标量字段一个不落，功能不变。
       let query = supabase
         .from('budget_orders')
-        .select('*, customers(*)')
+        .select('id, order_no, customer_id, order_date, delivery_date, target_purchase_price, estimated_freight, estimated_commission, estimated_customs_fee, other_costs, total_revenue, total_cost, estimated_profit, estimated_margin, currency, exchange_rate, version, status, created_by, approved_by, approved_at, notes, attachments, ar_received_amount, ar_received_at, ar_received_bank, created_at, updated_at, customers(*)')
         .is('deleted_at', null)
         .order('created_at', { ascending: false }).order('id', { ascending: true })
       if (statusFilter && statusFilter !== 'all') {
@@ -71,6 +73,48 @@ export async function getBudgetOrders(statusFilter?: string): Promise<BudgetOrde
     console.error('[getBudgetOrders] unexpected error:', e)
     return []
   }
+}
+
+// 轻量订单列表（仅列表/看板展示需要的字段，不含 items 大 jsonb 与整表客户 join）。
+// 工作台/概览等"只展示不编辑"的页面用它，避免拉全表大字段卡死主线程。
+export interface BudgetOrderLite {
+  id: string
+  order_no: string
+  status: string
+  currency: string
+  total_revenue: number
+  total_cost: number
+  estimated_profit: number
+  estimated_margin: number
+  customer: { company: string } | null
+}
+export async function getBudgetOrdersLite(): Promise<BudgetOrderLite[]> {
+  if (!isSupabaseConfigured()) return demoBudgetOrders.map(o => ({
+    id: o.id, order_no: o.order_no, status: o.status, currency: o.currency,
+    total_revenue: o.total_revenue, total_cost: o.total_cost, estimated_profit: o.estimated_profit,
+    estimated_margin: o.estimated_margin, customer: o.customer ? { company: o.customer.company } : null,
+  }))
+  try {
+    const supabase = createClient()
+    const { data, error } = await fetchAll<Record<string, unknown>>((from, to) => supabase
+      .from('budget_orders')
+      .select('id, order_no, status, currency, total_revenue, total_cost, estimated_profit, estimated_margin, customers(company)')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false }).order('id', { ascending: true })
+      .range(from, to))
+    if (error) { console.error('[getBudgetOrdersLite]', error.message); return [] }
+    return (data || []).map(r => ({
+      id: r.id as string,
+      order_no: (r.order_no as string) || '',
+      status: (r.status as string) || '',
+      currency: (r.currency as string) || 'CNY',
+      total_revenue: Number(r.total_revenue) || 0,
+      total_cost: Number(r.total_cost) || 0,
+      estimated_profit: Number(r.estimated_profit) || 0,
+      estimated_margin: Number(r.estimated_margin) || 0,
+      customer: (r.customers as { company?: string } | null)?.company ? { company: (r.customers as { company: string }).company } : null,
+    }))
+  } catch (e) { console.error('[getBudgetOrdersLite]', e); return [] }
 }
 
 export async function getBudgetOrderById(id: string): Promise<BudgetOrder | null> {
