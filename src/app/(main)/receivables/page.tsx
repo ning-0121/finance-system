@@ -43,7 +43,8 @@ type ReceivableRow = {
   internalNo: string    // 内部订单号 style_no
   customerPO: string    // 客户PO
   currency: string
-  rate: number
+  rate: number          // 订单预算汇率
+  settleRate: number    // 实际结汇汇率（有流水时=CNY合计/原币合计；否则回退预算汇率）
   amount: number        // 合同额（原币）
   amountCny: number
   paid: number          // 已收（原币）
@@ -90,7 +91,7 @@ function parseField(notes: string | null | undefined, label: RegExp): string {
   return m ? m[1].trim() : ''
 }
 
-function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, allocatedByOrder: Map<string, number>): ReceivableRow[] {
+function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, allocatedByOrder: Map<string, number>, allocatedOrigByOrder: Map<string, number>): ReceivableRow[] {
   const now = new Date()
   return orders
     .filter(o => (o.status === 'approved' || o.status === 'closed') && o.total_revenue && o.total_revenue > 0)
@@ -105,10 +106,15 @@ function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, a
       // 真实已收：优先回款分配合计(权威)；无分配的历史订单回退 ar_received_amount projection
       const allocCny = allocatedByOrder.get(o.id)
       const hasLedger = allocCny != null
-      let paid: number; let paidCnyVal: number
+      let paid: number; let paidCnyVal: number; let settleRate = rate
       if (hasLedger) {
         paidCnyVal = Math.round(allocCny * 100) / 100
-        paid = Math.round((allocCny / rate) * 100) / 100
+        // 已收原币直接用流水原币合计（权威），不能用 折CNY/预算汇率 反推——
+        // 实际结汇汇率≠预算汇率时反推会失真（全额收的美金单会被算成"还有余额"）
+        const allocOrig = allocatedOrigByOrder.get(o.id) || 0
+        paid = Math.round(allocOrig * 100) / 100
+        // 真实结汇汇率 = CNY合计 / 原币合计（外币且有原币时）
+        settleRate = (o.currency !== 'CNY' && allocOrig > 0.005) ? Math.round((allocCny / allocOrig) * 10000) / 10000 : rate
       } else {
         const explicit = o.ar_received_amount != null && !Number.isNaN(Number(o.ar_received_amount))
         paid = Math.max(0, explicit ? Number(o.ar_received_amount) : (o.status === 'closed' ? amount : 0))
@@ -132,7 +138,7 @@ function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, a
         country: o.customer?.country || '',
         orderNo: o.order_no,
         internalNo, customerPO,
-        currency: o.currency, rate,
+        currency: o.currency, rate, settleRate,
         amount, amountCny: Math.round(amount * rate * 100) / 100,
         paid, paidCny: paidCnyVal,
         balance, balanceCny: Math.round(amount * rate * 100) / 100 - paidCnyVal,
@@ -210,10 +216,15 @@ export default function ReceivablesPage() {
         if (s.budget_order_id && s.style_no) syncMap.set(s.budget_order_id as string, String(s.style_no))
       })
     }
-    // 每订单已分配回款合计（权威已收）
+    // 每订单已分配回款合计（权威已收）：CNY 合计 + 原币合计
+    // 原币合计用于反推「真实结汇汇率」= CNY合计 / 原币合计（而非订单预算汇率）
     const allocatedByOrder = new Map<string, number>()
-    for (const a of allocs) allocatedByOrder.set(a.budget_order_id, (allocatedByOrder.get(a.budget_order_id) || 0) + (Number(a.amount_cny) || 0))
-    setReceivables(buildReceivables(orders, syncMap, allocatedByOrder))
+    const allocatedOrigByOrder = new Map<string, number>()
+    for (const a of allocs) {
+      allocatedByOrder.set(a.budget_order_id, (allocatedByOrder.get(a.budget_order_id) || 0) + (Number(a.amount_cny) || 0))
+      allocatedOrigByOrder.set(a.budget_order_id, (allocatedOrigByOrder.get(a.budget_order_id) || 0) + (Number(a.amount_original) || 0))
+    }
+    setReceivables(buildReceivables(orders, syncMap, allocatedByOrder, allocatedOrigByOrder))
   }
 
   useEffect(() => {
@@ -372,7 +383,7 @@ export default function ReceivablesPage() {
             currency: row.currency || 'CNY', rate: effRate, received_at: at, bank: receiptBank.trim() || null,
             reason: `汇率修正 ${payRow?.exchange_rate}→${effRate}`,
           })
-          if (cErr || !corr) { toast.error(`汇率修正失败：${cErr || '未知'}（作废需财务主管权限）`); setReceiptSaving(false); return }
+          if (cErr || !corr) { toast.error(`汇率修正失败：${cErr || '未知'}`); setReceiptSaving(false); return }
           toast.success(`已按结汇汇率 ${effRate} 修正，折人民币 ¥${corr.amount_cny.toLocaleString()}`)
         }
       } else {
@@ -494,7 +505,7 @@ export default function ReceivablesPage() {
 
   if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
 
-  const openReceipt = (r: ReceivableRow) => { setReceiptDialog(r); setReceiptAmount(String(r.paid)); setReceiptDate(r.receivedAt ? r.receivedAt.slice(0, 10) : bizToday()); setReceiptBank(r.bank || ''); setReceiptRate(String(r.currency === 'CNY' ? 1 : (r.rate || 1))) }
+  const openReceipt = (r: ReceivableRow) => { setReceiptDialog(r); setReceiptAmount(String(r.paid)); setReceiptDate(r.receivedAt ? r.receivedAt.slice(0, 10) : bizToday()); setReceiptBank(r.bank || ''); setReceiptRate(String(r.currency === 'CNY' ? 1 : (r.settleRate || r.rate || 1))) }
 
   return (
     <div className="flex flex-col h-full">

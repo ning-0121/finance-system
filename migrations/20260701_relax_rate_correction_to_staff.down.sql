@@ -1,0 +1,4 @@
+-- 回滚：恢复为仅 finance_manager/admin 可修正结汇汇率
+-- 直接重跑 20260618_correct_receivable_rate_rpc.sql 即可恢复原白名单。
+-- 若需就地回滚，将函数第 27 行角色白名单改回 ('finance_manager','admin')。
+-- （函数体其余不变，此处不重复整段，以免与 20260618 版漂移。）
