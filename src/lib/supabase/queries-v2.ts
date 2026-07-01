@@ -577,6 +577,7 @@ export async function getPayableRecords(filters?: {
       let query = supabase
         .from('payable_records')
         .select('*')
+        .is('deleted_at', null)
         .order('created_at', { ascending: false }).order('id', { ascending: true })
       if (filters?.budgetOrderId) query = query.eq('budget_order_id', filters.budgetOrderId)
       if (filters?.paymentStatus) query = query.eq('payment_status', filters.paymentStatus)

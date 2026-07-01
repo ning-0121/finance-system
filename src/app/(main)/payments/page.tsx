@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { DollarSign, Clock, CheckCircle, AlertTriangle, Loader2, Search, CreditCard, Plus } from 'lucide-react'
+import { DollarSign, Clock, CheckCircle, AlertTriangle, Loader2, Search, CreditCard, Plus, Pencil, Trash2 } from 'lucide-react'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { getSuppliers } from '@/lib/supabase/queries-v2'
 import { uploadAttachment, openAttachment, attachmentName } from '@/lib/supabase/storage'
@@ -31,6 +31,16 @@ const statusConfig: Record<PaymentStatus, { label: string; color: string }> = {
   paid: { label: '已付款', color: 'bg-green-100 text-green-700' },
   cancelled: { label: '已取消', color: 'bg-gray-100 text-gray-700' },
 }
+
+// 付款方式：公账/私账/支付宝/微信
+const PAYMENT_CHANNELS = [
+  { value: 'company', label: '公账' },
+  { value: 'personal', label: '私账' },
+  { value: 'alipay', label: '支付宝' },
+  { value: 'wechat', label: '微信' },
+] as const
+const channelLabel = (v: string | null | undefined) => PAYMENT_CHANNELS.find(c => c.value === v)?.label || null
+const fmtDate = (s: string | null | undefined) => (s ? String(s).slice(0, 10) : '-')
 
 export default function PaymentsPage() {
   const [records, setRecords] = useState<PayableRecord[]>([])
@@ -53,9 +63,15 @@ export default function PaymentsPage() {
   const [newBillNo, setNewBillNo] = useState('')  // 单据号：货代账单号/报关单号/发票号（防重复付款）
   const [newAmount, setNewAmount] = useState('')
   const [newOrderId, setNewOrderId] = useState('')
-  const [newDueDate, setNewDueDate] = useState('')
+  const [newDueDate, setNewDueDate] = useState('')       // 付款日期（沿用 due_date 存储）
+  const [newChannel, setNewChannel] = useState('')       // 付款方式 payment_channel
+  const [newPayeeName, setNewPayeeName] = useState('')   // 收款人名称
+  const [newPayeeAccount, setNewPayeeAccount] = useState('') // 收款银行账号
+  const [newPayeeBank, setNewPayeeBank] = useState('')   // 开户行
   const [newAttachment, setNewAttachment] = useState('')
   const [uploadingAtt, setUploadingAtt] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)  // null=新增；非空=编辑该条
+  const [channelFilter, setChannelFilter] = useState('all')        // 付款方式筛选
   const selectedSupplier = suppliers.find(s => s.id === newSupplierId) || null
 
   const handleAttUpload = async (file: File | undefined) => {
@@ -112,46 +128,105 @@ export default function PaymentsPage() {
       // 防重复付款：同一供应商同一单据号只能有一条应付（应用层预检 + DB 唯一约束兜底）
       const billNo = newBillNo.trim()
       if (billNo) {
-        const { data: dup } = await supabase.from('payable_records')
-          .select('id').eq('supplier_name', newSupplier.trim()).eq('bill_no', billNo).limit(1)
+        let dupQ = supabase.from('payable_records')
+          .select('id').eq('supplier_name', newSupplier.trim()).eq('bill_no', billNo).is('deleted_at', null)
+        if (editingId) dupQ = dupQ.neq('id', editingId)   // 编辑时排除自身
+        const { data: dup } = await dupQ.limit(1)
         if (dup && dup.length > 0) {
           toast.error(`单据号「${billNo}」在该供应商下已有应付记录，不可重复登记（疑似重复付款）`)
           setProcessing(false); return
         }
       }
-      const { data, error } = await supabase.from('payable_records').insert({
+      // 收款人默认取信息库户名/账号/开户行，可手改
+      const payload = {
         supplier_name: newSupplier,
         description: newDesc || newSupplier,
         amount: Number(newAmount),
-        currency: 'CNY',
-        payment_status: 'unpaid',
         budget_order_id: newOrderId || null,
         order_no: orders.find(o => o.id === newOrderId)?.order_no || null,
         bill_no: billNo || null,
         due_date: newDueDate || null,
-        notes: bankSnapshot || null,
+        payment_channel: newChannel || null,
+        payee_name: newPayeeName.trim() || null,
+        payee_account: newPayeeAccount.trim() || null,
+        payee_bank: newPayeeBank.trim() || null,
         attachment_url: newAttachment || null,
-      }).select().single()
-      if (error) {
-        if (/payable_records_supplier_bill/.test(error.message)) {
-          toast.error(`单据号「${billNo}」该供应商下已存在，不可重复登记（疑似重复付款）`); setProcessing(false); return
-        }
-        throw error
       }
-      setRecords([data as unknown as PayableRecord, ...records])
-      toast.success('付款申请已创建')
-      setShowCreate(false)
-      setNewSupplierId(''); setNewSupplier(''); setNewDesc(''); setNewAmount(''); setNewOrderId(''); setNewDueDate(''); setNewAttachment(''); setNewBillNo('')
+      if (editingId) {
+        const { data, error } = await supabase.from('payable_records')
+          .update(payload).eq('id', editingId).select().single()
+        if (error) {
+          if (/payable_records_supplier_bill/.test(error.message)) { toast.error(`单据号「${billNo}」该供应商下已存在，不可重复登记`); setProcessing(false); return }
+          throw error
+        }
+        setRecords(records.map(r => r.id === editingId ? (data as unknown as PayableRecord) : r))
+        toast.success('付款申请已更新')
+      } else {
+        const { data, error } = await supabase.from('payable_records').insert({
+          ...payload, currency: 'CNY', payment_status: 'unpaid', notes: bankSnapshot || null,
+        }).select().single()
+        if (error) {
+          if (/payable_records_supplier_bill/.test(error.message)) { toast.error(`单据号「${billNo}」该供应商下已存在，不可重复登记（疑似重复付款）`); setProcessing(false); return }
+          throw error
+        }
+        setRecords([data as unknown as PayableRecord, ...records])
+        toast.success('付款申请已创建')
+      }
+      setShowCreate(false); resetForm()
     } catch (err) {
-      toast.error(`创建失败: ${err instanceof Error ? err.message : '未知错误'}`)
+      toast.error(`${editingId ? '更新' : '创建'}失败: ${err instanceof Error ? err.message : '未知错误'}`)
     }
+    setProcessing(false)
+  }
+
+  function resetForm() {
+    setEditingId(null); setNewSupplierId(''); setNewSupplier(''); setNewDesc(''); setNewAmount('')
+    setNewOrderId(''); setNewDueDate(''); setNewChannel(''); setNewPayeeName(''); setNewPayeeAccount('')
+    setNewPayeeBank(''); setNewAttachment(''); setNewBillNo('')
+  }
+
+  function openCreate() { resetForm(); setShowCreate(true) }
+
+  function openEdit(r: PayableRecord) {
+    setEditingId(r.id)
+    const sup = suppliers.find(s => s.name === r.supplier_name)
+    setNewSupplierId(sup?.id || '')
+    setNewSupplier(r.supplier_name || '')
+    setNewDesc(r.description || '')
+    setNewAmount(String(r.amount ?? ''))
+    setNewBillNo(r.bill_no || '')
+    setNewOrderId(r.budget_order_id || '')
+    setNewDueDate(r.due_date ? String(r.due_date).slice(0, 10) : '')
+    setNewChannel(r.payment_channel || '')
+    setNewPayeeName(r.payee_name || '')
+    setNewPayeeAccount(r.payee_account || '')
+    setNewPayeeBank(r.payee_bank || '')
+    setNewAttachment(r.attachment_url || '')
+    setShowCreate(true)
+  }
+
+  async function handleDelete(r: PayableRecord) {
+    if (r.payment_status === 'paid') { toast.error('已付款的记录不可删除，请走付款作废/红冲流程'); return }
+    if (!confirm(`确认删除付款申请「${r.supplier_name} · ${r.currency} ${r.amount.toLocaleString()}」？删除后不参与统计（可在数据库软删除记录中追溯）。`)) return
+    setProcessing(true)
+    try {
+      const supabase = createClient()
+      const { data: userData } = await supabase.auth.getUser()
+      const { error } = await supabase.from('payable_records')
+        .update({ deleted_at: new Date().toISOString(), deleted_by: userData?.user?.id || null, delete_reason: '付款申请手动删除' })
+        .eq('id', r.id)
+      if (error) throw error
+      setRecords(records.filter(x => x.id !== r.id))
+      toast.success('已删除')
+    } catch (err) { toast.error(`删除失败: ${err instanceof Error ? err.message : '未知错误'}`) }
     setProcessing(false)
   }
 
   const filtered = records.filter(r => {
     const matchFilter = filter === 'all' || r.payment_status === filter
     const matchSearch = !search || r.supplier_name.toLowerCase().includes(search.toLowerCase()) || (r.order_no || '').toLowerCase().includes(search.toLowerCase())
-    return matchFilter && matchSearch
+    const matchChannel = channelFilter === 'all' || r.payment_channel === channelFilter
+    return matchFilter && matchSearch && matchChannel
   })
 
   const totalUnpaid = records.filter(r => r.payment_status !== 'paid' && r.payment_status !== 'cancelled').reduce((s, r) => s + r.amount, 0)
@@ -301,7 +376,14 @@ export default function PaymentsPage() {
           </Tabs>
           <div className="flex items-center gap-2">
             <div className="relative max-w-sm"><Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" /><Input placeholder="搜索供应商/订单号..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} /></div>
-            <Button size="sm" onClick={() => setShowCreate(true)}><Plus className="h-4 w-4 mr-1" />新增付款申请</Button>
+            <Select value={channelFilter} onValueChange={v => setChannelFilter(v || 'all')}>
+              <SelectTrigger className="w-[130px]"><SelectValue placeholder="付款方式" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部方式</SelectItem>
+                {PAYMENT_CHANNELS.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />新增付款申请</Button>
           </div>
         </div>
 
@@ -318,9 +400,11 @@ export default function PaymentsPage() {
                     <TableHead>供应商</TableHead>
                     <TableHead>订单号</TableHead>
                     <TableHead>费用类别</TableHead>
+                    <TableHead>付款方式</TableHead>
                     <TableHead className="text-right">金额</TableHead>
                     <TableHead className="text-right">预算</TableHead>
-                    <TableHead>到期日</TableHead>
+                    <TableHead>付款日期</TableHead>
+                    <TableHead>提交时间</TableHead>
                     <TableHead>状态</TableHead>
                     <TableHead className="text-center">操作</TableHead>
                   </TableRow>
@@ -331,17 +415,27 @@ export default function PaymentsPage() {
                       <TableCell className="font-medium">{r.supplier_name}</TableCell>
                       <TableCell className="text-sm text-primary">{r.order_no || '-'}</TableCell>
                       <TableCell><Badge variant="outline">{r.cost_category || '-'}</Badge></TableCell>
+                      <TableCell className="text-sm">{channelLabel(r.payment_channel) || '-'}</TableCell>
                       <TableCell className="text-right font-semibold">{r.currency} {r.amount.toLocaleString()}</TableCell>
                       <TableCell className="text-right text-sm text-muted-foreground">
                         {r.budget_amount != null ? `${r.currency} ${r.budget_amount.toLocaleString()}` : '-'}
                         {r.over_budget && <span className="text-red-600 ml-1">超支</span>}
                       </TableCell>
-                      <TableCell className="text-sm">{r.due_date || '-'}</TableCell>
+                      <TableCell className="text-sm">{fmtDate(r.due_date)}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{fmtDate(r.created_at)}</TableCell>
                       <TableCell><Badge className={`${statusConfig[r.payment_status]?.color || ''} border-0`}>{statusConfig[r.payment_status]?.label}</Badge></TableCell>
                       <TableCell className="text-center">
-                        {r.payment_status === 'unpaid' && <Button size="sm" onClick={() => handleApprove(r.id)} disabled={processing}><CheckCircle className="h-3.5 w-3.5 mr-1" />审批</Button>}
-                        {r.payment_status === 'approved' && <Button size="sm" onClick={() => { setPayDialog(r); setDupSuspects(null) }} disabled={processing}><DollarSign className="h-3.5 w-3.5 mr-1" />付款</Button>}
-                        {r.payment_status === 'paid' && <span className="text-xs text-green-600">✓ 已付</span>}
+                        <div className="flex items-center justify-center gap-1">
+                          {r.payment_status === 'unpaid' && <Button size="sm" onClick={() => handleApprove(r.id)} disabled={processing}><CheckCircle className="h-3.5 w-3.5 mr-1" />审批</Button>}
+                          {r.payment_status === 'approved' && <Button size="sm" onClick={() => { setPayDialog(r); setDupSuspects(null) }} disabled={processing}><DollarSign className="h-3.5 w-3.5 mr-1" />付款</Button>}
+                          {r.payment_status === 'paid' && <span className="text-xs text-green-600 mr-1">✓ 已付</span>}
+                          {r.payment_status !== 'paid' && (
+                            <>
+                              <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => openEdit(r)} disabled={processing}><Pencil className="h-3.5 w-3.5" /></Button>
+                              <Button size="sm" variant="outline" className="h-7 px-2 text-red-600 hover:text-red-700" onClick={() => handleDelete(r)} disabled={processing}><Trash2 className="h-3.5 w-3.5" /></Button>
+                            </>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -362,7 +456,16 @@ export default function PaymentsPage() {
                 <div><span className="text-muted-foreground">金额: </span><span className="font-semibold">{payDialog.currency} {payDialog.amount.toLocaleString()}</span></div>
                 <div><span className="text-muted-foreground">订单: </span>{payDialog.order_no || '-'}</div>
                 <div><span className="text-muted-foreground">类别: </span>{payDialog.cost_category || '-'}</div>
+                {channelLabel(payDialog.payment_channel) && <div><span className="text-muted-foreground">付款方式: </span>{channelLabel(payDialog.payment_channel)}</div>}
+                {payDialog.due_date && <div><span className="text-muted-foreground">付款日期: </span>{fmtDate(payDialog.due_date)}</div>}
               </div>
+              {(payDialog.payee_name || payDialog.payee_account || payDialog.payee_bank) && (
+                <div className="text-xs bg-muted/40 rounded-md p-2 space-y-0.5">
+                  <div className="flex justify-between"><span className="text-muted-foreground">收款人</span><span className="font-medium">{payDialog.payee_name || '—'}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">账号</span><span className="font-mono">{payDialog.payee_account || '—'}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">开户行</span><span>{payDialog.payee_bank || '—'}</span></div>
+                </div>
+              )}
               {payDialog.over_budget && (
                 <div className="flex items-center gap-2 p-2 bg-red-50 rounded-lg text-red-700 text-sm">
                   <AlertTriangle className="h-4 w-4 shrink-0" />超预算: 预算{payDialog.currency} {payDialog.budget_amount?.toLocaleString()} → 实际{payDialog.currency} {payDialog.amount.toLocaleString()}
@@ -392,10 +495,10 @@ export default function PaymentsPage() {
         </Dialog>
       )}
 
-      {/* 新增付款申请弹窗 */}
-      <Dialog open={showCreate} onOpenChange={setShowCreate}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>新增付款申请</DialogTitle></DialogHeader>
+      {/* 新增/编辑 付款申请弹窗 */}
+      <Dialog open={showCreate} onOpenChange={o => { setShowCreate(o); if (!o) resetForm() }}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>{editingId ? '编辑付款申请' : '新增付款申请'}</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
               <Label>供应商 *（从信息库选择，自动带出银行信息）</Label>
@@ -404,8 +507,15 @@ export default function PaymentsPage() {
                   供应商信息库为空。请先到 <Link href="/profiles/suppliers" className="text-primary underline">供应商信息库</Link> 建档（含账号/户名/开户行），再回来选择。
                 </div>
               ) : (
-                <Select value={newSupplierId} onValueChange={v => { const id = v || ''; setNewSupplierId(id); setNewSupplier(suppliers.find(s => s.id === id)?.name || '') }}>
-                  <SelectTrigger><SelectValue placeholder="选择供应商" /></SelectTrigger>
+                <Select value={newSupplierId} onValueChange={v => {
+                  const id = v || ''; const s = suppliers.find(x => x.id === id)
+                  setNewSupplierId(id); setNewSupplier(s?.name || '')
+                  // 自动带出收款人（户名/账号/开户行），仍可手改
+                  setNewPayeeName(s?.account_name || s?.name || '')
+                  setNewPayeeAccount(s?.account_no || '')
+                  setNewPayeeBank(s?.bank_name || '')
+                }}>
+                  <SelectTrigger>{selectedSupplier ? <span className="truncate">{selectedSupplier.name}</span> : <SelectValue placeholder="选择供应商" />}</SelectTrigger>
                   <SelectContent>
                     {suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
                   </SelectContent>
@@ -437,8 +547,26 @@ export default function PaymentsPage() {
                 <Input type="number" step="0.01" placeholder="0.00" value={newAmount} onChange={e => setNewAmount(e.target.value)} />
               </div>
               <div className="space-y-2">
-                <Label>到期日</Label>
+                <Label>付款日期</Label>
                 <Input type="date" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>付款方式</Label>
+              <Select value={newChannel || '__none__'} onValueChange={v => setNewChannel(!v || v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="选择付款方式" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">未指定</SelectItem>
+                  {PAYMENT_CHANNELS.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>收款信息（选供应商自动带出，可修改）</Label>
+              <Input placeholder="收款人名称" value={newPayeeName} onChange={e => setNewPayeeName(e.target.value)} />
+              <div className="grid grid-cols-2 gap-2">
+                <Input placeholder="银行账号" value={newPayeeAccount} onChange={e => setNewPayeeAccount(e.target.value)} />
+                <Input placeholder="开户行" value={newPayeeBank} onChange={e => setNewPayeeBank(e.target.value)} />
               </div>
             </div>
             <div className="space-y-2">
@@ -468,10 +596,10 @@ export default function PaymentsPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreate(false)}>取消</Button>
+            <Button variant="outline" onClick={() => { setShowCreate(false); resetForm() }}>取消</Button>
             <Button onClick={handleCreatePayable} disabled={processing}>
               {processing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
-              创建付款申请
+              {editingId ? '保存修改' : '创建付款申请'}
             </Button>
           </DialogFooter>
         </DialogContent>

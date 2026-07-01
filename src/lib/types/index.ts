@@ -445,6 +445,10 @@ export interface PayableRecord {
   description: string
   cost_category: string | null
   bill_no: string | null      // 单据号：货代账单号/报关单号/发票号（防重复付款唯一键）
+  payment_channel: 'company' | 'personal' | 'alipay' | 'wechat' | null  // 付款方式：公账/私账/支付宝/微信
+  payee_name: string | null      // 收款人名称（默认取供应商户名，可改）
+  payee_account: string | null   // 收款银行账号
+  payee_bank: string | null      // 开户行
   amount: number
   currency: string
   budget_amount: number | null
@@ -458,6 +462,8 @@ export interface PayableRecord {
   payment_method: string | null
   payment_reference: string | null
   notes: string | null
+  attachment_url: string | null
   created_at: string
   updated_at: string
+  deleted_at?: string | null
 }
