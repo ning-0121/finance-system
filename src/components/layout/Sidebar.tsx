@@ -24,7 +24,7 @@ import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canViewApprovalQueue, getRoleLabel } from '@/lib/auth/permissions'
 import { UserSwitcher } from '@/components/layout/UserSwitcher'
 import { useState, useEffect } from 'react'
-import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale, Shield, Lock, Clock, FlaskConical, ShieldCheck, Search as SearchIcon } from 'lucide-react'
+import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale, Shield, Lock, Clock, FlaskConical, ShieldCheck, Search as SearchIcon, Landmark } from 'lucide-react'
 
 const baseNavigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
@@ -41,6 +41,7 @@ const baseNavigation = [
   { name: '工资条发放', href: '/payroll', icon: Users },
   { name: '客户画像', href: '/profiles/customers', icon: Users },
   { name: '供应商画像', href: '/profiles/suppliers', icon: FileText },
+  { name: '收款信息维护', href: '/profiles/bank-info', icon: Landmark },
   { name: '利润控制中心', href: '/profit-control', icon: TrendingUp },
   { name: '财务驾驶舱', href: '/analytics', icon: BarChart3 },
   { name: '风险地图', href: '/risks', icon: BarChart3 },

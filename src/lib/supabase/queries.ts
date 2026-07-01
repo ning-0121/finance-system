@@ -337,6 +337,33 @@ export async function getCustomers(): Promise<Customer[]> {
   }
 }
 
+/** 客户档案新增/更新（收款信息维护） */
+export async function upsertCustomer(c: Partial<Customer> & { company: string }): Promise<{ error: string | null }> {
+  try {
+    const supabase = createClient()
+    const { data: userData } = await supabase.auth.getUser()
+    const row = {
+      name: c.name?.trim() || c.company.trim(),
+      company: c.company.trim(),
+      contact: c.contact?.trim() || null,
+      email: c.email?.trim() || null,
+      phone: c.phone?.trim() || null,
+      country: c.country?.trim() || null,
+      currency: c.currency || 'USD',
+      account_name: c.account_name?.trim() || null,
+      account_no: c.account_no?.trim() || null,
+      bank_name: c.bank_name?.trim() || null,
+      swift_code: c.swift_code?.trim() || null,
+      bank_address: c.bank_address?.trim() || null,
+      notes: c.notes?.trim() || null,
+    }
+    const { error } = c.id
+      ? await supabase.from('customers').update(row).eq('id', c.id)
+      : await supabase.from('customers').insert({ ...row, created_by: userData?.user?.id || null })
+    return { error: error?.message || null }
+  } catch (e) { return { error: e instanceof Error ? e.message : '未知错误' } }
+}
+
 export async function getProducts(): Promise<Product[]> {
   if (!isSupabaseConfigured()) return demoProducts
 

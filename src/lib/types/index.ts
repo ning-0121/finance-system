@@ -28,6 +28,12 @@ export interface Customer {
   currency: string
   credit_limit: number | null
   notes: string | null
+  // 收款/银行信息（外贸客户电汇用）
+  account_name?: string | null
+  account_no?: string | null
+  bank_name?: string | null
+  swift_code?: string | null
+  bank_address?: string | null
   created_at: string
 }
 
