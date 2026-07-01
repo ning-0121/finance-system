@@ -33,18 +33,28 @@ export default function DashboardPage() {
   const [monthlyProfit, setMonthlyProfit] = useState<{ month: string; revenue: number; cost: number; profit: number; margin: number }[]>([])
 
   useEffect(() => {
-    async function load() {
-      const [ordersData, alertsData, summaryData, risks, actions, trust, monthly] = await Promise.all([
-        getBudgetOrdersLite(), getAlerts(), getProfitSummary(),
-        getPendingRiskEvents(), getPendingDocumentActions(), getTrustScoreSummary(),
-        getMonthlyProfitData(),
+    let alive = true
+    // 渐进加载：核心数据(订单+利润汇总)先出，立刻收起转圈可点；
+    // 次要面板(预警/风险/待办/信任/趋势)后台补齐，不挡首屏——慢网(中国)下体感差别巨大。
+    async function loadEssential() {
+      const [ordersData, summaryData] = await Promise.all([
+        getBudgetOrdersLite(), getProfitSummary(),
       ])
-      setOrders(ordersData); setAlerts(alertsData); setSummary(summaryData)
-      setRiskEvents(risks); setPendingActions(actions); setTrustSummary(trust)
-      setMonthlyProfit(monthly)
+      if (!alive) return
+      setOrders(ordersData); setSummary(summaryData)
       setLoading(false)
     }
-    load()
+    async function loadSecondary() {
+      const [alertsData, risks, actions, trust, monthly] = await Promise.all([
+        getAlerts(), getPendingRiskEvents(), getPendingDocumentActions(),
+        getTrustScoreSummary(), getMonthlyProfitData(),
+      ])
+      if (!alive) return
+      setAlerts(alertsData); setRiskEvents(risks); setPendingActions(actions)
+      setTrustSummary(trust); setMonthlyProfit(monthly)
+    }
+    loadEssential(); loadSecondary()
+    return () => { alive = false }
   }, [])
 
   if (loading) return <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
