@@ -35,9 +35,9 @@ export function toChineseUppercase(amount: number): string {
   if (jiao === 0 && fen === 0) {
     result += '整'
   } else if (intPart === 0) {
-    // 无元部分
+    // 无元部分：无角有分时不加前导「零」（伍分，而非零伍分）
     if (jiao === 0) {
-      result += '零' + DIGITS[fen] + '分'
+      result += DIGITS[fen] + '分'
     } else if (fen === 0) {
       result += DIGITS[jiao] + '角整'
     } else {
@@ -84,7 +84,9 @@ function integerToChinese(n: number): string {
     result += sectionToChinese(section) + bigUnit
   }
 
-  return result
+  // 去掉末尾多余的「零」：整万/整亿等末节为 0 时会残留（壹万零 → 壹万），
+  // 否则拼「元」后成「壹万零元整」不合财务规范。
+  return result.replace(/零+$/, '')
 }
 
 function sectionToChinese(n: number): string {

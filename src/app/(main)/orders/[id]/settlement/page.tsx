@@ -84,22 +84,25 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
       // 加载实际成本明细（用于新格式决算单导出）
       // 优先从 cost_items 表读取实际成本；无数据则降级合成，并标记来源
       try {
-        const { data: dbCostItems } = await createClient()
+        const { data: dbCostItems, error: costErr } = await createClient()
           .from('cost_items')
-          .select('description, supplier, amount, detail_meta, created_at')
+          .select('description, supplier, amount, quantity, unit, unit_price, created_at')
           .eq('budget_order_id', id)
+          .is('deleted_at', null)
           .order('created_at')
+        if (costErr) console.error('[settlement] cost_items 读取失败:', costErr.message)
         if (dbCostItems && dbCostItems.length > 0) {
           setCostSource('actual')
           setCostItemRows(dbCostItems.map((c) => {
-            const meta = c.detail_meta as Record<string, unknown> | null
+            // 数量/单位/单价是 cost_items 独立列（此前误读不存在的 detail_meta 列 →
+            // select 报错 → 一律降级为预算估算，决算页实际成本显示失真）
             return {
               date: c.created_at ? String(c.created_at).substring(5, 10) : undefined,
               description: String(c.description || ''),
               supplier: c.supplier ? String(c.supplier) : undefined,
-              unit: meta?.unit ? String(meta.unit) : undefined,
-              qty: meta?.qty != null ? Number(meta.qty) : null,
-              unitPrice: meta?.unit_price != null ? Number(meta.unit_price) : null,
+              unit: c.unit ? String(c.unit) : undefined,
+              qty: c.quantity != null ? Number(c.quantity) : null,
+              unitPrice: c.unit_price != null ? Number(c.unit_price) : null,
               amount: Number(c.amount || 0),
             }
           }))
@@ -118,7 +121,12 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
       // Wave 4 核算单数据：回款 + 完整成本 + 完结日期
       try {
         const sb = createClient()
-        const [{ data: receipts }, { data: costs }, { data: ship }] = await Promise.all([
+        const [{ data: allocs }, { data: receipts }, { data: costs }, { data: ship }] = await Promise.all([
+          // 「收」权威口径：回款流水分配 join 回款流水的实际结汇汇率（与应收账款页/毛利表一致）
+          sb.from('receivable_payment_allocations')
+            .select('amount_cny, receivable_payments(received_at, customer_name, bank_account, payment_reference, currency, exchange_rate)')
+            .eq('budget_order_id', id).is('voided_at', null)
+            .order('created_at', { ascending: true }),
           sb.from('actual_invoices')
             .select('invoice_date, total_amount, currency, exchange_rate, supplier_name, invoice_no')
             .eq('budget_order_id', id)
@@ -139,7 +147,34 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
             .limit(1)
             .maybeSingle(),
         ])
-        setInvoiceReceipts(receipts || [])
+        // 收款口径三级回退（不合并，避免双算）：回款流水(实际结汇汇率) → 发票 → 历史 ar_received_amount。
+        // 此前只读 actual_invoices+回退预算汇率，与报表页(实际结汇)不一致，同一订单两处导出金额不同、营收虚高。
+        const ledgerReceipts = (allocs || []).map(a => {
+          const p = (a as Record<string, unknown>).receivable_payments as { received_at?: string; customer_name?: string; bank_account?: string; payment_reference?: string; currency?: string; exchange_rate?: number } | null
+          const cny = Number((a as Record<string, unknown>).amount_cny) || 0
+          const rate = Number(p?.exchange_rate) || 0
+          const isUsd = p?.currency === 'USD' && rate > 0
+          return {
+            invoice_date: p?.received_at || null,
+            total_amount: isUsd ? Math.round((cny / rate) * 100) / 100 : cny,
+            currency: isUsd ? 'USD' : 'CNY',
+            exchange_rate: isUsd ? rate : 1,
+            supplier_name: p?.customer_name || p?.bank_account || null,
+            invoice_no: p?.payment_reference || '回款流水',
+          }
+        })
+        let receiptRows = ledgerReceipts.length > 0 ? ledgerReceipts : (receipts || [])
+        if (receiptRows.length === 0 && orderData && Number(orderData.ar_received_amount) > 0) {
+          receiptRows = [{
+            invoice_date: null,
+            total_amount: Number(orderData.ar_received_amount) || 0,
+            currency: orderData.currency || 'CNY',
+            exchange_rate: orderData.currency === 'CNY' ? 1 : (Number(orderData.exchange_rate) || 1),
+            supplier_name: orderData.customer?.company || null,
+            invoice_no: '历史登记已收（无流水明细）',
+          }]
+        }
+        setInvoiceReceipts(receiptRows)
         setInvoiceExpenses(costs || [])
         setShipCompletedAt((ship?.completed_at as string | undefined) || (ship?.updated_at as string | undefined) || null)
       } catch (err) {

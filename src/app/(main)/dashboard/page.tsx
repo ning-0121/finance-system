@@ -94,7 +94,11 @@ export default function DashboardPage() {
   // Drill-down数据
   const getDrillDownContent = (key: string) => {
     switch (key) {
-      case 'revenue': return { title: '营收分析', items: [...orders].sort((a, b) => b.total_revenue - a.total_revenue).slice(0, 5).map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `${o.currency === 'CNY' ? '¥' : '$'} ${o.total_revenue.toLocaleString()}` })) }
+      case 'revenue': {
+        // 折人民币后排序/展示，避免美元单按面值与人民币单混排（1万美元 ≠ 1万人民币）
+        const revCny = (o: BudgetOrderLite) => (o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 7)) * (Number(o.total_revenue) || 0)
+        return { title: '营收分析（折人民币）', items: [...orders].sort((a, b) => revCny(b) - revCny(a)).slice(0, 5).map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `¥ ${Math.round(revCny(o)).toLocaleString()}` })) }
+      }
       case 'profit': return { title: '利润分析', items: [...topProfit, ...bottomProfit].map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `¥ ${o.estimated_profit.toLocaleString()} (${o.estimated_margin}%)` })) }
       case 'orders': return { title: '订单状态', items: [{ label: '草稿', value: orders.filter(o => o.status === 'draft').length.toString() }, { label: '待审批', value: orders.filter(o => o.status === 'pending_review').length.toString() }, { label: '已通过', value: orders.filter(o => o.status === 'approved').length.toString() }, { label: '已关闭', value: orders.filter(o => o.status === 'closed').length.toString() }] }
       case 'margin': return { title: '毛利率分析', items: [...orders].sort((a, b) => a.estimated_margin - b.estimated_margin).slice(0, 5).map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `${o.estimated_margin}%` })) }

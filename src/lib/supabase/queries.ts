@@ -82,6 +82,7 @@ export interface BudgetOrderLite {
   order_no: string
   status: string
   currency: string
+  exchange_rate: number
   total_revenue: number
   total_cost: number
   estimated_profit: number
@@ -90,7 +91,7 @@ export interface BudgetOrderLite {
 }
 export async function getBudgetOrdersLite(): Promise<BudgetOrderLite[]> {
   if (!isSupabaseConfigured()) return demoBudgetOrders.map(o => ({
-    id: o.id, order_no: o.order_no, status: o.status, currency: o.currency,
+    id: o.id, order_no: o.order_no, status: o.status, currency: o.currency, exchange_rate: o.exchange_rate,
     total_revenue: o.total_revenue, total_cost: o.total_cost, estimated_profit: o.estimated_profit,
     estimated_margin: o.estimated_margin, customer: o.customer ? { company: o.customer.company } : null,
   }))
@@ -98,7 +99,7 @@ export async function getBudgetOrdersLite(): Promise<BudgetOrderLite[]> {
     const supabase = createClient()
     const { data, error } = await fetchAll<Record<string, unknown>>((from, to) => supabase
       .from('budget_orders')
-      .select('id, order_no, status, currency, total_revenue, total_cost, estimated_profit, estimated_margin, customers(company)')
+      .select('id, order_no, status, currency, exchange_rate, total_revenue, total_cost, estimated_profit, estimated_margin, customers(company)')
       .is('deleted_at', null)
       .order('created_at', { ascending: false }).order('id', { ascending: true })
       .range(from, to))
@@ -108,6 +109,7 @@ export async function getBudgetOrdersLite(): Promise<BudgetOrderLite[]> {
       order_no: (r.order_no as string) || '',
       status: (r.status as string) || '',
       currency: (r.currency as string) || 'CNY',
+      exchange_rate: Number(r.exchange_rate) || 0,
       total_revenue: Number(r.total_revenue) || 0,
       total_cost: Number(r.total_cost) || 0,
       estimated_profit: Number(r.estimated_profit) || 0,

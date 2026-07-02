@@ -34,12 +34,18 @@ export default function AnalyticsPage() {
 
   const s = summary || { total_revenue: 0, total_profit: 0, total_cost: 0, avg_margin: 0, order_count: 0, period: '' }
 
+  // 营收折人民币口径（与 getProfitSummary 一致）：total_revenue 是原币、total_cost 是 CNY，
+  // 直接把混币原币相加会让美元单被当人民币、排名与毛利率失真。利润按 revCny−cost 重算。
+  const rateOf = (o: BudgetOrder) => (o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 7))
+  const revCnyOf = (o: BudgetOrder) => (Number(o.total_revenue) || 0) * rateOf(o)
+
   // 从真实订单数据计算客户利润排名
   const customerMap = new Map<string, { revenue: number; profit: number; count: number }>()
   orders.forEach(o => {
     const name = o.customer?.company || '未知'
     const existing = customerMap.get(name) || { revenue: 0, profit: 0, count: 0 }
-    existing.revenue += o.total_revenue; existing.profit += o.estimated_profit; existing.count++
+    const revCny = revCnyOf(o)
+    existing.revenue += revCny; existing.profit += revCny - (Number(o.total_cost) || 0); existing.count++
     customerMap.set(name, existing)
   })
   const customerProfitData = Array.from(customerMap.entries())
@@ -66,7 +72,8 @@ export default function AnalyticsPage() {
   orders.forEach(o => {
     const month = o.order_date?.substring(0, 7) || '未知'
     const existing = monthMap.get(month) || { revenue: 0, profit: 0, cost: 0, count: 0 }
-    existing.revenue += o.total_revenue; existing.profit += o.estimated_profit; existing.cost += o.total_cost; existing.count++
+    const revCny = revCnyOf(o)
+    existing.revenue += revCny; existing.profit += revCny - (Number(o.total_cost) || 0); existing.cost += (Number(o.total_cost) || 0); existing.count++
     monthMap.set(month, existing)
   })
   const monthlyData = Array.from(monthMap.entries())
@@ -80,8 +87,8 @@ export default function AnalyticsPage() {
         {/* KPI */}
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           {[
-            { label: '总营收', value: `$${(s.total_revenue / 1000).toFixed(0)}K`, icon: DollarSign, color: 'text-blue-600 bg-blue-50' },
-            { label: '总利润', value: `$${(s.total_profit / 1000).toFixed(0)}K`, icon: TrendingUp, color: 'text-green-600 bg-green-50' },
+            { label: '总营收', value: `¥${(s.total_revenue / 1000).toFixed(0)}K`, icon: DollarSign, color: 'text-blue-600 bg-blue-50' },
+            { label: '总利润', value: `¥${(s.total_profit / 1000).toFixed(0)}K`, icon: TrendingUp, color: 'text-green-600 bg-green-50' },
             { label: '平均毛利率', value: `${s.avg_margin}%`, icon: TrendingDown, color: 'text-amber-600 bg-amber-50' },
             { label: '订单数', value: `${s.order_count}`, icon: Package, color: 'text-purple-600 bg-purple-50' },
             { label: '客户数', value: `${customerMap.size}`, icon: Users, color: 'text-indigo-600 bg-indigo-50' },
