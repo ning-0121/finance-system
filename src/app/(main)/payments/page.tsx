@@ -263,11 +263,12 @@ export default function PaymentsPage() {
     const suspects: { label: string; detail: string }[] = []
     // ① 同供应商已付的应付：同单据号(最强) 或 同金额(近30天)
     const { data: pays } = await supabase.from('payable_records')
-      .select('id, amount, bill_no, paid_at, description, order_no')
+      .select('id, amount, currency, bill_no, paid_at, description, order_no')
       .eq('supplier_name', sup).eq('payment_status', 'paid').neq('id', rec.id).limit(200)
     for (const p of pays || []) {
       const sameBill = billNo && (p.bill_no as string || '').trim() === billNo
-      const sameAmt = Math.abs((Number(p.amount) || 0) - amt) < 0.01
+      // 同金额需同币种，否则 USD 1000 会误判为 CNY 1000（外币主要靠单据号防重）
+      const sameAmt = ((p.currency as string) || 'CNY') === (rec.currency || 'CNY') && Math.abs((Number(p.amount) || 0) - amt) < 0.01
       const recent = p.paid_at && new Date(p.paid_at as string).getTime() >= Date.parse(since)
       if (sameBill) suspects.push({ label: `同单据号已付：${p.order_no || p.description || ''}`, detail: `单据号 ${billNo}，金额 ${rec.currency} ${Number(p.amount).toLocaleString()}` })
       else if (sameAmt && recent) suspects.push({ label: `同金额已付（${sinceDays}天内）：${p.order_no || p.description || ''}`, detail: `${rec.currency} ${Number(p.amount).toLocaleString()} · 付于 ${(p.paid_at as string).slice(0, 10)}` })
@@ -318,7 +319,8 @@ export default function PaymentsPage() {
       // 应付工作台/对账单的「已付」随之减少，两边一个口径。幂等：note 带 payable id 防重复同步。
       try {
         const syncTag = `[出纳付款同步] payable:${payDialog.id}`
-        const { data: dup } = await supabase.from('supplier_payments').select('id').ilike('note', `%payable:${payDialog.id}%`).is('deleted_at', null).limit(1)
+        // 幂等改用结构化列 source_payable_id(替代 note 模糊匹配——note 可被编辑/清空致幂等失效)
+        const { data: dup } = await supabase.from('supplier_payments').select('id').eq('source_payable_id', payDialog.id).is('deleted_at', null).limit(1)
         if (!dup || dup.length === 0) {
           // 折人民币：CNY 原值；外币用所属订单汇率，取不到则跳过同步并提醒手工登记（绝不按 1:1 折）
           let amountCny: number | null = null
@@ -335,6 +337,7 @@ export default function PaymentsPage() {
               amount: amountCny,
               currency: 'CNY',
               paid_at: new Date().toISOString(),
+              source_payable_id: payDialog.id,
               note: `${syncTag} ${payDialog.description || ''}${payDialog.currency !== 'CNY' ? `（原币 ${payDialog.currency} ${payDialog.amount}）` : ''}`.trim(),
             })
             if (syncErr) toast.warning(`付款已确认，但同步到应付工作台失败：${syncErr}。请到供应商对账单手工登记付款`)

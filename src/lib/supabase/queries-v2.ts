@@ -655,6 +655,7 @@ export async function createSupplierPayment(payment: {
   currency?: string
   paid_at?: string | null
   note?: string | null
+  source_payable_id?: string | null   // 来源应付单(出纳付款同步)——结构化幂等键，防重复已付
 }): Promise<{ data: SupplierPayment | null; error: string | null }> {
   try {
     const supabase = createClient()
@@ -667,11 +668,16 @@ export async function createSupplierPayment(payment: {
         currency: payment.currency || 'CNY',
         paid_at: payment.paid_at || null,
         note: payment.note || null,
+        source_payable_id: payment.source_payable_id || null,
         created_by: userData?.user?.id || null,
       })
       .select()
       .single()
-    if (error) return { data: null, error: error.message }
+    if (error) {
+      // 命中幂等唯一索引 = 该应付已同步过，视为成功(不重复已付)
+      if (/supplier_payments_source_payable_uniq|duplicate key/i.test(error.message)) return { data: null, error: null }
+      return { data: null, error: error.message }
+    }
     return { data: data as SupplierPayment, error: null }
   } catch (e) {
     return { data: null, error: e instanceof Error ? e.message : 'Unknown error' }
