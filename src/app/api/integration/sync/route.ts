@@ -4,7 +4,6 @@ import { bizToday } from '@/lib/biz-date'
 import { NextResponse } from 'next/server'
 import { createClient as createMetronomeClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
-import { escapeIlike } from '@/lib/utils'
 
 const METRONOME_URL = process.env.METRONOME_SUPABASE_URL || ''
 const METRONOME_KEY = process.env.METRONOME_SUPABASE_SERVICE_KEY || ''
@@ -114,16 +113,20 @@ export async function POST() {
         }
       }
 
-      // 查找已有budget_order（避免重复）
-      const { data: existingBO } = await finance
-        .from('budget_orders')
-        .select('id')
-        .ilike('notes', `%${escapeIlike(o.order_no)}%`)
+      // 查找已有budget_order（避免重复）：用 synced_orders 结构化字段精确匹配同一节拍器单号，
+      // 复用其 budget_order_id（webhook 或历史同步已建）。不再用 notes 子串 ILIKE（QM1 会误命中
+      // QM12/QM100、notes 被编辑后失效——qimo 上量后会重复建单/错关联）。
+      const { data: linkedSynced } = await finance
+        .from('synced_orders')
+        .select('budget_order_id')
+        .eq('order_no', o.order_no)
+        .not('budget_order_id', 'is', null)
         .limit(1)
+        .maybeSingle()
 
-      if (existingBO?.length) {
-        // 已有，只需关联
-        await finance.from('synced_orders').update({ budget_order_id: existingBO[0].id }).eq('id', o.id)
+      if (linkedSynced?.budget_order_id) {
+        // 已有，只需关联本行
+        await finance.from('synced_orders').update({ budget_order_id: linkedSynced.budget_order_id }).eq('id', o.id)
         continue
       }
 

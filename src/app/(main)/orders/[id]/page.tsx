@@ -403,6 +403,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       toast.error('不能审批自己创建的订单')
       return
     }
+    // 汇率契约：外币订单审批前必须已补实际汇率（qimo 同步建单 exchange_rate 为空，
+    // 若带空汇率进入 approved，营收折人民币/GL 入账会算成 0 或挂起）
+    if (action === 'approve' && order.currency !== 'CNY' && !(Number(order.exchange_rate) > 0)) {
+      toast.error('该订单为外币且未填写汇率，请先补填实际汇率再审批（否则营收折算与入账会出错）')
+      return
+    }
 
     // 1. 持久化状态变更到数据库
     const { error: statusError } = await updateBudgetOrderStatus(order.id, newStatus, demoUser.id)
