@@ -130,9 +130,18 @@ export async function getUnassigned(): Promise<{ receipts: Record<string, unknow
 
 export async function assignAccount(source: 'receipt' | 'payment', id: string, accountId: string): Promise<{ error: string | null }> {
   const supabase = createClient()
-  const table = source === 'receipt' ? 'receivable_payments' : 'supplier_payments'
-  const { error } = await supabase.from(table).update({ bank_account_id: accountId }).eq('id', id)
-  return { error: error?.message || null }
+  if (source === 'receipt') {
+    // receivable_payments 收紧了 RLS（UPDATE 不开放）——普通 update 会 0 行且不报错(假成功)，
+    // 必须走 SECURITY DEFINER RPC，否则收款归集丢失。
+    const { error } = await supabase.rpc('assign_receipt_bank_account', { p_receipt_id: id, p_account_id: accountId })
+    return { error: error?.message || null }
+  }
+  // supplier_payments 有 FOR UPDATE 策略：直接 update 后回读断言，避免 RLS 静默 0 行。
+  const { data, error } = await supabase.from('supplier_payments')
+    .update({ bank_account_id: accountId }).eq('id', id).select('id')
+  if (error) return { error: error.message }
+  if (!data || data.length === 0) return { error: '归集失败：未更新任何记录（可能无权限或记录不存在）' }
+  return { error: null }
 }
 
 // ── 日记账主查询（某账户，逐笔余额） ─────────

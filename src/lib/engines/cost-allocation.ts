@@ -1,25 +1,19 @@
-import type { BudgetOrder } from '@/lib/types'
-
-/** 订单明细行件数合计，用于多订单分摊权重 */
-export function orderTotalQty(order: BudgetOrder): number {
-  return order.items?.reduce((s, i) => s + (Number(i.qty) || 0), 0) ?? 0
-}
-
 /**
- * 将一笔费用总额按多个订单的件数比例拆分；若件数均为 0 则平均分摊。
+ * 将一笔费用总额按多个订单的数量比例拆分；若数量均为 0 则平均分摊。
  * 最后一笔承担舍入差额，保证合计等于 totalAmount。
+ * 权重来源：synced_orders.quantity（budget_orders.items 里不含数量，早期用 items.qty 恒为 0）。
+ * qtyById：budget_order_id → 订单数量。
  */
 export function allocateAmountByOrderQty(
   totalAmount: number,
   orderIds: string[],
-  orders: BudgetOrder[],
+  qtyById: Record<string, number>,
 ): { orderId: string; amount: number; qty: number }[] {
   const n = orderIds.length
   if (n === 0 || totalAmount <= 0) return []
 
   const rows = orderIds.map(orderId => {
-    const o = orders.find(x => x.id === orderId)
-    const qty = o ? orderTotalQty(o) : 0
+    const qty = Math.max(0, Number(qtyById[orderId]) || 0)
     return { orderId, qty }
   })
 

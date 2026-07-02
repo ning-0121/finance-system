@@ -30,7 +30,7 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import type { BudgetOrder, CostType } from '@/lib/types'
 import { validateCostEntry, type ValidationWarning } from '@/lib/engines/validation-engine'
-import { allocateAmountByOrderQty, orderTotalQty } from '@/lib/engines/cost-allocation'
+import { allocateAmountByOrderQty } from '@/lib/engines/cost-allocation'
 
 const costTypeConfig: Record<CostType, { label: string; icon: typeof Ship; color: string }> = {
   fabric: { label: '面料', icon: Package, color: 'bg-rose-100 text-rose-700' },
@@ -105,6 +105,7 @@ export default function CostsPage() {
   const [showConfirm, setShowConfirm] = useState(false)
 
   const [syncedOrderMap, setSyncedOrderMap] = useState<Record<string, string>>({}) // budget_order_id → QM订单号
+  const [syncedQtyMap, setSyncedQtyMap] = useState<Record<string, number>>({}) // budget_order_id → 订单数量(分摊权重)
   // 供应商画像主数据（录入费用时供应商从这里选，可输入筛选）
   const [supplierMasters, setSupplierMasters] = useState<{ id: string; name: string }[]>([])
 
@@ -118,17 +119,21 @@ export default function CostsPage() {
 
         // 加载synced_orders获取内部单号+QM号+客户映射
         const supabase2 = createClient()
-        const { data: syncedOrders } = await supabase2.from('synced_orders').select('order_no, budget_order_id, style_no, customer_name').not('budget_order_id', 'is', null)
+        const { data: syncedOrders } = await supabase2.from('synced_orders').select('order_no, budget_order_id, style_no, customer_name, quantity').not('budget_order_id', 'is', null)
         if (syncedOrders) {
           const map: Record<string, string> = {}
+          const qtyMap: Record<string, number> = {}
           syncedOrders.forEach((s: Record<string, unknown>) => {
             if (s.budget_order_id) {
               const internal = s.style_no ? `${s.style_no} | ` : ''
               const customer = s.customer_name ? ` - ${s.customer_name}` : ''
               map[s.budget_order_id as string] = `${internal}${s.order_no as string}${customer}`
+              // 多订单分摊权重用真实订单数量(synced_orders.quantity)——budget_orders.items 里无数量
+              qtyMap[s.budget_order_id as string] = Number(s.quantity) || 0
             }
           })
           setSyncedOrderMap(map)
+          setSyncedQtyMap(qtyMap)
         }
 
         // 尝试从Supabase加载费用（分页取全量，防 1000 行截断；排除已软删；报错不静默）
@@ -304,7 +309,7 @@ export default function CostsPage() {
           setSaving(false)
           return
         }
-        const splits = allocateAmountByOrderQty(totalAmt, sharedOrderIds, orders)
+        const splits = allocateAmountByOrderQty(totalAmt, sharedOrderIds, syncedQtyMap)
         const newRows: CostRecord[] = []
         for (const sp of splits) {
           const pctLabel = totalAmt > 0 ? ((sp.amount / totalAmt) * 100).toFixed(1) : '0'
@@ -800,7 +805,7 @@ export default function CostsPage() {
                   {orders.filter(o => o.status !== 'rejected').map(o => {
                     const checked = sharedOrderIds.includes(o.id)
                     const label = syncedOrderMap[o.id] || o.order_no
-                    const q = orderTotalQty(o)
+                    const q = syncedQtyMap[o.id] || 0
                     return (
                       <label key={o.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 rounded px-1 py-0.5">
                         <input
@@ -822,7 +827,7 @@ export default function CostsPage() {
                 {sharedOrderIds.length >= 2 && formAmount && Number(formAmount) > 0 && (
                   <div className="text-xs border-t pt-2 mt-2 space-y-1 text-muted-foreground">
                     <p className="font-medium text-foreground">预览分摊（¥{Number(formAmount).toLocaleString()}）</p>
-                    {allocateAmountByOrderQty(Number(formAmount), sharedOrderIds, orders).map(s => {
+                    {allocateAmountByOrderQty(Number(formAmount), sharedOrderIds, syncedQtyMap).map(s => {
                       const o = orders.find(x => x.id === s.orderId)
                       const lab = o ? (syncedOrderMap[o.id] || o.order_no) : s.orderId
                       return (

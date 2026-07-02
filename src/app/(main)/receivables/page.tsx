@@ -141,7 +141,10 @@ function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, a
         currency: o.currency, rate, settleRate,
         amount, amountCny: Math.round(amount * rate * 100) / 100,
         paid, paidCny: paidCnyVal,
-        balance, balanceCny: Math.round(amount * rate * 100) / 100 - paidCnyVal,
+        // 未收¥按「未收原币 × 汇率」折算，而非「合同¥(预算汇率) − 已收¥(实际结汇)」相减——
+        // 后者在实际结汇汇率≠预算汇率时会把全额收清的单算成"多收/负数"，并污染 KPI。
+        // 已收清(原币余额<=0.01)恒置 0；合同额与已收之差属汇兑损益，不计入未收。
+        balance, balanceCny: balance <= 0.01 ? 0 : Math.round(balance * rate * 100) / 100,
         orderDate: o.order_date,
         dueDate: dueDate.toISOString().substring(0, 10),
         receivedAt: o.ar_received_at || null,
@@ -464,7 +467,11 @@ export default function ReceivablesPage() {
     if (!matchOrderId) { toast.error('请选择要匹配的订单'); return }
     if (!amt || amt <= 0) { toast.error('请输入有效匹配金额'); return }
     setMatchSaving(true)
-    const { error } = await allocateReceipt({ receipt_id: matchReceipt.id, budget_order_id: matchOrderId, amount_cny: amt })
+    // 传入本次匹配的原币额(= 匹配¥ / 该回款结汇汇率)，让 allocation 落原币——
+    // 否则 ar 已收原币会按订单预算汇率反推失真(与快捷登记/汇率修正口径不一致)。
+    const mRate = matchReceipt.currency === 'CNY' ? 1 : (Number(matchReceipt.exchange_rate) || 1)
+    const amountOriginal = r2(amt / mRate)
+    const { error } = await allocateReceipt({ receipt_id: matchReceipt.id, budget_order_id: matchOrderId, amount_cny: amt, amount_original: amountOriginal })
     setMatchSaving(false)
     if (error) {
       if (/OVER_ALLOCATION/.test(error)) toast.error('匹配金额超过该回款可分配余额')
