@@ -101,6 +101,33 @@ async function buildSpecForItem(db: DB, item: QueueItem): Promise<JournalSpec | 
         .select('id, order_no, order_date, currency, exchange_rate, items, target_purchase_price, estimated_commission, estimated_freight, estimated_customs_fee, other_costs')
         .eq('id', item.source_id).single()
       if (!o) throw new GlPostingError('MISSING_SOURCE_DOC', '订单不存在')
+      // G1：成本结转优先用「实际费用归集」(cost_items)，与订单核算单/毛利表同口径；
+      // 无归集时回退预算成本分解(_cost_breakdown)。cost_items 已按各自币种折 CNY，
+      // 故以 currency=CNY/rate=1 传入，避免 buildCostRecognition 再乘一次订单汇率。
+      const { data: ci } = await db.from('cost_items')
+        .select('cost_type, amount, currency, exchange_rate')
+        .eq('budget_order_id', item.source_id).is('deleted_at', null)
+      if (ci && ci.length > 0) {
+        const cnyOf = (r: Record<string, unknown>) => (Number(r.amount) || 0) * (((r.currency as string) || 'CNY') === 'CNY' ? 1 : (Number(r.exchange_rate) || 1))
+        const b = { fabric: 0, accessory: 0, processing: 0, forwarder: 0, container: 0, logistics: 0 }
+        for (const r of ci as Record<string, unknown>[]) {
+          const v = cnyOf(r)
+          switch (r.cost_type) {
+            case 'fabric': case 'procurement': b.fabric += v; break
+            case 'accessory': b.accessory += v; break
+            case 'processing': case 'commission': b.processing += v; break
+            case 'freight': b.forwarder += v; break
+            case 'container': case 'customs': b.container += v; break
+            default: b.logistics += v; break   // logistics / other / 未知
+          }
+        }
+        return buildCostRecognition({
+          id: o.id as string, order_no: o.order_no as string, order_date: o.order_date as string,
+          currency: 'CNY', exchange_rate: 1,
+          fabric: b.fabric, accessory: b.accessory, processing: b.processing,
+          forwarder: b.forwarder, container: b.container, logistics: b.logistics, extras: [],
+        })
+      }
       const cb = (o.items as unknown as Record<string, unknown>[])?.[0]?._cost_breakdown as Record<string, unknown> | undefined
       const num = (k: string, fallback: number) => Number(cb?.[k]) || fallback
       const extras = (cb?.extras as { name: string; amount: number }[]) || []
