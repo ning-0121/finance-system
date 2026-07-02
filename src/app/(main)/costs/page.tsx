@@ -32,6 +32,10 @@ import type { BudgetOrder, CostType } from '@/lib/types'
 import { validateCostEntry, type ValidationWarning } from '@/lib/engines/validation-engine'
 import { allocateAmountByOrderQty } from '@/lib/engines/cost-allocation'
 
+// 录入单位下拉选项（统一口径，避免 件/kg/公斤 混录导致决算按单位拆行）
+const UNIT_OPTIONS = ['件', '米', '千克', '个']
+const unitOptionsWith = (v?: string) => (v && !UNIT_OPTIONS.includes(v) ? [v, ...UNIT_OPTIONS] : UNIT_OPTIONS)
+
 const costTypeConfig: Record<CostType, { label: string; icon: typeof Ship; color: string }> = {
   fabric: { label: '面料', icon: Package, color: 'bg-rose-100 text-rose-700' },
   accessory: { label: '辅料', icon: Package, color: 'bg-pink-100 text-pink-700' },
@@ -259,7 +263,7 @@ export default function CostsPage() {
   }, [formAmount, formDesc, formSupplier, formType, formCurrency, formRate, formOrderId, orders, costItems, entryMode, sharedOrderIds])
 
   const handleSaveWithValidation = () => {
-    if (!formDesc.trim()) { toast.error('请输入费用描述'); return }
+    // 备注(原「费用描述」)改为可选：空时用 供应商名 / 费用类型 兜底，保证决算按名聚合可读
     if (!formAmount || Number(formAmount) <= 0) { toast.error('请输入有效金额'); return }
     if (!editItem && entryMode === 'shared' && sharedOrderIds.length < 2) {
       toast.error('多订单分摊请至少选择 2 个订单')
@@ -310,10 +314,11 @@ export default function CostsPage() {
           return
         }
         const splits = allocateAmountByOrderQty(totalAmt, sharedOrderIds, syncedQtyMap)
+        const descBase = formDesc.trim() || formSupplier.trim() || '费用'
         const newRows: CostRecord[] = []
         for (const sp of splits) {
           const pctLabel = totalAmt > 0 ? ((sp.amount / totalAmt) * 100).toFixed(1) : '0'
-          const desc = `${formDesc.trim()}（多订单按件数分摊 · ${pctLabel}% · 权重件数 ${sp.qty}）`
+          const desc = `${descBase}（多订单按件数分摊 · ${pctLabel}% · 权重件数 ${sp.qty}）`
           const metaObj: Record<string, unknown> = {
             shared_split: true,
             shared_qty_weight: sp.qty,
@@ -385,7 +390,7 @@ export default function CostsPage() {
       const record = {
         budget_order_id: formOrderId || null,
         cost_type: formType,
-        description: formDesc,
+        description: formDesc.trim() || formSupplier.trim() || '费用',
         amount: Number(formAmount),
         currency: formCurrency,
         exchange_rate: Number(formRate),
@@ -907,10 +912,6 @@ export default function CostsPage() {
                 <p className="text-[11px] text-amber-600">「{formSupplier.trim()}」不在供应商画像中，仍可录入；建议先到供应商画像建档以统一名称（避免对账拆行）</p>
               )}
             </div>
-            <div className="space-y-2">
-              <Label>费用描述 *</Label>
-              <Textarea placeholder="例：拉链、面料尾款、染色费" value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={1} />
-            </div>
             <div className="grid grid-cols-3 gap-3">
               <div className="space-y-1">
                 <Label className="text-xs">颜色（可选）</Label>
@@ -937,7 +938,10 @@ export default function CostsPage() {
               </div>
               <div className="space-y-1">
                 <Label className="text-xs">单位</Label>
-                <Input placeholder="件/米/kg" value={formUnit} onChange={e => setFormUnit(e.target.value)} />
+                <Select value={formUnit || '件'} onValueChange={v => setFormUnit(v || '件')}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{unitOptionsWith(formUnit).map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}</SelectContent>
+                </Select>
               </div>
               <div className="space-y-1">
                 <Label className="text-xs">单价</Label>
@@ -1030,7 +1034,10 @@ export default function CostsPage() {
                   </div>
                   <div className="space-y-1">
                     <Label className="text-[10px]">单位</Label>
-                    <Input placeholder="件" value={line.unit} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], unit: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
+                    <Select value={line.unit || '件'} onValueChange={v => { const n = [...extraLines]; n[idx] = { ...n[idx], unit: v || '件' }; setExtraLines(n) }}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>{unitOptionsWith(line.unit).map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}</SelectContent>
+                    </Select>
                   </div>
                   <div className="space-y-1">
                     <Label className="text-[10px]">单价</Label>
@@ -1053,6 +1060,10 @@ export default function CostsPage() {
               + 添加更多品目（同一供应商）
             </Button>
             )}
+            <div className="space-y-2">
+              <Label>备注（可选）</Label>
+              <Textarea placeholder="例：拉链、面料尾款、染色费；或其他说明" value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={2} />
+            </div>
             <div className="flex items-center gap-2">
               <input type="checkbox" id="formPaid" checked={formPaid} onChange={e => setFormPaid(e.target.checked)} className="rounded" />
               <Label htmlFor="formPaid" className="text-sm cursor-pointer">已付款</Label>
