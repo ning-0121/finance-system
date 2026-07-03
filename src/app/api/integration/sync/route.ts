@@ -60,16 +60,29 @@ export async function POST(request: Request) {
     const newOrders = metronomeOrders.filter(o => !syncedMap.has(o.order_no))
     const orphanOrders = metronomeOrders.filter(o => draftMissing.has(o.order_no))
 
-    // 4. 更新已有订单的状态（逐条update避免唯一约束冲突）
+    // 4. 更新已有订单（逐条update避免唯一约束冲突）——全字段重刷：
+    // 此前只刷 状态/款号/客户/数量，金额/单价/交期/付款条款等在 webhook 断链期的
+    // 变更会永久滞留旧值；现在把镜像字段全部刷新 + 维护 source_updated_at
     let updatedCount = 0
     for (const o of metronomeOrders) {
       if (syncedMap.has(o.order_no)) {
-        // 已存在：更新lifecycle_status和style_no
         await finance.from('synced_orders').update({
           style_no: o.internal_order_no || '',
           lifecycle_status: o.lifecycle_status || 'draft',
           customer_name: o.customer_name || '',
           quantity: o.quantity,
+          quantity_unit: o.quantity_unit || '件',
+          unit_price: o.unit_price,
+          total_amount: o.total_amount,
+          factory_name: o.factory_name,
+          incoterm: o.incoterm,
+          delivery_type: o.delivery_type,
+          order_type: o.order_type,
+          po_number: o.po_number,
+          etd: o.etd,
+          payment_terms: o.payment_terms,
+          notes: o.notes,
+          source_updated_at: o.updated_at,
           synced_at: new Date().toISOString(),
         }).eq('order_no', o.order_no)
         updatedCount++
