@@ -81,6 +81,7 @@ export default function ActualGrossReportPage() {
         .is('deleted_at', null).order('invoice_date', { ascending: true }),
       sb.from('cost_items')
         .select('cost_type, description, supplier, cost_group, quantity, unit, unit_price, amount, currency, exchange_rate, delivery_date, created_at')
+        .neq('cost_type', 'tax_point')   // 票点不进核算单"支"区
         .eq('budget_order_id', orderId).is('deleted_at', null)
         .order('cost_group, supplier, created_at'),
       sb.from('shipping_documents')
@@ -216,6 +217,7 @@ export default function ActualGrossReportPage() {
           fetchAll<{ budget_order_id: string; amount: number; currency: string; exchange_rate: number }>((from, to) =>
             supabase.from('cost_items').select('budget_order_id, amount, currency, exchange_rate')
               .not('budget_order_id', 'is', null).is('deleted_at', null)
+              .neq('cost_type', 'tax_point')   // 票点不计毛利成本(留作退税核算)
               .order('id', { ascending: true }).range(from, to)),
           fetchAll<{ budget_order_id: string; amount: number; currency: string }>((from, to) =>
             supabase.from('payable_records').select('budget_order_id, amount, currency')

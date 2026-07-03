@@ -156,6 +156,7 @@ export function BudgetOverview({ costItems }: { costItems: CostLike[] }) {
     const m = new Map<string, { buckets: Record<Bucket, number>; total: number }>()
     for (const c of costItems) {
       if (!c.budget_order_id) continue
+      if (c.cost_type === 'tax_point') continue   // 票点不计预算执行(留作退税核算)
       const rate = (c.currency || 'CNY') === 'CNY' ? 1 : (Number(c.exchange_rate) || 1)
       const cny = (Number(c.amount) || 0) * rate
       const e = m.get(c.budget_order_id) || { buckets: zeroBuckets(), total: 0 }

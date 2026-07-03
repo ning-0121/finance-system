@@ -89,6 +89,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
           .select('description, supplier, amount, quantity, unit, unit_price, created_at')
           .eq('budget_order_id', id)
           .is('deleted_at', null)
+          .neq('cost_type', 'tax_point')   // 票点不计决算成本(留作退税核算)
           .order('created_at')
         if (costErr) console.error('[settlement] cost_items 读取失败:', costErr.message)
         if (dbCostItems && dbCostItems.length > 0) {
@@ -138,6 +139,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
             .select('cost_type, description, supplier, cost_group, quantity, unit, unit_price, amount, currency, exchange_rate, created_at')
             .eq('budget_order_id', id)
             .is('deleted_at', null)
+            .neq('cost_type', 'tax_point')   // 票点不进核算单"支"区
             .order('cost_group, supplier, created_at'),
           sb.from('shipping_documents')
             .select('completed_at, updated_at, status')

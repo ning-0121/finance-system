@@ -143,7 +143,8 @@ export interface VarianceItem {
 }
 
 // 费用类型
-export type CostType = 'fabric' | 'accessory' | 'processing' | 'freight' | 'container' | 'logistics' | 'commission' | 'customs' | 'procurement' | 'other'
+// tax_point(票点)=供应商开票费用：不计预算/决算/毛利/GL成本，留作出口退税核算；仍计应付与供应商对账
+export type CostType = 'fabric' | 'accessory' | 'processing' | 'freight' | 'container' | 'logistics' | 'commission' | 'customs' | 'procurement' | 'other' | 'tax_point'
 
 // 费用项
 export interface CostItem {

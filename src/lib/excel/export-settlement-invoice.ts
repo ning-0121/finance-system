@@ -152,8 +152,8 @@ export function buildSettlementBundle(
     }
   })
 
-  // 支
-  const expenseRows: ExpenseRow[] = expenses.map(e => {
+  // 支（票点=开票费用不进决算/毛利，构建器内兜底过滤，防调用方漏筛）
+  const expenseRows: ExpenseRow[] = expenses.filter(e => e.cost_type !== 'tax_point').map(e => {
     const rate = Number(e.exchange_rate || 1)
     const cny = toCny(e.amount, e.currency || 'CNY', rate)
     const group = e.cost_group || COST_TYPE_LABEL[e.cost_type] || e.cost_type

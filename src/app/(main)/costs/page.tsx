@@ -48,6 +48,8 @@ const costTypeConfig: Record<CostType, { label: string; icon: typeof Ship; color
   customs: { label: '报关费', icon: FileText, color: 'bg-purple-100 text-purple-700' },
   procurement: { label: '其他采购', icon: Package, color: 'bg-amber-100 text-amber-700' },
   other: { label: '其他', icon: Receipt, color: 'bg-gray-100 text-gray-700' },
+  // 票点=供应商开票费用：不计预算/决算/毛利/GL成本(留作出口退税核算)，仍计应付与供应商对账
+  tax_point: { label: '票点(不计成本)', icon: FileText, color: 'bg-slate-200 text-slate-700' },
 }
 
 interface CostRecord {

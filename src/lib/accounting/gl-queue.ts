@@ -111,6 +111,7 @@ async function buildSpecForItem(db: DB, item: QueueItem): Promise<JournalSpec | 
         const cnyOf = (r: Record<string, unknown>) => (Number(r.amount) || 0) * (((r.currency as string) || 'CNY') === 'CNY' ? 1 : (Number(r.exchange_rate) || 1))
         const b = { fabric: 0, accessory: 0, processing: 0, forwarder: 0, container: 0, logistics: 0 }
         for (const r of ci as Record<string, unknown>[]) {
+          if (r.cost_type === 'tax_point') continue   // 票点不结转主营业务成本(留作退税核算)
           const v = cnyOf(r)
           switch (r.cost_type) {
             case 'fabric': case 'procurement': b.fabric += v; break
