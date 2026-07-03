@@ -42,18 +42,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ synced: 0, created: 0, message: '节拍器无订单' })
     }
 
-    // 2. 读取已同步的订单
+    // 2. 读取已同步的订单（含 budget_order_id：用于识别"已同步但草稿未建成"的孤儿单）
     const { data: existingSynced } = await finance
       .from('synced_orders')
-      .select('id, order_no, style_no')
+      .select('id, order_no, style_no, budget_order_id')
 
     const syncedMap = new Map<string, string>()
+    const draftMissing = new Set<string>()   // 已同步但无预算草稿的 order_no
     existingSynced?.forEach(s => {
-      if (s.order_no) syncedMap.set(s.order_no, s.id)
+      if (s.order_no) {
+        syncedMap.set(s.order_no, s.id)
+        if (!s.budget_order_id) draftMissing.add(s.order_no)
+      }
     })
 
-    // 3. 找出未同步的新订单
+    // 3. 找出未同步的新订单 + 草稿缺失的孤儿单（此前草稿插入失败被吞，需自愈补建）
     const newOrders = metronomeOrders.filter(o => !syncedMap.has(o.order_no))
+    const orphanOrders = metronomeOrders.filter(o => draftMissing.has(o.order_no))
 
     // 4. 更新已有订单的状态（逐条update避免唯一约束冲突）
     let updatedCount = 0
@@ -105,14 +110,16 @@ export async function POST(request: Request) {
       if (syncErr) throw new Error(`写入synced_orders失败: ${syncErr.message}`)
     }
 
-    if (newOrders.length === 0) {
+    // 待建草稿 = 新订单 + 已同步但草稿缺失的孤儿单（自愈：草稿插入失败后重跑同步即可补建）
+    const needDraft = [...newOrders, ...orphanOrders]
+    if (needDraft.length === 0) {
       return NextResponse.json({ synced: 0, created: 0, updated: updatedCount, total: metronomeOrders.length, message: `已更新${updatedCount}个订单状态` })
     }
 
-    // 5. 为新订单创建budget_orders草稿
+    // 5. 为新订单/孤儿单创建budget_orders草稿
     let createdCount = 0
     const createFailures: { order_no: string; error: string }[] = []
-    for (const o of newOrders) {
+    for (const o of needDraft) {
       // Wave 3-C P1-E2: 用 RPC 把 lookup-or-create 串行化（pg_advisory_xact_lock 防 race）
       let customerId: string | null = null
       if (o.customer_name) {
@@ -182,11 +189,12 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       synced: newOrders.length,
+      orphansRepaired: orphanOrders.length,
       created: createdCount,
       failed: createFailures.length,
       failures: createFailures.slice(0, 10),
       total: metronomeOrders.length,
-      newOrders: newOrders.map(o => ({ order_no: o.order_no, internal: o.internal_order_no, customer: o.customer_name })),
+      newOrders: needDraft.map(o => ({ order_no: o.order_no, internal: o.internal_order_no, customer: o.customer_name })),
     })
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error'
