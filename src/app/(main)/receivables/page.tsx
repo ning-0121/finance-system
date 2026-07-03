@@ -331,14 +331,38 @@ export default function ReceivablesPage() {
     if (row.currency !== 'CNY' && effRate <= 0) { toast.error('请输入有效的结汇汇率'); return }
     const delta = r2(amt - row.paid)
     try {
-      if (delta < -0.005) {
-        toast.error('快捷登记不支持调减已收。请到「回款流水」中撤销对应匹配（需财务主管权限），保证每笔调整可追溯。')
-        setReceiptSaving(false)
-        return
-      }
       // 入账金额：有流水按差额；无流水的历史订单首次登记按整笔累计（把历史已收合并进流水，防止覆盖丢失）
       const amountOriginal = row.hasLedger ? delta : r2(amt)
-      if (amountOriginal > 0.005) {
+      if (delta < -0.005) {
+        // 调减已收：单笔且独占的回款流水 → 单事务作废重建为正确金额（审计留痕，财务即可操作）；
+        // 多笔/共享流水才需要到订单展开行逐笔「撤销匹配」
+        if (!row.hasLedger) {
+          toast.error('该订单的已收来自历史登记（无流水明细），不能直接调减。请先按当前已收金额保存一次生成流水，再修改为正确金额。')
+          setReceiptSaving(false); return
+        }
+        const supabase = createClient()
+        const { data: allocs } = await supabase.from('receivable_payment_allocations')
+          .select('receipt_id').eq('budget_order_id', row.id).is('voided_at', null)
+        const payIds = [...new Set((allocs || []).map(a => a.receipt_id as string))]
+        if (payIds.length !== 1) {
+          toast.error(`该订单由 ${payIds.length} 笔回款流水构成。请在应收列表点开该订单行，对错误的那笔点「撤销匹配」后重新登记（财务即可操作）。`)
+          setReceiptSaving(false); return
+        }
+        const pid = payIds[0]
+        const { data: otherAllocs } = await supabase.from('receivable_payment_allocations').select('budget_order_id').eq('receipt_id', pid).is('voided_at', null)
+        const exclusive = (otherAllocs || []).every(a => a.budget_order_id === row.id)
+        if (!exclusive) {
+          toast.error('该笔回款流水还匹配了其他订单。请点开订单行，撤销本订单的匹配后重新登记，以免影响其他订单。')
+          setReceiptSaving(false); return
+        }
+        const { data: corr, error: cErr } = await correctReceivableRate({
+          old_payment_id: pid, budget_order_id: row.id, amount_original: r2(amt),
+          currency: row.currency || 'CNY', rate: effRate, received_at: at, bank: receiptBank.trim() || null,
+          reason: `已收金额修正 ${row.paid}→${amt}`,
+        })
+        if (cErr || !corr) { toast.error(`调减失败：${cErr || '未知'}`); setReceiptSaving(false); return }
+        toast.success(`已把已收修正为 ${row.currency} ${amt.toLocaleString()}（折人民币 ¥${corr.amount_cny.toLocaleString()}），原流水已作废留痕`)
+      } else if (amountOriginal > 0.005) {
         const { data: pay, error: payErr } = await createReceivablePayment({
           customer_name: row.customer,
           budget_order_id: row.id,
@@ -354,7 +378,7 @@ export default function ReceivablesPage() {
         const amountCny = r2(amountOriginal * effRate)
         const { error: allocErr } = await allocateReceipt({ receipt_id: pay.id, budget_order_id: row.id, amount_cny: amountCny, amount_original: amountOriginal })
         if (allocErr) {
-          toast.error(`流水已生成但自动匹配失败：${allocErr}。请到「回款流水」手动匹配该笔（金额 ¥${amountCny.toLocaleString()}）`)
+          toast.error(`流水已生成但自动匹配失败：${allocErr}。请点右上「未匹配回款」手动匹配该笔（金额 ¥${amountCny.toLocaleString()}）`)
           setReceiptSaving(false)
           try { await reload() } catch { /* */ }
           return
@@ -367,7 +391,7 @@ export default function ReceivablesPage() {
           .select('receipt_id').eq('budget_order_id', row.id).is('voided_at', null)
         const payIds = [...new Set((allocs || []).map(a => a.receipt_id as string))]
         if (payIds.length !== 1) {
-          toast.error('该订单由多笔回款流水构成，请到「回款流水」逐笔修正汇率，以免影响其他订单。')
+          toast.error('该订单由多笔回款流水构成，请点开该订单行逐笔「撤销匹配」后重新登记，以免影响其他订单。')
           setReceiptSaving(false); return
         }
         const pid = payIds[0]
@@ -377,7 +401,7 @@ export default function ReceivablesPage() {
         if (Math.abs((Number(payRow?.exchange_rate) || 0) - effRate) < 0.0001) {
           toast.success('金额与汇率均无变化，已更新收款银行/日期')
         } else if (!exclusive) {
-          toast.error('该笔回款流水还匹配了其他订单，请到「回款流水」修正汇率，以免影响其他订单。')
+          toast.error('该笔回款流水还匹配了其他订单，请点开订单行撤销本订单的匹配后重新登记，以免影响其他订单。')
           setReceiptSaving(false); return
         } else {
           // 单事务 RPC：作废原流水→按新汇率重建→重新匹配，原子完成（无中途失败的中间态）
