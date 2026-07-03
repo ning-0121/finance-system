@@ -215,29 +215,33 @@ export default function CostsPage() {
 
   const [costSearch, setCostSearch] = useState('')
 
+  // 搜索匹配（订单号、供应商、描述）——列表过滤与分类统计共用
+  const matchesSearch = (c: CostRecord) => {
+    if (!costSearch) return true
+    const q = costSearch.toLowerCase()
+    const orderLabel = c.budget_order_id ? (syncedOrderMap[c.budget_order_id] || c.order_no || '') : ''
+    return (
+      (c.supplier || '').toLowerCase().includes(q) ||
+      c.description.toLowerCase().includes(q) ||
+      orderLabel.toLowerCase().includes(q) ||
+      (c.order_no || '').toLowerCase().includes(q)
+    )
+  }
+
   const filteredItems = costItems.filter(c => {
     // tab筛选
     if (tab === 'unlinked' && c.budget_order_id) return false
     if (tab !== 'all' && tab !== 'unlinked' && c.cost_type !== tab) return false
-    // 搜索筛选（订单号、供应商、描述）
-    if (costSearch) {
-      const q = costSearch.toLowerCase()
-      const orderLabel = c.budget_order_id ? (syncedOrderMap[c.budget_order_id] || c.order_no || '') : ''
-      return (
-        (c.supplier || '').toLowerCase().includes(q) ||
-        c.description.toLowerCase().includes(q) ||
-        orderLabel.toLowerCase().includes(q) ||
-        (c.order_no || '').toLowerCase().includes(q)
-      )
-    }
-    return true
+    return matchesSearch(c)
   })
 
-  // 统计
+  // 统计：搜索时分类徽章/合计跟随搜索范围（如搜单号→该订单的费用合计），未搜索为全局
+  const searchedItems = costSearch ? costItems.filter(matchesSearch) : costItems
   const totalAmount = costItems.reduce((s, c) => s + c.amount, 0)
+  const searchedAmount = searchedItems.reduce((s, c) => s + c.amount, 0)
   const unlinkedCount = costItems.filter(c => !c.budget_order_id).length
   const byType = Object.entries(costTypeConfig).map(([type, cfg]) => {
-    const items = costItems.filter(c => c.cost_type === type)
+    const items = searchedItems.filter(c => c.cost_type === type)
     return { type, ...cfg, count: items.length, total: items.reduce((s, c) => s + c.amount, 0) }
   }).filter(t => t.count > 0)
 
@@ -619,13 +623,21 @@ export default function CostsPage() {
           </Card>
         </div>
 
-        {/* Type breakdown */}
-        <div className="flex gap-2 flex-wrap">
+        {/* Type breakdown：搜索时跟随搜索范围（单订单合计），未搜索为全局 */}
+        <div className="flex gap-2 flex-wrap items-center">
+          {costSearch.trim() && (
+            <Badge className="bg-primary/10 text-primary border-0 font-semibold">
+              「{costSearch.trim()}」合计: {searchedItems.length}笔 ¥{searchedAmount.toLocaleString()}
+            </Badge>
+          )}
           {byType.map(t => (
             <Badge key={t.type} variant="outline" className={`${t.color} border-0 cursor-pointer`} onClick={() => setTab(t.type)}>
               <t.icon className="h-3 w-3 mr-1" />{t.label}: {t.count}笔 ¥{t.total.toLocaleString()}
             </Badge>
           ))}
+          {costSearch.trim() && searchedItems.length === 0 && (
+            <span className="text-xs text-muted-foreground">该搜索无费用记录</span>
+          )}
         </div>
 
         {/* Actions + Table */}
