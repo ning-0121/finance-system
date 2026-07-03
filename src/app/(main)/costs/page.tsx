@@ -32,6 +32,7 @@ import type { BudgetOrder, CostType } from '@/lib/types'
 import { validateCostEntry, type ValidationWarning } from '@/lib/engines/validation-engine'
 import { allocateAmountByOrderQty } from '@/lib/engines/cost-allocation'
 import { BudgetOverview } from './BudgetOverview'
+import { TaxPointOverview } from './TaxPointOverview'
 
 // 录入单位下拉选项（统一口径，避免 件/kg/公斤 混录导致决算按单位拆行）
 const UNIT_OPTIONS = ['件', '米', '千克', '个']
@@ -658,6 +659,7 @@ export default function CostsPage() {
                 待归集 ({unlinkedCount})
               </TabsTrigger>
               <TabsTrigger value="overview">预算总表</TabsTrigger>
+              <TabsTrigger value="taxpoint">票点归集</TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="flex items-center gap-2">
@@ -682,6 +684,8 @@ export default function CostsPage() {
 
         {tab === 'overview' ? (
           <BudgetOverview costItems={costItems} />
+        ) : tab === 'taxpoint' ? (
+          <TaxPointOverview costItems={costItems} syncedOrderMap={syncedOrderMap} />
         ) : (
         <Card>
           <CardContent className="p-0 overflow-x-auto">
