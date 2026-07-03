@@ -17,6 +17,7 @@ import type { BudgetOrder } from '@/lib/types'
 import {
   buildSettlementBundle,
   exportSettlementInvoiceToExcel,
+  exportSettlementInvoicesWorkbook,
   synthesizeExpensesFromBudget,
   type SettlementBundle,
 } from '@/lib/excel/export-settlement-invoice'
@@ -142,6 +143,34 @@ export default function ActualGrossReportPage() {
   }
 
   // 下载 Excel
+  // 批量导出：当前筛选范围内全部订单 → 一个工作簿一单一 Sheet（替代财务手工维护的核算工作簿）
+  const [batchExporting, setBatchExporting] = useState<number | null>(null)
+  const exportAllInvoices = async () => {
+    if (filtered.length === 0) { toast.error('当前无订单可导出'); return }
+    setBatchExporting(0)
+    try {
+      const bundles: SettlementBundle[] = []
+      let estimated = 0
+      for (let i = 0; i < filtered.length; i++) {
+        setBatchExporting(i + 1)
+        try {
+          const b = await buildBundleForOrder(filtered[i].id)
+          if (b) {
+            bundles.push(b)
+            if (b.meta.cost_source === 'estimated') estimated++
+          }
+        } catch (e) {
+          console.error('[批量核算单] 跳过', filtered[i].order_no, e)
+        }
+      }
+      if (bundles.length === 0) { toast.error('没有可导出的核算单'); return }
+      exportSettlementInvoicesWorkbook(bundles)
+      toast.success(`已导出 ${bundles.length} 张核算单(一单一Sheet)${estimated > 0 ? `；其中 ${estimated} 单费用归集无明细,支区为预算估算` : ''}`)
+    } finally {
+      setBatchExporting(null)
+    }
+  }
+
   const exportSettlementInvoice = async (orderId: string) => {
     setExportingId(orderId)
     try {
@@ -349,6 +378,10 @@ export default function ActualGrossReportPage() {
           </div>
           <Button variant="outline" size="sm" onClick={exportCsv}>
             <Download className="h-4 w-4 mr-1" />导出 CSV
+          </Button>
+          <Button size="sm" onClick={exportAllInvoices} disabled={batchExporting !== null}>
+            {batchExporting !== null ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
+            {batchExporting !== null ? `生成中 ${batchExporting}/${filtered.length}` : '批量导出核算单(一单一Sheet)'}
           </Button>
         </div>
 

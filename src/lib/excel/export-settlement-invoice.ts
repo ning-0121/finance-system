@@ -423,6 +423,40 @@ export function exportSettlementInvoiceToExcel(bundle: SettlementBundle, fileNam
   XLSX.writeFile(wb, name)
 }
 
+/** 把一个 bundle 变成一张 worksheet（批量导出复用单张的全部排版） */
+function bundleToSheet(bundle: SettlementBundle): XLSX.WorkSheet {
+  const { rows, merges } = buildSettlementRows(bundle)
+  const ws = XLSX.utils.aoa_to_sheet(rows)
+  ws['!merges'] = merges
+  ws['!cols'] = [
+    { wch: 4 }, { wch: 13 }, { wch: 18 }, { wch: 16 }, { wch: 6 },
+    { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 24 },
+  ]
+  ws['!rows'] = [{ hpt: 24 }, { hpt: 18 }, { hpt: 22 }]
+  return ws
+}
+
+/**
+ * 批量导出：全部订单核算单 → 一个工作簿、一单一 Sheet（对齐财务手工工作簿的习惯）。
+ * Sheet 名 = 内部订单号(NO.xxx 风格由财务习惯决定,这里直接用内部单号/订单号)，
+ * 去非法字符、截 31 字符（Excel 限制）、重名追加序号。
+ */
+export function exportSettlementInvoicesWorkbook(bundles: SettlementBundle[], fileName?: string): void {
+  if (bundles.length === 0) return
+  const wb = XLSX.utils.book_new()
+  const used = new Set<string>()
+  for (const b of bundles) {
+    let base = String(b.header.internal_no || b.header.order_no || '核算单')
+      .replace(/[\\/?*[\]:]/g, '-').slice(0, 28) || '核算单'
+    let name = base, i = 2
+    while (used.has(name)) { name = `${base}(${i++})`.slice(0, 31) }
+    used.add(name)
+    XLSX.utils.book_append_sheet(wb, bundleToSheet(b), name)
+  }
+  const name = fileName || `订单核算单汇总_${new Date().toISOString().substring(0, 10)}.xlsx`
+  XLSX.writeFile(wb, name)
+}
+
 /**
  * 便捷入口：给 page.tsx 用的 一行调用
  *
