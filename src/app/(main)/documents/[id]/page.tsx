@@ -102,13 +102,17 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
 
     // 执行（只传accepted的动作）
     try {
+      // confirmed_by 必须是真实登录人 uuid——此前传 'current_user' 字面量导致
+      // uuid 外键写入失败 → 文档永远停留"待确认"、防重复执行防线失效(审计 P0)
+      const { data: authUser } = await createClient().auth.getUser()
+      if (!authUser?.user?.id) { toast.error('登录态已失效，请重新登录'); return }
       const execRes = await fetch('/api/documents/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           document_id: id,
           confirmed_fields: editedFields,
-          confirmed_by: 'current_user',
+          confirmed_by: authUser.user.id,
           approved_actions: approvedActions,
           rejected_actions: rejectedActions,
         }),

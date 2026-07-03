@@ -352,13 +352,16 @@ export async function generateOrderSettlement(budgetOrderId: string): Promise<{ 
       .select('*')
       .eq('budget_order_id', budgetOrderId)
 
-    // 2. 获取订单级费用（cost_items中直接挂订单的）；必须排除已软删的费用
-    const { data: orderCosts } = await supabase
+    // 2. 获取订单级费用（cost_items中直接挂订单的）；必须排除已软删的费用与票点。
+    // 注意：cost_items 无 sub_document_id 列——此前 .is('sub_document_id',null) 使整个查询
+    // 报错且被吞 → 决算漏掉全部费用归集、final_profit 系统性虚高（审计 P0）。
+    const { data: orderCosts, error: ocErr } = await supabase
       .from('cost_items')
       .select('*')
       .eq('budget_order_id', budgetOrderId)
-      .is('sub_document_id', null) // 注意：需先给cost_items添加此列
+      .neq('cost_type', 'tax_point')
       .is('deleted_at', null)
+    if (ocErr) return { error: `读取费用归集失败: ${ocErr.message}` }
 
     // 3. 获取库存冲减
     const { data: returns } = await supabase

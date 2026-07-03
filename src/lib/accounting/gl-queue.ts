@@ -132,9 +132,11 @@ async function buildSpecForItem(db: DB, item: QueueItem): Promise<JournalSpec | 
       const cb = (o.items as unknown as Record<string, unknown>[])?.[0]?._cost_breakdown as Record<string, unknown> | undefined
       const num = (k: string, fallback: number) => Number(cb?.[k]) || fallback
       const extras = (cb?.extras as { name: string; amount: number }[]) || []
+      // _cost_breakdown 与 target_purchase_price 等预算列全站约定为 CNY——
+      // 此前传订单币种/汇率导致 USD 单回退路径成本被再乘一次汇率(虚增约6.9倍,审计 P1)
       return buildCostRecognition({
         id: o.id as string, order_no: o.order_no as string, order_date: o.order_date as string,
-        currency: (o.currency as string) || 'CNY', exchange_rate: o.exchange_rate as number | null,
+        currency: 'CNY', exchange_rate: 1,
         fabric: num('fabric', Number(o.target_purchase_price) || 0),
         accessory: num('accessory', 0),
         processing: num('processing', Number(o.estimated_commission) || 0),
@@ -151,11 +153,24 @@ async function buildSpecForItem(db: DB, item: QueueItem): Promise<JournalSpec | 
       if (!o) throw new GlPostingError('MISSING_SOURCE_DOC', '订单不存在')
       const cust = o.customers as unknown as { company?: string } | null
       const currency = (o.currency as string) || 'CNY'
-      const rate = currency === 'CNY' ? 1 : Number(o.exchange_rate)
-      if (currency !== 'CNY' && (!Number.isFinite(rate) || rate <= 0)) {
-        throw new GlPostingError('MISSING_RATE', `订单 ${o.order_no} 缺少有效汇率`)
+      // 已收 CNY 权威口径 = 回款分配合计(amount_cny, 按每笔实际结汇汇率)——
+      // 此前用 ar_received_amount×订单预算汇率：projection 改为原币合计后，预算汇率
+      // ≠实际结汇时 GL 现金分录与银行实收失真(审计 P1，口径回归)。
+      const { data: allocRows } = await db.from('receivable_payment_allocations')
+        .select('amount_cny, voided_at, receivable_payments!inner(voided_at)')
+        .eq('budget_order_id', item.source_id).is('voided_at', null)
+        .is('receivable_payments.voided_at', null)
+      let receivedCny: number
+      if (allocRows && allocRows.length > 0) {
+        receivedCny = Math.round(allocRows.reduce((s, a) => s + (Number(a.amount_cny) || 0), 0) * 100) / 100
+      } else {
+        // 无流水的历史订单回退：原币×订单汇率(与旧口径一致)
+        const rate = currency === 'CNY' ? 1 : Number(o.exchange_rate)
+        if (currency !== 'CNY' && (!Number.isFinite(rate) || rate <= 0)) {
+          throw new GlPostingError('MISSING_RATE', `订单 ${o.order_no} 缺少有效汇率`)
+        }
+        receivedCny = Math.round((Number(o.ar_received_amount) || 0) * rate * 100) / 100
       }
-      const receivedCny = Math.round((Number(o.ar_received_amount) || 0) * rate * 100) / 100
       // 已入账（draft+posted）的收款 CNY 合计
       const { data: prior } = await db.from('journal_entries')
         .select('total_debit')

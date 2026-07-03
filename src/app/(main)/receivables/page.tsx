@@ -328,7 +328,7 @@ export default function ReceivablesPage() {
     const row = receiptDialog
     // 实际结汇汇率：CNY 恒 1；外币用本次收款填写的汇率（而非订单预算汇率）
     const effRate = row.currency === 'CNY' ? 1 : (Number(receiptRate) || 0)
-    if (row.currency !== 'CNY' && effRate <= 0) { toast.error('请输入有效的结汇汇率'); return }
+    if (row.currency !== 'CNY' && effRate <= 0) { toast.error('请输入有效的结汇汇率'); setReceiptSaving(false); return }
     const delta = r2(amt - row.paid)
     try {
       // 入账金额：有流水按差额；无流水的历史订单首次登记按整笔累计（把历史已收合并进流水，防止覆盖丢失）
@@ -349,10 +349,17 @@ export default function ReceivablesPage() {
           setReceiptSaving(false); return
         }
         const pid = payIds[0]
-        const { data: otherAllocs } = await supabase.from('receivable_payment_allocations').select('budget_order_id').eq('receipt_id', pid).is('voided_at', null)
+        const { data: otherAllocs } = await supabase.from('receivable_payment_allocations').select('budget_order_id, amount_cny').eq('receipt_id', pid).is('voided_at', null)
         const exclusive = (otherAllocs || []).every(a => a.budget_order_id === row.id)
         if (!exclusive) {
           toast.error('该笔回款流水还匹配了其他订单。请点开订单行，撤销本订单的匹配后重新登记，以免影响其他订单。')
+          setReceiptSaving(false); return
+        }
+        // 未分配余额守卫：作废重建只按本单累计额重建，流水里"未匹配的余额"会被吞掉(审计 P1)
+        const { data: payFull } = await supabase.from('receivable_payments').select('amount_cny').eq('id', pid).maybeSingle()
+        const allocatedCny = (otherAllocs || []).reduce((s, a) => s + (Number(a.amount_cny) || 0), 0)
+        if ((Number(payFull?.amount_cny) || 0) - allocatedCny > 0.005) {
+          toast.error(`该笔回款还有 ¥${((Number(payFull?.amount_cny) || 0) - allocatedCny).toLocaleString()} 未分配余额。请先到右上「未匹配回款」把余额匹配或处理后再修正，避免余额丢失。`)
           setReceiptSaving(false); return
         }
         const { data: corr, error: cErr } = await correctReceivableRate({
@@ -395,13 +402,19 @@ export default function ReceivablesPage() {
           setReceiptSaving(false); return
         }
         const pid = payIds[0]
-        const { data: payRow } = await supabase.from('receivable_payments').select('exchange_rate').eq('id', pid).maybeSingle()
-        const { data: otherAllocs } = await supabase.from('receivable_payment_allocations').select('budget_order_id').eq('receipt_id', pid).is('voided_at', null)
+        const { data: payRow } = await supabase.from('receivable_payments').select('exchange_rate, amount_cny').eq('id', pid).maybeSingle()
+        const { data: otherAllocs } = await supabase.from('receivable_payment_allocations').select('budget_order_id, amount_cny').eq('receipt_id', pid).is('voided_at', null)
         const exclusive = (otherAllocs || []).every(a => a.budget_order_id === row.id)
+        const allocatedCny2 = (otherAllocs || []).reduce((s, a) => s + (Number(a.amount_cny) || 0), 0)
+        const unallocated2 = (Number(payRow?.amount_cny) || 0) - allocatedCny2
         if (Math.abs((Number(payRow?.exchange_rate) || 0) - effRate) < 0.0001) {
           toast.success('金额与汇率均无变化，已更新收款银行/日期')
         } else if (!exclusive) {
           toast.error('该笔回款流水还匹配了其他订单，请点开订单行撤销本订单的匹配后重新登记，以免影响其他订单。')
+          setReceiptSaving(false); return
+        } else if (unallocated2 > 0.005) {
+          // 未分配余额守卫：作废重建只按本单累计额重建，余额会被吞掉(审计 P1)
+          toast.error(`该笔回款还有 ¥${unallocated2.toLocaleString()} 未分配余额。请先到右上「未匹配回款」处理余额后再修正汇率。`)
           setReceiptSaving(false); return
         } else {
           // 单事务 RPC：作废原流水→按新汇率重建→重新匹配，原子完成（无中途失败的中间态）
