@@ -4,18 +4,32 @@ import { bizToday } from '@/lib/biz-date'
 import { NextResponse } from 'next/server'
 import { createClient as createMetronomeClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
+import { verifyApiKey } from '@/lib/integration/security'
 
 const METRONOME_URL = process.env.METRONOME_SUPABASE_URL || ''
 const METRONOME_KEY = process.env.METRONOME_SUPABASE_SERVICE_KEY || ''
 
-export async function POST() {
+export async function POST(request: Request) {
   if (!METRONOME_URL || !METRONOME_KEY) {
     return NextResponse.json({ error: '节拍器Supabase未配置' }, { status: 500 })
   }
 
+  // 鉴权门：UI 按钮走登录会话；机器调用走 x-api-key（与 webhook 同一密钥）。
+  // 此前无鉴权 + 会话客户端写库：匿名触发会被 RLS 拒(报错)，且任何人可打这个端点。
+  const session = await createClient()
+  const { data: sessionUser } = await session.auth.getUser()
+  const apiKey = request.headers.get('x-api-key')
+  const keyOk = !!apiKey && verifyApiKey(apiKey)
+  if (!keyOk && !sessionUser?.user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
   try {
     const metronome = createMetronomeClient(METRONOME_URL, METRONOME_KEY)
-    const finance = await createClient()
+    // 写库用 service 客户端（集成路由标准形态，与 webhook 一致）——
+    // synced_orders/budget_orders 的 RLS 写策略要求财务角色会话，服务端同步不应受其约束
+    const finance = createServiceClient()
 
     // 1. 读取节拍器所有订单
     const { data: metronomeOrders, error: readErr } = await metronome
@@ -130,10 +144,10 @@ export async function POST() {
         continue
       }
 
-      // 创建者 = 触发同步的登录人（UI 按钮触发，有会话）；无会话记 null，
-      // 不冒用"第一个 profile"（防审计归属伪造）
-      const { data: syncUser } = await finance.auth.getUser()
-      const createdBy = syncUser?.user?.id ?? null
+      // 创建者 = 触发同步的登录人（UI 按钮触发，有会话）；机器调用(x-api-key)记 null，
+      // 不冒用"第一个 profile"（防审计归属伪造）。注意 finance 是 service 客户端无会话，
+      // 会话取自路由开头的 sessionUser。
+      const createdBy = sessionUser?.user?.id ?? null
 
       if (!customerId) continue
 
