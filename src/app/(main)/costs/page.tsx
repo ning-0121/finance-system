@@ -31,6 +31,7 @@ import { fetchAll } from '@/lib/supabase/fetch-all'
 import type { BudgetOrder, CostType } from '@/lib/types'
 import { validateCostEntry, type ValidationWarning } from '@/lib/engines/validation-engine'
 import { allocateAmountByOrderQty } from '@/lib/engines/cost-allocation'
+import { BudgetOverview } from './BudgetOverview'
 
 // 录入单位下拉选项（统一口径，避免 件/kg/公斤 混录导致决算按单位拆行）
 const UNIT_OPTIONS = ['件', '米', '千克', '个']
@@ -624,6 +625,7 @@ export default function CostsPage() {
               <TabsTrigger value="unlinked" className={unlinkedCount > 0 ? 'text-red-600' : ''}>
                 待归集 ({unlinkedCount})
               </TabsTrigger>
+              <TabsTrigger value="overview">预算总表</TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="flex items-center gap-2">
@@ -646,6 +648,9 @@ export default function CostsPage() {
           </div>
         </div>
 
+        {tab === 'overview' ? (
+          <BudgetOverview costItems={costItems} />
+        ) : (
         <Card>
           <CardContent className="p-0 overflow-x-auto">
             {loading ? (
@@ -759,6 +764,7 @@ export default function CostsPage() {
             )}
           </CardContent>
         </Card>
+        )}
       </div>
 
       {/* 批量导入弹窗 */}

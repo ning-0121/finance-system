@@ -111,6 +111,7 @@ export async function POST(request: Request) {
 
     // 5. 为新订单创建budget_orders草稿
     let createdCount = 0
+    const createFailures: { order_no: string; error: string }[] = []
     for (const o of newOrders) {
       // Wave 3-C P1-E2: 用 RPC 把 lookup-or-create 串行化（pg_advisory_xact_lock 防 race）
       let customerId: string | null = null
@@ -153,12 +154,14 @@ export async function POST(request: Request) {
 
       const totalAmount = Number(o.total_amount) || (Number(o.unit_price || 0) * Number(o.quantity || 0))
 
-      const { data: newBO } = await finance.from('budget_orders').insert({
+      const cur = o.currency || 'USD'
+      const { data: newBO, error: boErr } = await finance.from('budget_orders').insert({
         order_no: '',
         customer_id: customerId,
         total_revenue: totalAmount,
-        currency: o.currency || 'USD',
-        exchange_rate: null, // 同步时不知道实际汇率，需财务人员手动补填
+        currency: cur,
+        // CNY 恒 1；外币同步时不知道实际汇率 → null 待财务补填（审批门槛会拦无汇率外币单）
+        exchange_rate: cur === 'CNY' ? 1 : null,
         status: 'draft',
         order_date: bizToday(),
         created_by: createdBy,
@@ -166,6 +169,11 @@ export async function POST(request: Request) {
         has_sub_documents: false,
       }).select('id').single()
 
+      if (boErr) {
+        // 此前错误被静默吞掉(NOT NULL 约束失败时 created 恒 0 而无人知晓)——收集并返回
+        createFailures.push({ order_no: o.order_no, error: boErr.message })
+        continue
+      }
       if (newBO) {
         await finance.from('synced_orders').update({ budget_order_id: newBO.id }).eq('id', o.id)
         createdCount++
@@ -175,6 +183,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       synced: newOrders.length,
       created: createdCount,
+      failed: createFailures.length,
+      failures: createFailures.slice(0, 10),
       total: metronomeOrders.length,
       newOrders: newOrders.map(o => ({ order_no: o.order_no, internal: o.internal_order_no, customer: o.customer_name })),
     })
