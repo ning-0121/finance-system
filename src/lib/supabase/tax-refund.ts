@@ -68,8 +68,17 @@ export async function saveTaxRefund(payload: Partial<TaxRefund> & { id?: string 
     updated_at: new Date().toISOString(),
   }
   if (payload.id) {
-    const { error } = await supabase.from('tax_refunds').update(row).eq('id', payload.id)
-    return { error: error?.message || null }
+    // 部分更新：只提交调用方真正传入的字段。此前整行覆盖——"标记申报/到账"只传
+    // {id,status,日期} 却把报关单号/品名/FOB/进项/单证勾选全部抹成缺省值(生产数据破坏)。
+    const patch: Record<string, unknown> = { updated_at: row.updated_at }
+    for (const k of Object.keys(row) as (keyof typeof row)[]) {
+      if (k !== 'updated_at' && k in payload) patch[k] = row[k]
+    }
+    const { data: hit, error } = await supabase.from('tax_refunds').update(patch).eq('id', payload.id).select('id')
+    if (error) return { error: error.message }
+    // RLS 静默 0 行防线：非财务角色更新被过滤时不再假成功
+    if (!hit || hit.length === 0) return { error: '更新未生效：记录不存在或当前角色无权限（需财务角色）' }
+    return { error: null }
   }
   // 防重复登记：同一报关单号只允许一条退税记录（避免重复申报/重复退税）
   if (row.customs_no) {
@@ -83,6 +92,9 @@ export async function saveTaxRefund(payload: Partial<TaxRefund> & { id?: string 
 
 export async function deleteTaxRefund(id: string): Promise<{ error: string | null }> {
   const supabase = createClient()
-  const { error } = await supabase.from('tax_refunds').delete().eq('id', id)
-  return { error: error?.message || null }
+  const { data: hit, error } = await supabase.from('tax_refunds').delete().eq('id', id).select('id')
+  if (error) return { error: error.message }
+  // RLS 静默 0 行防线：删除权限仅财务主管/管理员，被过滤时不再假成功
+  if (!hit || hit.length === 0) return { error: '删除未生效：记录不存在或当前角色无权限（删除需财务主管/管理员）' }
+  return { error: null }
 }
