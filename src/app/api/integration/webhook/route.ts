@@ -61,9 +61,30 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid payload' }, { status: 400 })
   }
 
-  // 4. 幂等性检查
+  // 4. 幂等性检查：DB 级(inbox request_id 唯一约束,跨实例可靠) + 内存 Map(热路径)
   if (isRequestProcessed(payload.request_id)) {
     return NextResponse.json({ status: 'already_processed', request_id: payload.request_id })
+  }
+  const inboxDb = createServiceClient()
+  let inboxLanded = false
+  try {
+    const { error: inboxErr } = await inboxDb.from('fin_inbox_events').insert({
+      request_id: payload.request_id,
+      event: payload.event,
+      source: payload.source || 'order-metronome',
+      payload: payload as unknown as Record<string, unknown>,
+      process_status: 'processing',
+    })
+    if (inboxErr) {
+      if (/duplicate|unique/i.test(inboxErr.message)) {
+        return NextResponse.json({ status: 'already_processed', request_id: payload.request_id })
+      }
+      console.error('[Webhook] inbox 落账失败(降级为内存幂等):', inboxErr.message)
+    } else {
+      inboxLanded = true
+    }
+  } catch (e) {
+    console.error('[Webhook] inbox 落账异常:', e)
   }
 
   // 5. 处理事件
@@ -71,8 +92,17 @@ export async function POST(request: Request) {
     const result = await handleWebhookEvent(payload)
     markRequestProcessed(payload.request_id)
 
-    // 6. 记录集成日志
+    // 6. 记录集成日志 + inbox 状态回写
     await logIntegrationEvent(payload, 'inbound', 'success')
+    if (inboxLanded) {
+      // test.ping=ignored；已消费事件=done；暂未消费(milestone/resync/supplier 等)=pending 留待后续入账
+      const status = payload.event === 'test.ping'
+        ? 'ignored'
+        : ((result as { action?: string })?.action === 'ignored' ? 'pending' : 'done')
+      await inboxDb.from('fin_inbox_events')
+        .update({ process_status: status, processed_at: new Date().toISOString() })
+        .eq('request_id', payload.request_id)
+    }
 
     return NextResponse.json({
       status: 'ok',
@@ -83,6 +113,11 @@ export async function POST(request: Request) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error'
     console.error(`[Webhook] Processing error: ${errorMsg}`)
     await logIntegrationEvent(payload, 'inbound', 'failed', errorMsg)
+    if (inboxLanded) {
+      await inboxDb.from('fin_inbox_events')
+        .update({ process_status: 'failed', last_error: errorMsg.slice(0, 500), attempt_count: 1 })
+        .eq('request_id', payload.request_id)
+    }
 
     return NextResponse.json(
       { error: 'Processing failed', detail: errorMsg },
@@ -112,9 +147,65 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'file.uploaded':
       return handleFileUpload(payload.data as Record<string, unknown>)
 
+    case 'purchase_order.placed':
+      return handlePurchaseOrderPlaced(payload.data as Record<string, unknown>, payload.request_id)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
+}
+
+// --- 采购单下单入账（V1.0 头；V1.1 lines 行数据预留） ---
+async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestId: string) {
+  const supabase = createServiceClient()
+  const poKey = String(data.purchase_order_id || data.po_no || '')
+  if (!poKey) throw new Error('purchase_order.placed 缺少 purchase_order_id/po_no')
+
+  const { data: poRow, error: poErr } = await supabase.from('fin_purchase_orders').upsert({
+    purchase_order_id: poKey,
+    po_no: String(data.po_no || poKey),
+    supplier_id: (data.supplier_id as string) ?? null,
+    supplier_name: (data.supplier_name as string) ?? null,
+    total_amount: data.total_amount != null ? Number(data.total_amount) : null,
+    currency: (data.currency as string) || 'CNY',
+    payment_terms: (data.payment_terms as string) ?? null,
+    delivery_date: (data.delivery_date as string) ?? null,
+    status: (data.status as string) ?? null,
+    placed_at: (data.placed_at as string) ?? null,
+    order_refs: (data.order_refs as unknown[]) ?? [],
+    source_request_id: requestId,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'purchase_order_id' }).select('id').single()
+  if (poErr) throw new Error(`fin_purchase_orders 写入失败: ${poErr.message}`)
+
+  // V1.1：行数据（line_id 为对账锚点，upsert 幂等）
+  const lines = Array.isArray(data.lines) ? (data.lines as Record<string, unknown>[]) : []
+  let lineCount = 0
+  if (lines.length > 0 && poRow) {
+    const rows = lines.filter(l => l && (l.line_id || l.id)).map(l => ({
+      fin_po_id: poRow.id as string,
+      line_id: String(l.line_id || l.id),
+      order_id: (l.order_id as string) ?? null,
+      order_no: (l.order_no as string) ?? null,
+      internal_order_no: (l.internal_order_no as string) ?? null,
+      style_no: (l.style_no as string) ?? null,
+      material_name: (l.material_name as string) ?? null,
+      material_code: (l.material_code as string) ?? null,
+      specification: (l.specification as string) ?? null,
+      category: (l.category as string) ?? null,
+      ordered_qty: l.ordered_qty != null ? Number(l.ordered_qty) : null,
+      ordered_unit: (l.ordered_unit as string) ?? null,
+      unit_price: l.unit_price != null ? Number(l.unit_price) : null,
+      amount: l.amount != null ? Number(l.amount) : null,
+    }))
+    if (rows.length > 0) {
+      const { error: lineErr } = await supabase.from('fin_po_lines').upsert(rows, { onConflict: 'line_id' })
+      if (lineErr) throw new Error(`fin_po_lines 写入失败: ${lineErr.message}`)
+      lineCount = rows.length
+    }
+  }
+
+  return { action: 'po_registered', po_no: String(data.po_no || poKey), lines: lineCount }
 }
 
 // --- 订单同步 ---

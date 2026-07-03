@@ -14,6 +14,10 @@ export type WebhookEventType =
   | 'delay.requested'         // 延期审批请求
   | 'file.uploaded'           // 文件上传同步
   | 'approval.callback'       // 审批结果回调（从财务系统到节拍器）
+  | 'order.resync'            // 订单全量重推
+  | 'supplier.upserted'       // 供应商主数据同步
+  | 'purchase_order.placed'   // 采购单下单（V1.0 头；V1.1 带 lines 行数据）
+  | 'test.ping'               // 联调签名测试（不入业务账）
 
 // --- Webhook 事件载荷 ---
 export interface WebhookPayload {
