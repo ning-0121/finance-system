@@ -757,7 +757,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                                   <span className="text-muted-foreground">
                                     {rc.label}
                                     {hasPlanned && <span className="text-[11px] text-primary ml-1">{lines!.length}行</span>}
-                                    {showActual && <span className="text-[11px] text-amber-600 ml-1">实际归集{actual!.length}行</span>}
+                                    {showActual && (
+                                      <Link href={`/costs?q=${encodeURIComponent(syncedInfo?.internalNo || order.order_no)}`}
+                                        className="text-[11px] text-amber-600 ml-1 underline decoration-dotted hover:text-amber-800"
+                                        title="点击到费用归集查看这些行的录入人/时间，可编辑或删除">
+                                        实际归集{actual!.length}行
+                                      </Link>
+                                    )}
                                   </span>
                                   {showActual ? (
                                     <span className="text-right whitespace-nowrap">

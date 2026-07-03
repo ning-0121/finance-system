@@ -217,6 +217,13 @@ export default function CostsPage() {
 
   const [costSearch, setCostSearch] = useState('')
 
+  // 支持 /costs?q=单号 直达搜索（订单详情"实际归集N行"跳转用）；
+  // 用 window.location 而非 useSearchParams，避免 App Router 的 Suspense 约束
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get('q')
+    if (q) setCostSearch(q)
+  }, [])
+
   // 搜索匹配（订单号、供应商、描述）——列表过滤与分类统计共用
   const matchesSearch = (c: CostRecord) => {
     if (!costSearch) return true
