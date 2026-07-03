@@ -756,7 +756,25 @@ export default function CostsPage() {
                   })}
                   {filteredItems.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">暂无费用记录</TableCell>
+                      <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                        {(() => {
+                          // 智能空态：搜索无费用时检查订单库——"订单存在但没录过费用"和
+                          // "订单不存在/未同步"是两回事，不区分会被误判成同步坏了
+                          if (!costSearch.trim()) return '暂无费用记录'
+                          const qq = costSearch.trim().toLowerCase()
+                          const hit = orders.find(o => o.status !== 'rejected' && ((syncedOrderMap[o.id] || o.order_no).toLowerCase().includes(qq) || (o.customer?.company || '').toLowerCase().includes(qq)))
+                          if (!hit) return `未找到含「${costSearch.trim()}」的费用或订单——请确认单号，或该订单尚未从订单系统同步`
+                          return (
+                            <span className="inline-flex items-center gap-2 flex-wrap justify-center">
+                              <span>订单 <b className="text-foreground">{syncedOrderMap[hit.id] || hit.order_no}</b> 存在，但尚未录入任何费用</span>
+                              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => {
+                                setEditItem(null); setEntryMode('single'); setSharedOrderIds([])
+                                setFormOrderId(hit.id); setShowAdd(true)
+                              }}>为它录入费用</Button>
+                            </span>
+                          )
+                        })()}
+                      </TableCell>
                     </TableRow>
                   )}
                 </TableBody>

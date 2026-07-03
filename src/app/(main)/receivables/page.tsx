@@ -164,7 +164,7 @@ export default function ReceivablesPage() {
   const role = user?.role || ''
   const canRegister = ['admin', 'finance_manager', 'finance_staff'].includes(role) // 财务员可登记回款/收款/匹配
   const canMatch = canRegister
-  const canManage = ['admin', 'finance_manager'].includes(role)                    // 财务经理可撤销/作废/核销/修正
+  const canManage = ['admin', 'finance_manager', 'finance_staff'].includes(role)   // 撤销/作废/核销/修正——临时放开至财务专员(老板决策,审计留痕不变;需同步执行 20260703 迁移放开 RPC)
   const canDispute = role === 'admin'                                              // 财务负责人/老板处理争议
 
   const [search, setSearch] = useState('')

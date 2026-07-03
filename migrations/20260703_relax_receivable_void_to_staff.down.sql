@@ -1,0 +1,2 @@
+-- 回滚：恢复「撤销匹配/作废回款」仅 finance_manager/admin。
+-- 直接重跑 20260608_receivable_role_enforcement.sql 中这两个函数的定义即可。
