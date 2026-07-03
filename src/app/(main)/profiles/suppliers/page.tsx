@@ -15,7 +15,8 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
-import { Search, Loader2, Plus, Pencil, Trash2, Building2 } from 'lucide-react'
+import { Search, Loader2, Plus, Pencil, Trash2, Building2, Merge } from 'lucide-react'
+import { SupplierMergeDialog } from './SupplierMerge'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
@@ -33,6 +34,7 @@ export default function SupplierProfilesPage() {
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [mergeOpen, setMergeOpen] = useState(false)
   const [form, setForm] = useState<Partial<Supplier>>(emptyForm())
   const [saving, setSaving] = useState(false)
   const [uploadingAtt, setUploadingAtt] = useState(false)
@@ -137,6 +139,7 @@ export default function SupplierProfilesPage() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input placeholder="搜索供应商..." className="pl-9 h-9 w-[200px]" value={search} onChange={e => setSearch(e.target.value)} />
               </div>
+              <Button size="sm" variant="outline" onClick={() => setMergeOpen(true)}><Merge className="h-4 w-4 mr-1" />归并供应商</Button>
               <Button size="sm" onClick={() => openNew()}><Plus className="h-4 w-4 mr-1" />新建供应商</Button>
             </div>
           </div>
@@ -281,6 +284,9 @@ export default function SupplierProfilesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 归并供应商 */}
+      <SupplierMergeDialog open={mergeOpen} onOpenChange={setMergeOpen} onMerged={async () => { await reloadMasters(); window.location.reload() }} />
     </div>
   )
 }

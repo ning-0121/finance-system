@@ -111,6 +111,7 @@ export default function CostsPage() {
 
   const [syncedOrderMap, setSyncedOrderMap] = useState<Record<string, string>>({}) // budget_order_id → QM订单号
   const [syncedQtyMap, setSyncedQtyMap] = useState<Record<string, number>>({}) // budget_order_id → 订单数量(分摊权重)
+  const [supplierAliases, setSupplierAliases] = useState<Record<string, string>>({}) // 旧名→标准名(归并登记)
   // 供应商画像主数据（录入费用时供应商从这里选，可输入筛选）
   const [supplierMasters, setSupplierMasters] = useState<{ id: string; name: string }[]>([])
 
@@ -121,9 +122,12 @@ export default function CostsPage() {
         const ordersData = await getBudgetOrders()
         setOrders(ordersData)
         getSuppliers().then(ms => setSupplierMasters(ms.map(m => ({ id: m.id, name: m.name })))).catch(() => {})
-
         // 加载synced_orders获取内部单号+QM号+客户映射
         const supabase2 = createClient()
+        // 供应商别名映射（归并登记的旧名→标准名）：录入时自动纠正，防止归并后又裂开
+        supabase2.from('supplier_aliases').select('alias, canonical_name').then(({ data: al }) => {
+          if (al) setSupplierAliases(Object.fromEntries(al.map(a => [String(a.alias).trim(), String(a.canonical_name)])))
+        })
         const { data: syncedOrders } = await supabase2.from('synced_orders').select('order_no, budget_order_id, style_no, customer_name, quantity').not('budget_order_id', 'is', null)
         if (syncedOrders) {
           const map: Record<string, string> = {}
@@ -301,6 +305,13 @@ export default function CostsPage() {
       const { data: userData } = await supabase.auth.getUser()
       const createdBy = userData?.user?.id
       if (!createdBy) { toast.error('登录态已失效，请重新登录后再录入'); setSaving(false); return }
+      // 别名自动归一：录入旧名(已归并)时自动改为标准名，防止归并后名字又裂开
+      const aliasCanon = supplierAliases[formSupplier.trim()]
+      if (aliasCanon && aliasCanon !== formSupplier.trim()) {
+        setFormSupplier(aliasCanon)
+        toast.info(`供应商「${formSupplier.trim()}」已归并，本次按标准名「${aliasCanon}」入账`)
+      }
+      const supplierFinal = (aliasCanon || formSupplier).trim()
 
       if (!editItem && entryMode === 'shared') {
         if (sharedOrderIds.length < 2) {
@@ -337,7 +348,7 @@ export default function CostsPage() {
             amount: sp.amount,
             currency: formCurrency,
             exchange_rate: Number(formRate),
-            supplier: formSupplier || null,
+            supplier: supplierFinal || null,
             source_module: formPaid ? 'paid' : null,
             source_id: JSON.stringify(metaObj),
             delivery_date: formDeliveryDate || null,
@@ -395,7 +406,7 @@ export default function CostsPage() {
         amount: Number(formAmount),
         currency: formCurrency,
         exchange_rate: Number(formRate),
-        supplier: formSupplier || null,
+        supplier: supplierFinal || null,
         source_module: formPaid ? 'paid' : null,
         source_id: detailMeta,
         quantity: (formQty || formUnitPrice) ? qtyNum : null,
@@ -477,7 +488,7 @@ export default function CostsPage() {
             amount: lineAmount,
             currency: formCurrency,
             exchange_rate: Number(formRate),
-            supplier: formSupplier || null,
+            supplier: supplierFinal || null,
             source_module: formPaid ? 'paid' : null,
             source_id: lineMeta,
             quantity: (line.qty || line.unitPrice) ? lineQty : null,
