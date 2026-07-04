@@ -11,7 +11,7 @@
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { requireAuth } from '@/lib/auth/api-guard'
+import { requireAuth, requireRole } from '@/lib/auth/api-guard'
 import { notifyPaymentReminder } from '@/lib/wecom/notifications'
 import { enqueueAndProcess } from '@/lib/accounting/gl-queue'
 
@@ -28,6 +28,9 @@ export async function POST(
 ) {
   const auth = await requireAuth()
   if (!auth.authenticated) return auth.error!
+  // 审计 P0:确认决算=结转成本 GL + 批量生成应付,资金后果严重,仅 admin/财务经理
+  const roleErr = requireRole(auth, ['admin', 'finance_manager'])
+  if (roleErr) return roleErr
 
   const { id: budgetOrderId } = await params
 

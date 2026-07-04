@@ -31,7 +31,9 @@ export async function requireAuth(): Promise<AuthResult> {
     return {
       authenticated: true,
       userId: user.id,
-      role: (profile?.role as string) || 'finance_staff',
+      // 审计 P1:role 缺失时回退最小权限 viewer(匹配不上任何 requireRole),
+      // 而非默认 finance_staff(否则无 role 用户凭空获得财务员权限)
+      role: (profile?.role as string) || 'viewer',
     }
   } catch {
     return {
