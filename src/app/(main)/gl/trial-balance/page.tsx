@@ -11,16 +11,19 @@ import { Loader2, CheckCircle, AlertTriangle, Download } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { toast } from 'sonner'
 
+// 试算平衡展示行：期初/期末由发生额累计重构（gl_balances.opening_*/closing_* 触发器不维护，恒 0）
+// 期初 = Σ(period<所选)的净额；本期 = 所选期间发生额（真实值）；期末 = Σ(period≤所选)的净额。
+// 净额按科目正常方向拆入借/贷列。因每张已过账凭证借贷相等，各列合计天然平衡。
 type GLBalance = {
   account_code: string
-  period_code: string
+  account_name: string
+  account_type: string
   opening_debit: number
   opening_credit: number
   period_debit: number
   period_credit: number
   closing_debit: number
   closing_credit: number
-  accounts: { account_name: string; account_type: string; balance_direction: string } | null
 }
 
 const TYPE_LABELS: Record<string, string> = { asset: '资产', liability: '负债', equity: '权益', revenue: '收入', expense: '费用' }
@@ -29,8 +32,8 @@ function exportTrialBalanceCSV(period: string, balances: GLBalance[]) {
   const headers = ['科目代码', '科目名称', '类别', '期初借方', '期初贷方', '本期借方', '本期贷方', '期末借方', '期末贷方']
   const rows = balances.map(b => [
     b.account_code,
-    b.accounts?.account_name || '',
-    TYPE_LABELS[b.accounts?.account_type || ''] || '',
+    b.account_name || '',
+    TYPE_LABELS[b.account_type || ''] || '',
     b.opening_debit, b.opening_credit,
     b.period_debit, b.period_credit,
     b.closing_debit, b.closing_credit,
@@ -82,12 +85,42 @@ export default function TrialBalancePage() {
     async function loadBalances() {
       setLoading(true)
       const supabase = createClient()
+      // 取 ≤ 所选期间的全部发生额行，按科目重构期初/期末
       const { data } = await supabase
         .from('gl_balances')
-        .select('*, accounts(account_name, account_type, balance_direction)')
-        .eq('period_code', period)
+        .select('account_code, period_code, period_debit, period_credit, accounts(account_name, account_type)')
+        .lte('period_code', period)
         .order('account_code')
-      setBalances((data as GLBalance[]) || [])
+
+      type Acc = { name: string; type: string; prevNet: number; curD: number; curC: number }
+      const agg = new Map<string, Acc>()
+      for (const b of data || []) {
+        const code = b.account_code as string
+        const acc = b.accounts as unknown as Record<string, string> | null
+        const pd = Number(b.period_debit) || 0
+        const pc = Number(b.period_credit) || 0
+        const e = agg.get(code) || { name: acc?.account_name || '', type: acc?.account_type || '', prevNet: 0, curD: 0, curC: 0 }
+        if ((b.period_code as string) < period) e.prevNet += pd - pc
+        else { e.curD += pd; e.curC += pc } // period_code === period（lte 保证不会 >）
+        agg.set(code, e)
+      }
+
+      const rows: GLBalance[] = [...agg.entries()].map(([code, e]) => {
+        const closingNet = e.prevNet + (e.curD - e.curC)
+        return {
+          account_code: code,
+          account_name: e.name,
+          account_type: e.type,
+          opening_debit: e.prevNet > 0 ? Math.round(e.prevNet * 100) / 100 : 0,
+          opening_credit: e.prevNet < 0 ? Math.round(-e.prevNet * 100) / 100 : 0,
+          period_debit: Math.round(e.curD * 100) / 100,
+          period_credit: Math.round(e.curC * 100) / 100,
+          closing_debit: closingNet > 0 ? Math.round(closingNet * 100) / 100 : 0,
+          closing_credit: closingNet < 0 ? Math.round(-closingNet * 100) / 100 : 0,
+        }
+      }).sort((a, b) => a.account_code.localeCompare(b.account_code))
+
+      setBalances(rows)
       setLoading(false)
     }
     loadBalances()
@@ -159,8 +192,8 @@ export default function TrialBalancePage() {
                   {balances.map(b => (
                     <TableRow key={b.account_code}>
                       <TableCell className="font-mono text-sm">{b.account_code}</TableCell>
-                      <TableCell className="font-medium">{b.accounts?.account_name || '-'}</TableCell>
-                      <TableCell><Badge variant="outline" className="text-[10px]">{TYPE_LABELS[b.accounts?.account_type || ''] || '-'}</Badge></TableCell>
+                      <TableCell className="font-medium">{b.account_name || '-'}</TableCell>
+                      <TableCell><Badge variant="outline" className="text-[10px]">{TYPE_LABELS[b.account_type || ''] || '-'}</Badge></TableCell>
                       <TableCell className="text-right">{b.opening_debit ? `¥${b.opening_debit.toLocaleString()}` : '-'}</TableCell>
                       <TableCell className="text-right">{b.opening_credit ? `¥${b.opening_credit.toLocaleString()}` : '-'}</TableCell>
                       <TableCell className="text-right font-medium">{b.period_debit ? `¥${b.period_debit.toLocaleString()}` : '-'}</TableCell>
