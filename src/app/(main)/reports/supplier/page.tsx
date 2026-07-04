@@ -23,6 +23,7 @@ import { exportCostSummaryReport } from '@/lib/excel/export-professional'
 import { exportSupplierStatementToExcel } from '@/lib/excel/export-supplier-statement'
 import { normalizeSupplierName } from '@/lib/utils'
 import { getSupplierPayments, createSupplierPayment, deleteSupplierPayment } from '@/lib/supabase/queries-v2'
+import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import type { SupplierPayment } from '@/lib/types'
 
 interface SupplierLine {
@@ -47,6 +48,7 @@ const STATUS_CONFIG: Record<ReportStatus, { label: string; color: string }> = {
 }
 
 export default function SupplierReportPage() {
+  const { user } = useCurrentUser()
   const [lines, setLines] = useState<SupplierLine[]>([])
   const [allCostDetails, setAllCostDetails] = useState<{ supplier: string; description: string; amount: number; currency: string; cost_type: string; order_no: string; internal_no: string; metronome_no: string; created_at: string; is_paid: boolean; unit: string; qty: number | null; unit_price: number | null }[]>([])
   const [payments, setPayments] = useState<SupplierPayment[]>([])
@@ -227,21 +229,30 @@ export default function SupplierReportPage() {
     for (const sup of payMap.keys()) {
       if (!map.has(sup)) map.set(sup, { count: 0, total: 0, currency: 'CNY', orders: new Set<string>() })
     }
+    // 手工修正叠加：草稿态实时重算会覆盖掉 handleCorrection 写入 lines 的修正——
+    // 这里按供应商把最新修正(field='total')的 new_value 叠加回来，修正才可见(审计 P1)
+    const corrBySupplier = new Map<string, number>()
+    for (const c of corrections) {
+      if ((c.field as string) === 'total' && c.supplier) corrBySupplier.set(String(c.supplier), Number(c.new_value))
+    }
     return Array.from(map.entries())
       .map(([supplier, data]) => {
         const paid = payMap.get(supplier) || 0
+        const corrected = corrBySupplier.get(supplier)
+        const total = corrected != null ? corrected : Math.round(data.total * 100) / 100
         return {
           supplier,
           count: data.count,
-          total: Math.round(data.total * 100) / 100,
+          total,
           paid: Math.round(paid * 100) / 100,
-          unpaid: Math.round((data.total - paid) * 100) / 100,
+          unpaid: Math.round((total - paid) * 100) / 100,
           currency: data.currency,
           orders: Array.from(data.orders),
+          isEdited: corrected != null,
         }
       })
       .sort((a, b) => b.unpaid - a.unpaid)
-  }, [allCostDetails, payments, dateStart, dateEnd, status, lines])
+  }, [allCostDetails, payments, dateStart, dateEnd, status, lines, corrections])
 
   const filtered = periodAwareLines.filter(s => !search || s.supplier.toLowerCase().includes(search.toLowerCase()))
   const totalAll = filtered.reduce((s, d) => s + d.total, 0)
@@ -291,11 +302,16 @@ export default function SupplierReportPage() {
     const supabase = createClient()
     const { data: { user } } = await supabase.auth.getUser()
 
+    // 落库口径与页面一致：保存当前展示的对账行(含日期区间+修正叠加)，
+    // total 用同一份行的合计——此前 line_items=lines(全量) 与 total=totalAll(搜索过滤)
+    // 口径不一致，快照自相矛盾(审计 P2)
+    const snapLines = periodAwareLines
+    const snapTotal = Math.round(snapLines.reduce((s, l) => s + l.total, 0) * 100) / 100
     const snapshotData: Record<string, unknown> = {
       report_type: 'supplier_statement',
       report_title: `供应商对账单 ${new Date().toLocaleDateString('zh-CN')}`,
-      line_items: lines,
-      total_amount: totalAll,
+      line_items: snapLines,
+      total_amount: snapTotal,
       currency: 'CNY',
       status: newStatus,
       corrections,
@@ -360,7 +376,7 @@ export default function SupplierReportPage() {
       old_value: oldTotal,
       new_value: newTotal,
       reason: editReason,
-      corrected_by: 'current_user',
+      corrected_by: user?.id || null,   // 真实登录人(此前硬编码 'current_user' 审计失真)
       corrected_at: new Date().toISOString(),
     }])
 
@@ -497,7 +513,14 @@ export default function SupplierReportPage() {
                 <Download className="h-4 w-4 mr-1" />导出汇总表
               </Button>
               {status !== 'draft' && status !== 'locked' && (
-                <Button size="sm" variant="ghost" onClick={() => { setStatus('draft'); setSnapshotId(null); toast.info('已退回草稿') }}>
+                <Button size="sm" variant="ghost" onClick={async () => {
+                  // 落库(此前只改前端 state,刷新后自动弹回 reviewing/confirmed——审计 P1)
+                  if (snapshotId) {
+                    const { error } = await createClient().from('report_snapshots').update({ status: 'draft' }).eq('id', snapshotId)
+                    if (error) { toast.error(`退回失败: ${error.message}`); return }
+                  }
+                  setStatus('draft'); toast.info('已退回草稿')
+                }}>
                   退回草稿
                 </Button>
               )}

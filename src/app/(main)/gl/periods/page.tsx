@@ -11,6 +11,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Loader2, Lock, Unlock, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
+import { useCurrentUser } from '@/lib/hooks/use-current-user'
+import Link from 'next/link'
 
 type Period = {
   id: string
@@ -31,6 +33,8 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 }
 
 export default function PeriodsPage() {
+  const { user } = useCurrentUser()
+  const canManage = ['finance_manager', 'admin'].includes(user?.role || '')  // 锁账/解锁仅财务主管
   const [periods, setPeriods] = useState<Period[]>([])
   const [loading, setLoading] = useState(true)
   const [closeDialog, setCloseDialog] = useState<Period | null>(null)
@@ -55,13 +59,14 @@ export default function PeriodsPage() {
       // 锁账人必须是真实登录人（审计要件），不回退"第一个 profile"
       const { data: userData } = await supabase.auth.getUser()
       if (!userData?.user?.id) { toast.error('登录态已失效，请重新登录后再锁账'); setProcessing(false); return }
-      const { error } = await supabase.from('accounting_periods').update({
+      const { data: hit, error } = await supabase.from('accounting_periods').update({
         status: 'closed',
         closed_by: userData.user.id,
         closed_at: new Date().toISOString(),
         close_notes: closeNotes || null,
-      }).eq('id', closeDialog.id)
+      }).eq('id', closeDialog.id).select('id')
       if (error) throw error
+      if (!hit || hit.length === 0) { toast.error('锁账未生效：需财务主管/管理员权限'); setProcessing(false); return }
       setPeriods(periods.map(p => p.id === closeDialog.id ? { ...p, status: 'closed', closed_at: new Date().toISOString(), close_notes: closeNotes } : p))
       toast.success(`期间 ${closeDialog.period_code} 已关闭`)
       setCloseDialog(null)
@@ -73,10 +78,12 @@ export default function PeriodsPage() {
   }
 
   const handleReopen = async (period: Period) => {
+    if (!confirm(`确认重新开放期间 ${period.period_code}？开放后可再次记账/改账，请谨慎。`)) return
     try {
       const supabase = createClient()
-      const { error } = await supabase.from('accounting_periods').update({ status: 'open', closed_by: null, closed_at: null }).eq('id', period.id)
+      const { data: hit, error } = await supabase.from('accounting_periods').update({ status: 'open', closed_by: null, closed_at: null, close_notes: null }).eq('id', period.id).select('id')
       if (error) throw error
+      if (!hit || hit.length === 0) { toast.error('操作未生效：重新开放需财务主管/管理员权限'); return }
       setPeriods(periods.map(p => p.id === period.id ? { ...p, status: 'open', closed_at: null } : p))
       toast.success(`期间 ${period.period_code} 已重新开放`)
     } catch (err) {
@@ -123,16 +130,20 @@ export default function PeriodsPage() {
                       <TableCell className="text-sm text-muted-foreground">{p.closed_at ? new Date(p.closed_at).toLocaleString('zh-CN') : '-'}</TableCell>
                       <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">{p.close_notes || '-'}</TableCell>
                       <TableCell className="text-center">
-                        {p.status === 'open' && (
-                          <Button size="sm" variant="outline" onClick={() => setCloseDialog(p)}>
-                            <Lock className="h-3.5 w-3.5 mr-1" />关闭期间
-                          </Button>
-                        )}
-                        {p.status === 'closed' && (
-                          <Button size="sm" variant="ghost" className="text-amber-600" onClick={() => handleReopen(p)}>
-                            <Unlock className="h-3.5 w-3.5 mr-1" />重新开放
-                          </Button>
-                        )}
+                        {!canManage ? (
+                          <span className="text-xs text-muted-foreground">仅财务主管</span>
+                        ) : (<>
+                          {p.status === 'open' && (
+                            <Button size="sm" variant="outline" onClick={() => setCloseDialog(p)}>
+                              <Lock className="h-3.5 w-3.5 mr-1" />关闭期间
+                            </Button>
+                          )}
+                          {p.status === 'closed' && (
+                            <Button size="sm" variant="ghost" className="text-amber-600" onClick={() => handleReopen(p)}>
+                              <Unlock className="h-3.5 w-3.5 mr-1" />重新开放
+                            </Button>
+                          )}
+                        </>)}
                       </TableCell>
                     </TableRow>
                   )
@@ -150,9 +161,9 @@ export default function PeriodsPage() {
               <DialogTitle>关闭会计期间 {closeDialog.period_code}</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 py-2">
-              <div className="flex items-center gap-2 p-3 bg-amber-50 rounded-lg text-amber-700 text-sm">
-                <AlertTriangle className="h-4 w-4 shrink-0" />
-                <span>关闭后该期间将禁止新增和修改凭证，确保所有单据已入账</span>
+              <div className="flex items-start gap-2 p-3 bg-amber-50 rounded-lg text-amber-700 text-sm">
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>关闭后该期间将禁止新增和修改凭证。<b>建议先到 <Link href="/control-center/closing" className="underline">月结检查</Link> 跑完所有检查项</b>（应收/应付一致性等）再锁账。</span>
               </div>
               <Textarea placeholder="关闭备注（选填）" value={closeNotes} onChange={e => setCloseNotes(e.target.value)} rows={3} />
             </div>
