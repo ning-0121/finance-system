@@ -142,7 +142,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
             .neq('cost_type', 'tax_point')   // 票点不进核算单"支"区
             .order('cost_group, supplier, created_at'),
           sb.from('shipping_documents')
-            .select('completed_at, updated_at, status')
+            .select('updated_at, status')  /* shipping_documents 无 completed_at 列(审计P1:查询报错被吞致完结时间恒空) */
             .eq('budget_order_id', id)
             .eq('status', 'completed')
             .order('updated_at', { ascending: false })
@@ -178,7 +178,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
         }
         setInvoiceReceipts(receiptRows)
         setInvoiceExpenses(costs || [])
-        setShipCompletedAt((ship?.completed_at as string | undefined) || (ship?.updated_at as string | undefined) || null)
+        setShipCompletedAt((ship?.updated_at as string | undefined) || null)
       } catch (err) {
         console.error('[settlement] 核算单数据加载失败:', err)
       }

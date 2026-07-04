@@ -229,8 +229,21 @@ export default function PaymentsPage() {
     return matchFilter && matchSearch && matchChannel
   })
 
-  const totalUnpaid = records.filter(r => r.payment_status !== 'paid' && r.payment_status !== 'cancelled').reduce((s, r) => s + r.amount, 0)
-  const totalPaid = records.filter(r => r.payment_status === 'paid').reduce((s, r) => s + (r.paid_amount || r.amount), 0)
+  // KPI 分币种统计——payable_records 无自带汇率,不同币种直加会失真(审计 P1 混币):
+  // CNY 直加;外币单独归集,展示为 "¥X + $Y" 形式
+  const sumByCur = (rs: PayableRecord[], amt: (r: PayableRecord) => number) => {
+    const m = new Map<string, number>()
+    rs.forEach(r => { const c = (r.currency || 'CNY').toUpperCase(); m.set(c, (m.get(c) || 0) + amt(r)) })
+    return m
+  }
+  const fmtMulti = (m: Map<string, number>) => {
+    const parts: string[] = []
+    if (m.has('CNY')) parts.push(`¥${Math.round(m.get('CNY')!).toLocaleString()}`)
+    for (const [c, v] of m) if (c !== 'CNY') parts.push(`${c} ${Math.round(v).toLocaleString()}`)
+    return parts.length ? parts.join(' + ') : '¥0'
+  }
+  const totalUnpaidStr = fmtMulti(sumByCur(records.filter(r => r.payment_status !== 'paid' && r.payment_status !== 'cancelled'), r => r.amount))
+  const totalPaidStr = fmtMulti(sumByCur(records.filter(r => r.payment_status === 'paid'), r => r.paid_amount || r.amount))
   const overBudgetCount = records.filter(r => r.over_budget).length
 
   const handleApprove = async (id: string) => {
@@ -362,8 +375,8 @@ export default function PaymentsPage() {
       <Header title="付款审批与出纳" subtitle="应付从决算中自动产生 · 审批→付款→回写发票状态" />
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-amber-50"><DollarSign className="h-4 w-4 text-amber-600" /></div><div><p className="text-xs text-muted-foreground">待付总额</p><p className="text-xl font-bold text-amber-600">¥{totalUnpaid.toLocaleString()}</p></div></CardContent></Card>
-          <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-green-50"><CheckCircle className="h-4 w-4 text-green-600" /></div><div><p className="text-xs text-muted-foreground">已付总额</p><p className="text-xl font-bold text-green-600">¥{totalPaid.toLocaleString()}</p></div></CardContent></Card>
+          <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-amber-50"><DollarSign className="h-4 w-4 text-amber-600" /></div><div><p className="text-xs text-muted-foreground">待付总额</p><p className="text-xl font-bold text-amber-600">{totalUnpaidStr}</p></div></CardContent></Card>
+          <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-green-50"><CheckCircle className="h-4 w-4 text-green-600" /></div><div><p className="text-xs text-muted-foreground">已付总额</p><p className="text-xl font-bold text-green-600">{totalPaidStr}</p></div></CardContent></Card>
           <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-blue-50"><CreditCard className="h-4 w-4 text-blue-600" /></div><div><p className="text-xs text-muted-foreground">应付笔数</p><p className="text-xl font-bold">{records.length}</p></div></CardContent></Card>
           <Card className={overBudgetCount > 0 ? 'border-red-200' : ''}><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-red-50"><AlertTriangle className="h-4 w-4 text-red-600" /></div><div><p className="text-xs text-muted-foreground">超预算</p><p className={`text-xl font-bold ${overBudgetCount > 0 ? 'text-red-600' : ''}`}>{overBudgetCount}</p></div></CardContent></Card>
         </div>

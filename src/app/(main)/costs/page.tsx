@@ -245,14 +245,16 @@ export default function CostsPage() {
     return matchesSearch(c)
   })
 
-  // 统计：搜索时分类徽章/合计跟随搜索范围（如搜单号→该订单的费用合计），未搜索为全局
+  // 统计：搜索时分类徽章/合计跟随搜索范围（如搜单号→该订单的费用合计），未搜索为全局。
+  // 金额一律折人民币(¥口径)——此前原币直加,USD 费用被当人民币(审计 P1 混币)
+  const cnyOf = (c: CostRecord) => (Number(c.amount) || 0) * ((c.currency || 'CNY') === 'CNY' ? 1 : (Number(c.exchange_rate) || 1))
   const searchedItems = costSearch ? costItems.filter(matchesSearch) : costItems
-  const totalAmount = costItems.reduce((s, c) => s + c.amount, 0)
-  const searchedAmount = searchedItems.reduce((s, c) => s + c.amount, 0)
+  const totalAmount = costItems.reduce((s, c) => s + cnyOf(c), 0)
+  const searchedAmount = searchedItems.reduce((s, c) => s + cnyOf(c), 0)
   const unlinkedCount = costItems.filter(c => !c.budget_order_id).length
   const byType = Object.entries(costTypeConfig).map(([type, cfg]) => {
     const items = searchedItems.filter(c => c.cost_type === type)
-    return { type, ...cfg, count: items.length, total: items.reduce((s, c) => s + c.amount, 0) }
+    return { type, ...cfg, count: items.length, total: items.reduce((s, c) => s + cnyOf(c), 0) }
   }).filter(t => t.count > 0)
 
   // 防错校验 → 有error阻止，有warning弹确认
@@ -730,7 +732,7 @@ export default function CostsPage() {
                             <Badge variant="destructive" className="text-[10px]">待归集</Badge>
                           )}
                         </TableCell>
-                        <TableCell className="text-right font-semibold">¥{item.amount.toLocaleString()}</TableCell>
+                        <TableCell className="text-right font-semibold">¥{cnyOf(item).toLocaleString()}{(item.currency || 'CNY') !== 'CNY' && <span className="text-[10px] text-muted-foreground ml-1">({item.currency} {item.amount.toLocaleString()})</span>}</TableCell>
                         <TableCell>
                           <Badge variant={item.is_paid ? 'default' : 'outline'} className={item.is_paid ? 'bg-green-100 text-green-700 border-0' : 'text-amber-600'}>
                             {item.is_paid ? '已付' : '未付'}

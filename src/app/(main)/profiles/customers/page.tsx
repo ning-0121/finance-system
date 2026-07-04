@@ -31,7 +31,9 @@ export default function CustomerProfilesPage() {
   useEffect(() => {
     async function load() {
       try {
-        const orders = await getBudgetOrders()
+        const all = await getBudgetOrders()
+        // 与系统 KPI 同口径：只计已审批/已关闭（此前 draft/驳回单也计入，虚增客户收入——审计 P2）
+        const orders = all.filter(o => o.status === 'approved' || o.status === 'closed')
         // 按客户聚合
         const map = new Map<string, { orders: BudgetOrder[] }>()
         for (const o of orders) {

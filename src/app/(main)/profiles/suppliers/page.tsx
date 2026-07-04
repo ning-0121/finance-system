@@ -59,7 +59,7 @@ export default function SupplierProfilesPage() {
         const sb = createClient()
         const [mastersData, costRes] = await Promise.all([
           getSuppliers(),
-          fetchAll<Record<string, unknown>>((from, to) => sb.from('cost_items').select('supplier, cost_type, amount, created_at').is('deleted_at', null).order('created_at', { ascending: false }).order('id', { ascending: true }).range(from, to)),
+          fetchAll<Record<string, unknown>>((from, to) => sb.from('cost_items').select('supplier, cost_type, amount, currency, exchange_rate, created_at').is('deleted_at', null).order('created_at', { ascending: false }).order('id', { ascending: true }).range(from, to)),
         ])
         setMasters(mastersData)
         const costs = costRes.data || []
@@ -73,7 +73,8 @@ export default function SupplierProfilesPage() {
           setSummaries(Array.from(map.entries()).map(([name, { items }]) => ({
             name,
             invoiceCount: items.length,
-            totalAmount: Math.round(items.reduce((s, i) => s + (Number(i.amount) || 0), 0)),
+            // 折人民币口径——此前原币直加标 ¥,USD 费用被当人民币(审计 P1 混币)
+            totalAmount: Math.round(items.reduce((s, i) => s + (Number(i.amount) || 0) * (((i.currency as string) || 'CNY') === 'CNY' ? 1 : (Number(i.exchange_rate) || 1)), 0)),
             costTypes: [...new Set(items.map(i => i.cost_type as string).filter(Boolean))],
             lastDate: items[0]?.created_at ? new Date(items[0].created_at as string).toLocaleDateString('zh-CN') : '-',
           })).sort((a, b) => b.totalAmount - a.totalAmount))
