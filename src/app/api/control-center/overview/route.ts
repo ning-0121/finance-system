@@ -112,6 +112,14 @@ export async function GET() {
     // 阻塞动作 = 编排引擎里状态为 blocked 的待办（真实来源，替换原硬编码 0）
     const blockedActions = pendingTasks.filter((t: Record<string, unknown>) => t.status === 'blocked').length
 
+    // 待建账绮陌单（审计 P1②）：绮陌推来但未建预算(多为无金额头) → 订单页被 not(budget_order_id null) 过滤看不到。
+    let unbudgetedOrders = 0
+    try {
+      const supabase = await createClient()
+      const { count } = await supabase.from('synced_orders').select('id', { count: 'exact', head: true }).is('budget_order_id', null)
+      unbudgetedOrders = count || 0
+    } catch (e) { console.error('[overview] 待建账计数失败:', e) }
+
     // 本期现金净流入（仅 CNY 银行流水；外币无逐笔汇率不并入，口径与现金流量表一致）
     let cashflow = 0
     try {
@@ -185,6 +193,7 @@ export async function GET() {
         closingPending,
         closingTotal,
         auditOpen: auditFindings.length,
+        unbudgetedOrders,
       },
       health: {
         glBalanced,

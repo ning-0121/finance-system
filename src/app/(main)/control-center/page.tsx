@@ -84,6 +84,7 @@ interface OverviewResponse {
     closingPending: number
     closingTotal: number
     auditOpen: number
+    unbudgetedOrders: number
   }
   health: {
     glBalanced: boolean
@@ -188,7 +189,7 @@ export default function ControlCenterPage() {
                 <Clock className="h-5 w-5 text-amber-500" />
                 待处理
               </h2>
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
                 {[
                   { label: '待审批', value: data.pending.pendingApprovals, color: 'bg-blue-100 text-blue-800' },
                   { label: '待付款', value: data.pending.pendingPayments, color: 'bg-green-100 text-green-800' },
@@ -196,6 +197,7 @@ export default function ControlCenterPage() {
                   { label: '风险', value: data.pending.openRiskEvents, color: 'bg-amber-100 text-amber-800' },
                   { label: '月结', value: `${data.pending.closingPending}/${data.pending.closingTotal}`, color: 'bg-purple-100 text-purple-800' },
                   { label: '稽核', value: data.pending.auditOpen, color: 'bg-orange-100 text-orange-800' },
+                  { label: '待建账', value: data.pending.unbudgetedOrders, color: 'bg-cyan-100 text-cyan-800' },
                 ].map(item => (
                   <Card key={item.label} className="text-center">
                     <CardContent className="pt-3 pb-3">
