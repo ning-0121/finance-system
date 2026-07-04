@@ -91,15 +91,16 @@ export async function validateRequest(request: Request): Promise<{
   }
 
   // 4. 时间戳检查（防重放攻击，5分钟窗口）
+  // 审计 P1:契约要求 payload.timestamp 必带,此前"有才校验"→缺失时防重放被跳过(可无限期重放)。
+  // 改为强制:缺失/非法/超窗一律拒。节拍器 finance-sync 每个 payload 都带 timestamp。
   try {
     const payload = JSON.parse(body)
-    if (payload.timestamp) {
-      const requestTime = new Date(payload.timestamp).getTime()
-      const now = Date.now()
-      const fiveMinutes = 5 * 60 * 1000
-      if (Math.abs(now - requestTime) > fiveMinutes) {
-        return { valid: false, error: 'Request expired (replay attack prevention)' }
-      }
+    const requestTime = payload.timestamp ? new Date(payload.timestamp).getTime() : NaN
+    if (!payload.timestamp || Number.isNaN(requestTime)) {
+      return { valid: false, error: 'Missing or invalid timestamp' }
+    }
+    if (Math.abs(Date.now() - requestTime) > 5 * 60 * 1000) {
+      return { valid: false, error: 'Request expired (replay attack prevention)' }
     }
   } catch {
     return { valid: false, error: 'Invalid JSON payload' }
