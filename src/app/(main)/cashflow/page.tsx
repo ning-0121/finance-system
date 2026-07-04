@@ -72,7 +72,7 @@ export default function CashflowPage() {
         )}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-blue-50"><DollarSign className="h-4 w-4 text-blue-600" /></div><div><p className="text-xs text-muted-foreground">{cashData.length > 0 ? '当前余额(预测)' : '当前现金余额'}</p><p className="text-xl font-bold">¥{(cashData.length > 0 ? currentBalance : (currentCash ?? 0)).toLocaleString()}</p></div></CardContent></Card>
-          <Card className={minBalance < 200000 ? 'border-red-200' : ''}><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-red-50"><TrendingDown className="h-4 w-4 text-red-600" /></div><div><p className="text-xs text-muted-foreground">最低余额</p><p className={`text-xl font-bold ${minBalance < 200000 ? 'text-red-600' : ''}`}>${minBalance.toLocaleString()}</p></div></CardContent></Card>
+          <Card className={minBalance < 200000 ? 'border-red-200' : ''}><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-red-50"><TrendingDown className="h-4 w-4 text-red-600" /></div><div><p className="text-xs text-muted-foreground">最低余额</p><p className={`text-xl font-bold ${minBalance < 200000 ? 'text-red-600' : ''}`}>¥{minBalance.toLocaleString()}</p></div></CardContent></Card>
           <Card><CardContent className="p-4 flex items-center gap-3"><div className="p-2 rounded-lg bg-amber-50"><Calendar className="h-4 w-4 text-amber-600" /></div><div><p className="text-xs text-muted-foreground">最危险日期</p><p className="text-xl font-bold">{lowestDay?.date || '-'}</p></div></CardContent></Card>
           <Card><CardContent className="p-4 flex items-center gap-3"><div className={`p-2 rounded-lg ${dangerDays.length > 0 ? 'bg-red-50' : 'bg-green-50'}`}><AlertTriangle className={`h-4 w-4 ${dangerDays.length > 0 ? 'text-red-600' : 'text-green-600'}`} /></div><div><p className="text-xs text-muted-foreground">危险天数</p><p className={`text-xl font-bold ${dangerDays.length > 0 ? 'text-red-600' : 'text-green-600'}`}>{dangerDays.length}天</p></div></CardContent></Card>
         </div>
@@ -95,9 +95,9 @@ export default function CashflowPage() {
                   <defs><linearGradient id="balanceGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2} /><stop offset="95%" stopColor="#3b82f6" stopOpacity={0} /></linearGradient></defs>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                  <YAxis tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
-                  <Tooltip formatter={value => [`$${Number(value).toLocaleString()}`, '']} />
-                  <ReferenceLine y={200000} stroke="#ef4444" strokeDasharray="5 5" label="安全线 $200K" />
+                  <YAxis tickFormatter={v => `¥${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
+                  <Tooltip formatter={value => [`¥${Number(value).toLocaleString()}`, '']} />
+                  <ReferenceLine y={200000} stroke="#ef4444" strokeDasharray="5 5" label="安全线 ¥200K" />
                   <Area type="monotone" dataKey="balance" stroke="#3b82f6" fill="url(#balanceGrad)" strokeWidth={2} name="现金余额" />
                 </AreaChart>
               </ResponsiveContainer>
@@ -113,8 +113,8 @@ export default function CashflowPage() {
                 <BarChart data={cashData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                  <YAxis tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
-                  <Tooltip formatter={value => [`$${Number(value).toLocaleString()}`, '']} />
+                  <YAxis tickFormatter={v => `¥${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
+                  <Tooltip formatter={value => [`¥${Number(value).toLocaleString()}`, '']} />
                   <Legend />
                   <Bar dataKey="inflow" name="收入" fill="#22c55e" radius={[4, 4, 0, 0]} />
                   <Bar dataKey="outflow" name="支出" fill="#ef4444" radius={[4, 4, 0, 0]} />

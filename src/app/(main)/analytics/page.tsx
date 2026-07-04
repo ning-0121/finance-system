@@ -114,8 +114,8 @@ export default function AnalyticsPage() {
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} />
                         <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                        <YAxis tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
-                        <Tooltip formatter={(value) => [`$${Number(value).toLocaleString()}`, '']} />
+                        <YAxis tickFormatter={v => `¥${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 12 }} />
+                        <Tooltip formatter={(value) => [`¥${Number(value).toLocaleString()}`, '']} />
                         <Legend />
                         <Area type="monotone" dataKey="revenue" name="营收" stroke="#3b82f6" fillOpacity={1} fill="url(#colorRevenue)" />
                         <Area type="monotone" dataKey="profit" name="利润" stroke="#22c55e" fillOpacity={1} fill="url(#colorProfit)" />
@@ -151,9 +151,9 @@ export default function AnalyticsPage() {
                   <ResponsiveContainer width="100%" height={250}>
                     <BarChart data={customerProfitData} layout="vertical">
                       <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                      <XAxis type="number" tickFormatter={v => `$${(v / 1000).toFixed(0)}K`} />
+                      <XAxis type="number" tickFormatter={v => `¥${(v / 1000).toFixed(0)}K`} />
                       <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 12 }} />
-                      <Tooltip formatter={(value) => [`$${Number(value).toLocaleString()}`, '']} />
+                      <Tooltip formatter={(value) => [`¥${Number(value).toLocaleString()}`, '']} />
                       <Legend />
                       <Bar dataKey="revenue" name="营收" fill="#93c5fd" radius={[0, 4, 4, 0]} />
                       <Bar dataKey="profit" name="利润" fill="#86efac" radius={[0, 4, 4, 0]} />
@@ -188,7 +188,7 @@ export default function AnalyticsPage() {
                 {orders.slice(0, 10).map(order => (
                   <div key={order.id} className="flex items-center gap-4 p-3 rounded-lg bg-muted/50">
                     <div className="flex-1 min-w-0"><p className="text-sm font-medium">{order.order_no}</p><p className="text-xs text-muted-foreground">{order.customer?.company}</p></div>
-                    <div className="text-right"><p className={`text-sm font-semibold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>${order.estimated_profit.toLocaleString()} ({order.estimated_margin}%)</p></div>
+                    <div className="text-right"><p className={`text-sm font-semibold ¥{order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>¥{order.estimated_profit.toLocaleString()} ({order.estimated_margin}%)</p></div>
                   </div>
                 ))}
                 {orders.length === 0 && <p className="text-center text-muted-foreground py-8">暂无订单</p>}

@@ -28,6 +28,7 @@ type ARRow = {
   amount: number
   paid: number
   balance: number
+  balanceCny: number
   dueDate: string
   status: 'overdue' | 'due_this_week' | 'upcoming'
 }
@@ -41,6 +42,7 @@ type APRow = {
   balance: number
   dueDate: string | null
   plannedAmount: number
+  cnyRate: number
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -99,6 +101,8 @@ function buildARRows(orders: BudgetOrder[], weekStart: Date, weekEnd: Date): ARR
       if (isPastDue) status = 'overdue'
       else if (isDueThisWeek) status = 'due_this_week'
 
+      // 折人民币(审计P1:此前原币直加进期末余额预测)
+      const cnyRate = o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 7)
       return {
         id: o.id,
         customer: o.customer?.company || '-',
@@ -107,6 +111,7 @@ function buildARRows(orders: BudgetOrder[], weekStart: Date, weekEnd: Date): ARR
         amount: o.total_revenue,
         paid,
         balance,
+        balanceCny: Math.round(balance * cnyRate),
         dueDate: dueDateStr,
         status,
       } satisfies ARRow
@@ -130,6 +135,7 @@ function buildAPRows(records: PayableRecord[]): APRow[] {
         balance,
         dueDate: r.due_date,
         plannedAmount: balance,
+        cnyRate: (r.currency || 'CNY') === 'CNY' ? 1 : 7,  // 应付无自带汇率,外币按≈7参考折算
       } satisfies APRow
     })
     .filter((r): r is APRow => r !== null)
@@ -174,6 +180,7 @@ export default function FundingPlanPage() {
         .from('budget_orders')
         .select('*, customer:customers(*)')
         .in('status', ['approved', 'closed'])
+        .is('deleted_at', null)   // 审计P1:此前软删订单重新出现在资金计划
         .gt('total_revenue', 0)
 
       const orders = (ordersData || []) as BudgetOrder[]
@@ -185,6 +192,7 @@ export default function FundingPlanPage() {
         .from('payable_records')
         .select('*')
         .not('payment_status', 'in', '("paid","cancelled")')
+        .is('deleted_at', null)   // 审计P1:排除软删应付
 
       const apRecords = (apData || []) as PayableRecord[]
       const ap = buildAPRows(apRecords)
@@ -206,12 +214,13 @@ export default function FundingPlanPage() {
 
   // KPI calculations
   const savedBalance = balanceSaved
+  // 折人民币口径(审计P1:此前原币直加)。应付无自带汇率,外币按≈7参考折算
   const arTotal = arRows
     .filter(r => arChecked.has(r.id))
-    .reduce((s, r) => s + r.balance, 0)
+    .reduce((s, r) => s + r.balanceCny, 0)
   const apTotal = apRows
     .filter(r => apChecked.has(r.id))
-    .reduce((s, r) => s + Number(apPlanned[r.id] || 0), 0)
+    .reduce((s, r) => s + Number(apPlanned[r.id] || 0) * r.cnyRate, 0)
   const endBalance = savedBalance + arTotal - apTotal
 
   function saveBalance() {
