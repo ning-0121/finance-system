@@ -135,8 +135,13 @@ async function handleWebhookEvent(payload: WebhookPayload) {
       return handleOrderSync(payload.data as unknown as SyncedOrder, payload.event)
 
     case 'order.completed':
-    case 'order.cancelled':
       return handleOrderStatusChange(payload.data as unknown as SyncedOrder, payload.event)
+
+    // 审计 C1:删单/取消此前只更新 lifecycle_status(order.deleted 更是落 ignored)→
+    // 财务侧预算草稿/应付永久残留成幽灵单据。改为保守冲销(见 handleOrderReversal)。
+    case 'order.cancelled':
+    case 'order.deleted':
+      return handleOrderReversal(payload.data as unknown as SyncedOrder, payload.event)
 
     case 'price_approval.requested':
       return handlePriceApprovalRequest(payload.data as unknown as PriceApprovalRequest)
@@ -278,6 +283,81 @@ async function handleOrderStatusChange(order: SyncedOrder, event: string) {
 
   if (error) throw new Error(`Status update failed: ${error.message}`)
   return { action: 'status_updated', order_no: order.order_no, status: order.lifecycle_status, event }
+}
+
+// --- 删单/取消 → 保守冲销（审计 C1）---
+// 保守口径(用户拍板):作废未确认的预算草稿(soft-delete) + 撤未决审批;已确认预算/
+// 应付/已过账凭证只记录待人工红冲,绝不自动改已入账数据。每步 try/catch,任一步失败
+// 不阻断其余、不抛出(避免单个 order.deleted 处理异常 500;warnings 随响应回给节拍器)。
+async function handleOrderReversal(order: SyncedOrder, event: string) {
+  const supabase = createServiceClient()
+  const now = new Date().toISOString()
+  const warnings: string[] = []
+  const actions: string[] = []
+
+  // 1. 镜像状态
+  try {
+    await supabase.from('synced_orders').update({
+      lifecycle_status: order.lifecycle_status || (event === 'order.deleted' ? 'deleted' : 'cancelled'),
+      source_updated_at: order.updated_at ?? null,
+      synced_at: now,
+    }).eq('id', order.id)
+    actions.push('镜像状态已更新')
+  } catch (e) { warnings.push(`镜像状态更新失败: ${e instanceof Error ? e.message : e}`) }
+
+  // 2. 关联预算
+  let budgetId: string | null = null
+  try {
+    const { data: so } = await supabase.from('synced_orders').select('budget_order_id').eq('id', order.id).maybeSingle()
+    budgetId = (so as { budget_order_id?: string } | null)?.budget_order_id ?? null
+  } catch { /* ignore */ }
+
+  if (budgetId) {
+    try {
+      const { data: bo } = await supabase.from('budget_orders').select('id, status, deleted_at').eq('id', budgetId).maybeSingle()
+      const b = bo as { status?: string; deleted_at?: string } | null
+      if (b && !b.deleted_at) {
+        if (b.status === 'draft') {
+          // 草稿从未确认 → soft-delete 作废（budget_orders 无 cancelled 状态;硬删守卫只拦物理 DELETE,UPDATE deleted_at 放行）
+          const { error } = await supabase.from('budget_orders')
+            .update({ deleted_at: now, delete_reason: `订单${event === 'order.deleted' ? '删除' : '取消'}自动冲销(节拍器同步)` })
+            .eq('id', budgetId).is('deleted_at', null).eq('status', 'draft')
+          if (error) warnings.push(`预算草稿作废失败,需人工处理: ${error.message}`)
+          else actions.push('预算草稿已作废(soft-delete)')
+        } else {
+          warnings.push(`预算单 ${budgetId} 状态=${b.status}(非草稿,含已确认数据),需人工红冲——未自动改账`)
+        }
+      }
+    } catch (e) { warnings.push(`预算处理异常: ${e instanceof Error ? e.message : e}`) }
+
+    // 应付:保守——不自动动,有则标记待人工
+    try {
+      const { data: pays } = await supabase.from('payable_records')
+        .select('id').eq('budget_order_id', budgetId).is('deleted_at', null).limit(1)
+      if (pays && pays.length) warnings.push('存在应付记录,需人工红冲——未自动改')
+    } catch { /* ignore */ }
+  }
+
+  // 3. 撤未决审批（pending_approvals 无状态转换约束,可直接置 cancelled）
+  try {
+    const { data: cancelled } = await supabase.from('pending_approvals')
+      .update({ status: 'cancelled' }).eq('order_no', order.order_no).eq('status', 'pending').select('id')
+    if (cancelled && cancelled.length) actions.push(`撤销 ${cancelled.length} 条未决审批`)
+  } catch (e) { warnings.push(`撤审批失败: ${e instanceof Error ? e.message : e}`) }
+
+  // 4. 需人工处理 → 记审计日志(失败不阻断)
+  if (warnings.length) {
+    try {
+      await supabase.from('integration_logs').insert({
+        event_type: `${event}.manual_review`,
+        direction: 'inbound',
+        status: 'warning',
+        payload: { order_id: order.id, order_no: order.order_no, budget_order_id: budgetId, warnings },
+      } as never)
+    } catch { /* ignore */ }
+  }
+
+  return { action: 'order_reversed', event, order_no: order.order_no, actions, warnings }
 }
 
 // --- 价格审批请求 ---

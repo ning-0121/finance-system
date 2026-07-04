@@ -9,6 +9,7 @@ export type WebhookEventType =
   | 'order.activated'         // 订单生效
   | 'order.completed'         // 订单完成
   | 'order.cancelled'         // 订单取消
+  | 'order.deleted'           // 订单删除（→ 保守冲销:作废草稿预算+撤审批,已过账标待人工）
   | 'milestone.updated'       // 里程碑状态更新
   | 'price_approval.requested' // 价格审批请求
   | 'delay.requested'         // 延期审批请求
