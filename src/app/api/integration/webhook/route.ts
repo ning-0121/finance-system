@@ -86,10 +86,16 @@ export async function POST(request: Request) {
         const stale = prev?.process_status === 'processing'
           && prev?.received_at && (Date.now() - new Date(prev.received_at as string).getTime() > 10 * 60_000)
         if (prev && (prev.process_status === 'failed' || stale)) {
+          // 乐观锁抢占：以 attempt_count 作版本号。旧实现 CAS 谓词是 .in(status,['failed','processing'])，
+          // 而抢占又把状态写成 'processing'——目标态在匹配集内，两个实例并发重试会都命中、都认领成功、
+          // 各处理一遍 → 重复建单(审计 P0-2)。改为 WHERE attempt_count = prev：只有版本匹配者胜出，
+          // 胜者把它 +1，另一实例此时读到的版本已过期，匹配 0 行,安全退出。
+          const prevAttempt = Number(prev.attempt_count) || 0
           const { data: claimed } = await inboxDb.from('fin_inbox_events')
-            .update({ process_status: 'processing', attempt_count: (Number(prev.attempt_count) || 0) + 1, last_error: null })
+            .update({ process_status: 'processing', attempt_count: prevAttempt + 1, last_error: null })
             .eq('request_id', payload.request_id)
-            .in('process_status', ['failed', 'processing'])
+            .eq('attempt_count', prevAttempt)                     // ← 原子 CAS：版本号
+            .in('process_status', ['failed', 'processing'])       // 仅 failed / (stale)processing 可抢
             .select('request_id')
           if (claimed && claimed.length > 0) {
             inboxLanded = true   // 抢占成功 → 继续走处理(重试)
@@ -181,6 +187,11 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'purchase_order.placed':
       return handlePurchaseOrderPlaced(payload.data as Record<string, unknown>, payload.request_id)
 
+    // 审计 P0-3:此前无 case→落 default ignored→inbox 假 pending 永久堆积(生产库卡了 61 条)。
+    // 现消费为供应商主数据 upsert，财务侧供应商档随节拍器同步。
+    case 'supplier.upserted':
+      return handleSupplierUpsert(payload.data as Record<string, unknown>)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
@@ -237,6 +248,43 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
   }
 
   return { action: 'po_registered', po_no: String(data.po_no || poKey), lines: lineCount }
+}
+
+// --- 供应商主数据 upsert（审计 P0-3）---
+// 节拍器 supplier.upserted → 财务 suppliers 档。按【精确名】匹配(不用子串,避免串号)：
+// 已有则补溯源 notes(不覆盖财务已维护的银行/联系资料)，没有则新建。
+// suppliers 非 trigger 保护的核心财务表，可安全 upsert。
+async function handleSupplierUpsert(data: Record<string, unknown>) {
+  const supabase = createServiceClient()
+  const name = String(data.name || '').trim()
+  if (!name) return { action: 'ignored', reason: 'supplier.upserted 缺少 name' }
+  const qimoId = data.supplier_id ? String(data.supplier_id) : ''
+  const srcLine = `节拍器供应商同步 · qimo_id=${qimoId} · 类目=${String(data.main_category || '') || '—'} · 状态=${String(data.status || '') || '—'}`
+
+  const { data: existing } = await supabase.from('suppliers')
+    .select('id, notes').eq('name', name).is('deleted_at', null).maybeSingle()
+
+  if (existing) {
+    // 已存在：仅在 notes 未含该 qimo_id 溯源时补一行，绝不覆盖已有资料
+    const notes = String(existing.notes || '')
+    if (qimoId && !notes.includes(qimoId)) {
+      await supabase.from('suppliers')
+        .update({ notes: notes ? `${notes}\n${srcLine}` : srcLine, updated_at: new Date().toISOString() })
+        .eq('id', existing.id)
+    }
+    return { action: 'supplier_exists', supplier_id: existing.id, name }
+  }
+
+  const bankInfo = data.bank_info
+  const { data: created, error } = await supabase.from('suppliers').insert({
+    name,
+    bank_name: bankInfo && typeof bankInfo === 'object' ? (bankInfo as Record<string, string>).bank_name ?? null : null,
+    account_no: bankInfo && typeof bankInfo === 'object' ? (bankInfo as Record<string, string>).account_no ?? null : null,
+    account_name: bankInfo && typeof bankInfo === 'object' ? (bankInfo as Record<string, string>).account_name ?? null : null,
+    notes: srcLine,
+  }).select('id').single()
+  if (error) throw new Error(`supplier upsert 失败: ${error.message}`)
+  return { action: 'supplier_created', supplier_id: created.id, name }
 }
 
 // --- 订单同步 ---
