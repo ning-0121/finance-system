@@ -90,10 +90,17 @@ describe('GL 凭证构造器', () => {
     expect(spec.provenance.relatedOrderId).toBe('o1')
   })
 
-  it('回款差额≤0 → 返回 null（幂等，重复保存不重复入账）', () => {
+  it('回款差额=0 → null(幂等)；<0 → 红字冲销(借应收/贷银行)；>0 → 正向凭证', () => {
     const order = { ...usdOrder, currency: 'CNY', exchange_rate: 1 }
     expect(buildArReceipt({ order, amountCnyDelta: 0 })).toBeNull()
-    expect(buildArReceipt({ order, amountCnyDelta: -5 })).toBeNull()
+    // 调减：生成红字冲销而非跳过(审计 P1:此前总账无下调路径,已收永久虚高)
+    const rev = buildArReceipt({ order, amountCnyDelta: -5 })!
+    expect(rev).not.toBeNull()
+    expect(rev.amountCny).toBe(5)
+    expect(rev.description.startsWith('收款冲销')).toBe(true)
+    expect(isBalanced(rev)).toBe(true)
+    const arLine = rev.lines.find(l => l.account_code === '1122')!
+    expect(arLine.debit).toBe(5)   // 借:恢复应收(与正向凭证方向相反)
     const spec = buildArReceipt({ order, amountCnyDelta: 300 })!
     expect(spec.amountCny).toBe(300)
     expect(isBalanced(spec)).toBe(true)
