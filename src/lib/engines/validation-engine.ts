@@ -24,8 +24,8 @@ export function validateCostEntry(params: {
   const warnings: ValidationWarning[] = []
   const { amount, description, supplier, currency, exchangeRate, orderRevenue, existingCosts } = params
 
-  // 金额基础校验
-  warnings.push(...validateAmount(amount, '金额'))
+  // 金额基础校验（成本行允许负数：扣款/退货/退布/冲减）
+  warnings.push(...validateAmount(amount, '金额', true))
 
   // 汇率校验
   warnings.push(...validateExchangeRate(currency, exchangeRate))
@@ -67,9 +67,9 @@ export function validateCostEntry(params: {
       })
     }
 
-    // 历史均值检测
-    const sameSupplier = existingCosts.filter(c => c.supplier === supplier.trim())
-    if (sameSupplier.length >= 2) {
+    // 历史均值检测（仅对正数成本比较；负数=扣款/退货，跳过大小提示）
+    const sameSupplier = existingCosts.filter(c => c.supplier === supplier.trim() && c.amount > 0)
+    if (amount > 0 && sameSupplier.length >= 2) {
       const avg = sameSupplier.reduce((s, c) => s + c.amount, 0) / sameSupplier.length
       if (amount < avg * 0.1) {
         warnings.push({
@@ -195,21 +195,23 @@ export function validatePayment(params: {
 
 // ========== 通用校验函数 ==========
 
-function validateAmount(amount: number, label: string): ValidationWarning[] {
+function validateAmount(amount: number, label: string, allowNegative = false): ValidationWarning[] {
   const warnings: ValidationWarning[] = []
 
   if (!amount || amount === 0) {
     warnings.push({ level: 'error', field: 'amount', message: `${label}不能为0` })
     return warnings
   }
-  if (amount < 0) {
+  // 成本行允许负数（扣款/退货/退布/冲减）；收入/付款仍禁止负数
+  if (!allowNegative && amount < 0) {
     warnings.push({ level: 'error', field: 'amount', message: `${label}不能为负数` })
     return warnings
   }
-  if (amount < 1) {
-    warnings.push({ level: 'warning', field: 'amount', message: `${label}小于1元(¥${amount})，请确认` })
+  const mag = Math.abs(amount)  // 按量级判断大小提示，兼容负数扣款
+  if (mag < 1) {
+    warnings.push({ level: 'warning', field: 'amount', message: `${label}绝对值小于1元(¥${amount})，请确认` })
   }
-  if (amount > 1000000) {
+  if (mag > 1000000) {
     warnings.push({
       level: 'warning', field: 'amount',
       message: `${label}超过100万(¥${amount.toLocaleString()})，请确认是否正确`,
@@ -217,7 +219,7 @@ function validateAmount(amount: number, label: string): ValidationWarning[] {
   }
 
   // 千万混淆检测：如果金额是整千/整万，提醒确认
-  if (amount >= 10000 && amount % 10000 === 0) {
+  if (mag >= 10000 && mag % 10000 === 0) {
     const wan = amount / 10000
     warnings.push({
       level: 'info', field: 'amount',

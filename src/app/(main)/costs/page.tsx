@@ -297,7 +297,9 @@ export default function CostsPage() {
 
   const handleSaveWithValidation = () => {
     // 备注(原「费用描述」)改为可选：空时用 供应商名 / 费用类型 兜底，保证决算按名聚合可读
-    if (!formAmount || Number(formAmount) <= 0) { toast.error('请输入有效金额'); return }
+    // 金额允许负数（扣款/退货/退布/冲减），仅拦空值/非数字/0
+    const amtNum = Number(formAmount)
+    if (formAmount === '' || Number.isNaN(amtNum) || amtNum === 0) { toast.error('请输入有效金额（负数表示扣款/退货，但不能为 0）'); return }
     if (!editItem && entryMode === 'shared' && sharedOrderIds.length < 2) {
       toast.error('多订单分摊请至少选择 2 个订单')
       return
@@ -505,7 +507,7 @@ export default function CostsPage() {
           // 跳过空行，但如果有品名就尝试保存（金额可能需要从数量×单价计算）
           if (!line.desc) continue
           const lineAmount = Number(line.amount) || (Number(line.qty) * Number(line.unitPrice)) || 0
-          if (lineAmount <= 0) { console.warn(`[费用录入] 品目"${line.desc}"金额为0，跳过`); continue }
+          if (lineAmount === 0) { console.warn(`[费用录入] 品目"${line.desc}"金额为0，跳过`); continue }  // 负数(扣款/退货)保留
           const lineQty = Number(line.qty) || 0
           const lineUnitPrice = Number(line.unitPrice) || 0
           const lineMeta = (line.qty || line.unitPrice) ? JSON.stringify({ qty: lineQty, unit: line.unit, unit_price: lineUnitPrice }) : null
