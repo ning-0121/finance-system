@@ -608,6 +608,7 @@ async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResu
 
     const { data: created, error: insertErr } = await supabase.from('budget_orders').insert({
       order_no: '',
+      qimo_order_id: order.id,   // 审计 P1:绮陌订单 UUID 结构化落库(不再只靠 synced_orders 中转+notes)
       customer_id: customerId,
       total_revenue: totalAmount,
       currency: order.currency || 'USD',

@@ -180,6 +180,7 @@ export async function POST(request: Request) {
       const cur = o.currency || 'USD'
       const { data: newBO, error: boErr } = await finance.from('budget_orders').insert({
         order_no: '',
+        qimo_order_id: o.id,   // 审计 P1:绮陌订单 UUID 结构化落库
         customer_id: customerId,
         total_revenue: totalAmount,
         currency: cur,
