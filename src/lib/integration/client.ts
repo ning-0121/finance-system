@@ -54,6 +54,59 @@ export async function sendApprovalToMetronome(decision: ApprovalDecision): Promi
   }
 }
 
+// --- 签名拉取节拍器订单列表（P0-1：替代直连 Supabase 的合规通道）---
+// 单页。鉴权与单查 /orders/{orderNo} 同套：x-api-key + HMAC(GET:orders:timestamp) + 时间戳窗口。
+// 节拍器侧需提供 GET /api/integration/orders?updated_since&limit&offset（只读，返回同一批字段）。
+export async function fetchOrdersFromMetronome(opts: { updatedSince?: string; limit?: number; offset?: number } = {}): Promise<{
+  success: boolean
+  data?: Record<string, unknown>[]
+  error?: string
+}> {
+  if (!ORDER_METRONOME_URL) return { success: false, error: 'ORDER_METRONOME_URL not configured' }
+  const { updatedSince, limit = 200, offset = 0 } = opts
+  try {
+    const timestamp = new Date().toISOString()
+    const signature = generateSignature(`GET:orders:${timestamp}`, WEBHOOK_SECRET)
+    const qs = new URLSearchParams()
+    if (updatedSince) qs.set('updated_since', updatedSince)
+    qs.set('limit', String(limit))
+    qs.set('offset', String(offset))
+    const response = await fetch(`${ORDER_METRONOME_URL}/api/integration/orders?${qs.toString()}`, {
+      headers: {
+        'x-api-key': API_KEY,
+        'x-webhook-signature': signature,
+        'x-timestamp': timestamp,
+        'x-source': 'finance-system',
+      },
+    })
+    if (!response.ok) return { success: false, error: `HTTP ${response.status}` }
+    const json = await response.json()
+    // 兼容 {data:[...]} / {orders:[...]} / [...]
+    const data = Array.isArray(json) ? json : (json.data || json.orders || [])
+    return { success: true, data: data as Record<string, unknown>[] }
+  } catch (error) {
+    return { success: false, error: `Network error: ${error instanceof Error ? error.message : 'unknown'}` }
+  }
+}
+
+// --- 分页拉全量（循环 fetchOrdersFromMetronome 直到取尽）---
+export async function fetchAllOrdersFromMetronome(updatedSince?: string): Promise<{
+  success: boolean
+  data?: Record<string, unknown>[]
+  error?: string
+}> {
+  const all: Record<string, unknown>[] = []
+  const limit = 200
+  for (let offset = 0; offset <= 100_000; offset += limit) {
+    const r = await fetchOrdersFromMetronome({ updatedSince, limit, offset })
+    if (!r.success) return { success: false, error: r.error }
+    const batch = r.data || []
+    all.push(...batch)
+    if (batch.length < limit) break
+  }
+  return { success: true, data: all }
+}
+
 // --- 查询节拍器订单详情 ---
 export async function fetchOrderFromMetronome(orderNo: string): Promise<{
   success: boolean

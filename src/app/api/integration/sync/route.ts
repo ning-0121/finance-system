@@ -6,12 +6,25 @@ import { createClient as createMetronomeClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { verifyApiKey } from '@/lib/integration/security'
+import { fetchAllOrdersFromMetronome } from '@/lib/integration/client'
 
 const METRONOME_URL = process.env.METRONOME_SUPABASE_URL || ''
 const METRONOME_KEY = process.env.METRONOME_SUPABASE_SERVICE_KEY || ''
+// 审计 P0-1：拔掉直连节拍器 Supabase 的后门。开关打开=走签名 HTTP 只读 API(合规通道)，
+// 关闭=旧的直连(过渡期保留，节拍器列表 API 上线并灰度验证后即可删除下方 legacy 分支+环境变量)。
+const USE_SIGNED_SYNC = process.env.SYNC_VIA_SIGNED_API === '1'
+
+// 节拍器订单镜像字段（直连 select 与签名 API 返回同构）
+type MetOrder = {
+  id: string; order_no: string; internal_order_no: string | null; customer_name: string | null
+  factory_name: string | null; quantity: number | null; quantity_unit: string | null; currency: string | null
+  total_amount: number | null; unit_price: number | null; incoterm: string | null; delivery_type: string | null
+  order_type: string | null; lifecycle_status: string | null; po_number: string | null; etd: string | null
+  payment_terms: string | null; notes: string | null; created_at: string; updated_at: string
+}
 
 export async function POST(request: Request) {
-  if (!METRONOME_URL || !METRONOME_KEY) {
+  if (!USE_SIGNED_SYNC && (!METRONOME_URL || !METRONOME_KEY)) {
     return NextResponse.json({ error: '节拍器Supabase未配置' }, { status: 500 })
   }
 
@@ -26,19 +39,29 @@ export async function POST(request: Request) {
   }
 
   try {
-    const metronome = createMetronomeClient(METRONOME_URL, METRONOME_KEY)
     // 写库用 service 客户端（集成路由标准形态，与 webhook 一致）——
     // synced_orders/budget_orders 的 RLS 写策略要求财务角色会话，服务端同步不应受其约束
     const finance = createServiceClient()
 
     // 1. 读取节拍器所有订单
-    const { data: metronomeOrders, error: readErr } = await metronome
-      .from('orders')
-      .select('id, order_no, internal_order_no, customer_name, factory_name, quantity, quantity_unit, currency, total_amount, unit_price, incoterm, delivery_type, order_type, lifecycle_status, po_number, etd, payment_terms, notes, created_at, updated_at')
-      .order('created_at', { ascending: false })
+    //    合规通道(USE_SIGNED_SYNC)：签名 HTTP 只读 API，不碰对方 Supabase。
+    //    legacy 通道：直连节拍器 Supabase(审计 P0-1，待删)。
+    let metronomeOrders: MetOrder[]
+    if (USE_SIGNED_SYNC) {
+      const r = await fetchAllOrdersFromMetronome()
+      if (!r.success) throw new Error(`签名同步失败: ${r.error}`)
+      metronomeOrders = (r.data || []) as unknown as MetOrder[]
+    } else {
+      const metronome = createMetronomeClient(METRONOME_URL, METRONOME_KEY)
+      const { data, error: readErr } = await metronome
+        .from('orders')
+        .select('id, order_no, internal_order_no, customer_name, factory_name, quantity, quantity_unit, currency, total_amount, unit_price, incoterm, delivery_type, order_type, lifecycle_status, po_number, etd, payment_terms, notes, created_at, updated_at')
+        .order('created_at', { ascending: false })
+      if (readErr) throw new Error(`读取节拍器失败: ${readErr.message}`)
+      metronomeOrders = (data || []) as unknown as MetOrder[]
+    }
 
-    if (readErr) throw new Error(`读取节拍器失败: ${readErr.message}`)
-    if (!metronomeOrders?.length) {
+    if (!metronomeOrders.length) {
       return NextResponse.json({ synced: 0, created: 0, message: '节拍器无订单' })
     }
 
