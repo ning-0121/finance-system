@@ -8,14 +8,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Loader2, Plus, Edit, Snowflake, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
 import { toast } from 'sonner'
 
-interface TimelineEvent { id: string; event_type: 'created' | 'updated' | 'frozen' | 'risk'; entity_type: string; entity_id: string; title: string; detail: string; actor: string; created_at: string }
+interface TimelineEvent { id: string; event_type: string; entity_type: string; entity_id: string; title: string; detail: string; actor: string; created_at: string }
 
-const eventConfig = {
+const eventConfig: Record<string, { color: string; textColor: string; label: string; icon: typeof Plus }> = {
   created: { color: 'bg-green-500', textColor: 'text-green-700', label: '创建', icon: Plus },
+  create: { color: 'bg-green-500', textColor: 'text-green-700', label: '创建', icon: Plus },
   updated: { color: 'bg-blue-500', textColor: 'text-blue-700', label: '更新', icon: Edit },
+  status_change: { color: 'bg-blue-500', textColor: 'text-blue-700', label: '状态', icon: Edit },
   frozen: { color: 'bg-red-500', textColor: 'text-red-700', label: '冻结', icon: Snowflake },
   risk: { color: 'bg-amber-500', textColor: 'text-amber-700', label: '风险', icon: AlertTriangle },
 }
+const cfgOf = (t: string) => eventConfig[t] || { color: 'bg-slate-400', textColor: 'text-slate-600', label: t || '事件', icon: Edit }
 
 export default function TimelinePage() {
   const [events, setEvents] = useState<TimelineEvent[]>([])
@@ -24,8 +27,23 @@ export default function TimelinePage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    fetch('/api/control-center/timeline')
-      .then(r => r.json()).then(d => setEvents(d.events || []))
+    fetch('/api/control-center/timeline?recent=true')
+      .then(r => r.json()).then(d => {
+        const rows = (d.data || []) as Record<string, unknown>[]
+        setEvents(rows.map(r => {
+          const detail = r.event_detail
+          return {
+            id: r.id as string,
+            event_type: (r.event_type as string) || 'updated',
+            entity_type: (r.entity_type as string) || '',
+            entity_id: (r.entity_id as string) || '',
+            title: (r.event_title as string) || '',
+            detail: detail == null ? '' : (typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2)),
+            actor: (r.actor_name as string) || (r.source_type as string) || '系统',
+            created_at: (r.created_at as string) || '',
+          }
+        }))
+      })
       .catch(() => toast.error('加载失败')).finally(() => setLoading(false))
   }, [])
 
@@ -58,7 +76,7 @@ export default function TimelinePage() {
             <div className="absolute left-5 top-0 bottom-0 w-px bg-border" />
             <div className="space-y-4">
               {filtered.map(ev => {
-                const cfg = eventConfig[ev.event_type] || eventConfig.updated
+                const cfg = cfgOf(ev.event_type)
                 const Icon = cfg.icon
                 const isOpen = expanded.has(ev.id)
                 return (

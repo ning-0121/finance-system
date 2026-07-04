@@ -25,14 +25,25 @@ export default function FreezePage() {
   const load = () => {
     setLoading(true)
     fetch('/api/control-center/freeze')
-      .then(r => r.json()).then(d => setRecords(d.records || []))
+      .then(r => r.json()).then(d => {
+        // API 返回 {data}(entity_freezes 行)；'unfreeze_requested' 是前端派生
+        // (DB 只有 frozen/unfrozen + unfreeze_requested_at)
+        const rows = (d.data || []) as Record<string, unknown>[]
+        setRecords(rows.map(r => ({
+          id: r.id as string, entity_type: r.entity_type as string, entity_id: r.entity_id as string,
+          entity_name: (r.entity_name as string) || (r.entity_id as string), freeze_reason: (r.freeze_reason as string) || '',
+          frozen_at: (r.frozen_at as string) || '',
+          status: (r.unfreeze_requested_at ? 'unfreeze_requested' : (r.status === 'unfrozen' ? 'unfrozen' : 'frozen')) as FreezeRecord['status'],
+        })))
+      })
       .catch(() => toast.error('加载失败')).finally(() => setLoading(false))
   }
   useEffect(load, [])
 
   const freeze = async () => {
     try {
-      const res = await fetch('/api/control-center/freeze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
+      const res = await fetch('/api/control-center/freeze', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'freeze', entityType: form.entity_type, entityId: form.entity_id, entityName: form.entity_name || form.entity_id, reason: form.reason }) })
       if (!res.ok) throw new Error((await res.json()).error)
       toast.success('已冻结')
       setShowDialog(false)
@@ -42,8 +53,10 @@ export default function FreezePage() {
   }
 
   const requestUnfreeze = async (id: string) => {
+    const reason = prompt('请输入申请解冻的原因：')
+    if (!reason || !reason.trim()) return
     try {
-      const res = await fetch('/api/control-center/freeze/unfreeze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, action: 'request' }) })
+      const res = await fetch('/api/control-center/freeze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'request_unfreeze', freezeId: id, reason: reason.trim() }) })
       if (!res.ok) throw new Error((await res.json()).error)
       setRecords(prev => prev.map(r => r.id === id ? { ...r, status: 'unfreeze_requested' } : r))
       toast.success('解冻申请已提交')
@@ -52,9 +65,9 @@ export default function FreezePage() {
 
   const approveUnfreeze = async (id: string) => {
     try {
-      const res = await fetch('/api/control-center/freeze/unfreeze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, action: 'approve' }) })
+      const res = await fetch('/api/control-center/freeze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'approve_unfreeze', freezeId: id }) })
       if (!res.ok) throw new Error((await res.json()).error)
-      setRecords(prev => prev.map(r => r.id === id ? { ...r, status: 'unfrozen' } : r))
+      setRecords(prev => prev.filter(r => r.id !== id))   // 解冻后从活跃冻结列表移除
       toast.success('已解冻')
     } catch (e) { toast.error(`解冻失败: ${e instanceof Error ? e.message : '未知错误'}`) }
   }
