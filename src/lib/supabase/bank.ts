@@ -94,21 +94,38 @@ export async function refreshAccountBalance(accountId: string): Promise<number |
   return Number(data.balance_after)
 }
 
-/** 取对账候选：收→回款流水未对账的；付→供应商付款 */
+/** 已被银行流水认领的 matched_id 集合（避免同一笔回款/付款被匹配到多条银行流水） */
+async function getClaimedIds(matchedType: 'receivable_payment' | 'supplier_payment'): Promise<Set<string>> {
+  const supabase = createClient()
+  const { data, error } = await supabase.from('bank_transactions')
+    .select('matched_id').eq('match_status', 'matched').eq('matched_type', matchedType).not('matched_id', 'is', null)
+  if (error) { console.error('[bank] getClaimedIds:', error.message); return new Set() }
+  return new Set((data || []).map(r => r.matched_id as string))
+}
+
+/** 取对账候选：收→未被认领的回款流水；付→未被认领的供应商付款（已匹配过的排除，防重复对账） */
 export async function getMatchCandidates(direction: 'in' | 'out'): Promise<MatchCandidate[]> {
   const supabase = createClient()
   if (direction === 'in') {
-    const { data, error } = await supabase.from('receivable_payments')
-      .select('id, customer_name, amount_cny, received_at').is('voided_at', null)
-      .order('received_at', { ascending: false }).limit(500)
+    const [{ data, error }, claimed] = await Promise.all([
+      supabase.from('receivable_payments')
+        .select('id, customer_name, amount_cny, received_at').is('voided_at', null)
+        .order('received_at', { ascending: false }).limit(500),
+      getClaimedIds('receivable_payment'),
+    ])
     if (error) console.error('[bank] getMatchCandidates(in):', error.message)
-    return (data || []).map(r => ({ id: r.id as string, label: `${r.customer_name || '回款'} ¥${Number(r.amount_cny).toLocaleString()}`, amount: Number(r.amount_cny) || 0, date: (r.received_at as string) || '' }))
+    return (data || []).filter(r => !claimed.has(r.id as string))
+      .map(r => ({ id: r.id as string, label: `${r.customer_name || '回款'} ¥${Number(r.amount_cny).toLocaleString()}`, amount: Number(r.amount_cny) || 0, date: (r.received_at as string) || '' }))
   }
-  const { data, error } = await supabase.from('supplier_payments')
-    .select('id, supplier_name, amount, paid_at').is('deleted_at', null)
-    .order('paid_at', { ascending: false }).limit(500)
+  const [{ data, error }, claimed] = await Promise.all([
+    supabase.from('supplier_payments')
+      .select('id, supplier_name, amount, paid_at').is('deleted_at', null)
+      .order('paid_at', { ascending: false }).limit(500),
+    getClaimedIds('supplier_payment'),
+  ])
   if (error) console.error('[bank] getMatchCandidates(out):', error.message)
-  return (data || []).map(p => ({ id: p.id as string, label: `${p.supplier_name || '付款'} ¥${Number(p.amount).toLocaleString()}`, amount: Number(p.amount) || 0, date: (p.paid_at as string) || '' }))
+  return (data || []).filter(p => !claimed.has(p.id as string))
+    .map(p => ({ id: p.id as string, label: `${p.supplier_name || '付款'} ¥${Number(p.amount).toLocaleString()}`, amount: Number(p.amount) || 0, date: (p.paid_at as string) || '' }))
 }
 
 /** 纯函数：为一条银行流水推荐最优匹配（金额相等 + 日期最近，±7天内） */

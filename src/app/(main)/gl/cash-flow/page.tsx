@@ -15,7 +15,7 @@ import { Loader2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 
-type Txn = { direction: 'in' | 'out'; amount: number; summary: string | null; matched_type: string | null }
+type Txn = { direction: 'in' | 'out'; amount: number; currency: string; summary: string | null; matched_type: string | null }
 const r2 = (n: number) => Math.round(n * 100) / 100
 const fmt = (n: number) => `¥${r2(n).toLocaleString()}`
 
@@ -57,15 +57,16 @@ export default function CashFlowPage() {
       setLoading(true)
       const supabase = createClient()
       // 本期流水（算流入流出）+ 期初前的历史流水（取各账户期初前最后一条 balance_after 作期初现金）
+      // 期初只累计 CNY 账户余额：外币账户没有逐笔汇率，折算会失真，故不并入 ¥ 现金
       const [{ data: tx }, { data: prior }] = await Promise.all([
-        fetchAll<Txn>((f, t2) => supabase.from('bank_transactions').select('direction, amount, summary, matched_type, id')
+        fetchAll<Txn>((f, t2) => supabase.from('bank_transactions').select('direction, amount, currency, summary, matched_type, id')
           .gte('txn_date', p.start).lte('txn_date', p.end).neq('match_status', 'ignored').order('id', { ascending: true }).range(f, t2)),
         fetchAll<{ bank_account_id: string; balance_after: number | null; txn_date: string }>((f, t2) => supabase.from('bank_transactions')
-          .select('bank_account_id, balance_after, txn_date').lt('txn_date', p.start).not('balance_after', 'is', null)
+          .select('bank_account_id, balance_after, txn_date').lt('txn_date', p.start).eq('currency', 'CNY').not('balance_after', 'is', null)
           .order('txn_date', { ascending: true }).order('id', { ascending: true }).range(f, t2)),
       ])
       setTxns((tx || []) as Txn[])
-      // 期初现金 = 各账户在期间开始前最后一条余额之和（按账户取最新 txn_date）
+      // 期初现金 = 各 CNY 账户在期间开始前最后一条余额之和（按账户取最新 txn_date）
       const lastBal = new Map<string, number>()
       ;(prior || []).forEach(r => { lastBal.set(r.bank_account_id, Number(r.balance_after) || 0) })  // 已按 txn_date 升序，后者覆盖前者=最新
       setOpeningCash(r2([...lastBal.values()].reduce((s, v) => s + v, 0)))
@@ -73,12 +74,22 @@ export default function CashFlowPage() {
     })()
   }, [period, periods])
 
+  // ¥ 现金流量表只统计 CNY 流水；外币流水单列（无逐笔汇率，不并入 ¥ 以免虚增/口径错乱）
+  const cnyTxns = txns.filter(t => (t.currency || 'CNY') === 'CNY')
   const bucket = (cat: 'operating' | 'investing' | 'financing') => {
-    const items = txns.filter(t => classify(t) === cat)
+    const items = cnyTxns.filter(t => classify(t) === cat)
     const inflow = r2(items.filter(t => t.direction === 'in').reduce((s, t) => s + t.amount, 0))
     const outflow = r2(items.filter(t => t.direction === 'out').reduce((s, t) => s + t.amount, 0))
     return { inflow, outflow, net: r2(inflow - outflow) }
   }
+  // 外币流水按币种汇总净额（原币，不折算）
+  const foreignByCcy = txns.filter(t => (t.currency || 'CNY') !== 'CNY').reduce((m, t) => {
+    const c = t.currency
+    const cur = m.get(c) || { inflow: 0, outflow: 0 }
+    if (t.direction === 'in') cur.inflow += t.amount; else cur.outflow += t.amount
+    m.set(c, cur)
+    return m
+  }, new Map<string, { inflow: number; outflow: number }>())
   const op = bucket('operating'), inv = bucket('investing'), fin = bucket('financing')
   const netChange = r2(op.net + inv.net + fin.net)
   const closingCash = r2(openingCash + netChange)  // 期末 = 期初 + 本期净额（自洽，选历史期间也正确）
@@ -102,6 +113,22 @@ export default function CashFlowPage() {
           </Select>
           <span className="text-xs text-muted-foreground">数据源：银行对账导入的流水（已忽略的非业务流水不计入）</span>
         </div>
+
+        {!loading && foreignByCcy.size > 0 && (
+          <Card className="border-amber-200 bg-amber-50/50">
+            <CardContent className="p-3 text-sm text-amber-800">
+              <p className="font-medium">本期另有外币流水（原币列示，未折算并入 ¥ 现金流量表）：</p>
+              <ul className="mt-1 space-y-0.5 text-xs">
+                {[...foreignByCcy.entries()].map(([ccy, v]) => (
+                  <li key={ccy} className="tabular-nums">
+                    {ccy}：流入 {r2(v.inflow).toLocaleString()} · 流出 {r2(v.outflow).toLocaleString()} · 净额 {r2(v.inflow - v.outflow).toLocaleString()}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-[11px] text-amber-700 mt-1">外币账户无逐笔汇率，折算会失真，故单列。如需并表请在结汇后以 ¥ 流水入账。</p>
+            </CardContent>
+          </Card>
+        )}
 
         {loading ? (
           <div className="flex justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>

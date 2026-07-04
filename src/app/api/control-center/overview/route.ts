@@ -11,6 +11,8 @@ import { generateExplanations, type OverviewData } from '@/lib/engines/explanati
 import { getPendingRiskEvents, getBudgetOrders, getProfitSummary, getMonthlyProfitData } from '@/lib/supabase/queries'
 import { getPendingTasks, getAutomationHealth } from '@/lib/engines/orchestration-engine'
 import { getRecentOverrides } from '@/lib/engines/override-engine'
+import { createClient } from '@/lib/supabase/server'
+import { fetchAll } from '@/lib/supabase/fetch-all'
 
 export async function GET() {
   try {
@@ -107,6 +109,27 @@ export async function GET() {
       }
     }
 
+    // 阻塞动作 = 编排引擎里状态为 blocked 的待办（真实来源，替换原硬编码 0）
+    const blockedActions = pendingTasks.filter((t: Record<string, unknown>) => t.status === 'blocked').length
+
+    // 本期现金净流入（仅 CNY 银行流水；外币无逐笔汇率不并入，口径与现金流量表一致）
+    let cashflow = 0
+    try {
+      const supabase = await createClient()
+      const periodStart = `${periodCode}-01`
+      const nextMonth = now.getMonth() === 11
+        ? `${now.getFullYear() + 1}-01-01`
+        : `${now.getFullYear()}-${String(now.getMonth() + 2).padStart(2, '0')}-01`
+      const { data: cashRows } = await fetchAll<{ direction: string; amount: number }>((f, t) =>
+        supabase.from('bank_transactions').select('direction, amount, id')
+          .eq('currency', 'CNY').neq('match_status', 'ignored')
+          .gte('txn_date', periodStart).lt('txn_date', nextMonth)
+          .order('id', { ascending: true }).range(f, t))
+      cashflow = Math.round(cashRows.reduce((s, r) => s + (r.direction === 'in' ? Number(r.amount) : -Number(r.amount)), 0) * 100) / 100
+    } catch (e) {
+      console.error('[overview] cashflow calc failed:', e)
+    }
+
     // 构造 OverviewData 供解释引擎使用
     const overviewData: OverviewData = {
       criticalFindings,
@@ -117,7 +140,7 @@ export async function GET() {
       highRiskCustomers: 0,
       pendingApprovals,
       pendingPayments,
-      blockedActions: 0,
+      blockedActions,
       openRiskEvents,
       closingPending,
       closingTotal,
@@ -139,7 +162,7 @@ export async function GET() {
       profit: profitSummary.total_profit,
       margin: profitSummary.avg_margin,
       orderCount: profitSummary.order_count,
-      cashflow: 0,
+      cashflow,
       riskOrders: highRiskOrders,
       pendingApprovals,
       freezes: freezeCount,
@@ -157,7 +180,7 @@ export async function GET() {
       pending: {
         pendingApprovals,
         pendingPayments,
-        blockedActions: 0,
+        blockedActions,
         openRiskEvents,
         closingPending,
         closingTotal,
