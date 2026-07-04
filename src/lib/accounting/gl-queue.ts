@@ -171,12 +171,16 @@ async function buildSpecForItem(db: DB, item: QueueItem): Promise<JournalSpec | 
         }
         receivedCny = Math.round((Number(o.ar_received_amount) || 0) * rate * 100) / 100
       }
-      // 已入账（draft+posted）的收款 CNY 合计
+      // 已入账（draft+posted）的收款 CNY 净额：正向凭证为正、红字冲销为负
       const { data: prior } = await db.from('journal_entries')
-        .select('total_debit')
+        .select('total_debit, description')
         .eq('source_type', 'receipt').eq('source_id', item.source_id)
         .eq('business_event', 'receipt_saved').in('status', ['draft', 'posted'])
-      const already = (prior || []).reduce((s, r) => s + (Number((r as { total_debit: number }).total_debit) || 0), 0)
+      const already = (prior || []).reduce((s, r) => {
+        const td = Number((r as { total_debit: number }).total_debit) || 0
+        const isRev = String((r as { description?: string }).description || '').startsWith('收款冲销')
+        return s + (isRev ? -td : td)
+      }, 0)
       const delta = Math.round((receivedCny - already) * 100) / 100
       return buildArReceipt({
         order: {

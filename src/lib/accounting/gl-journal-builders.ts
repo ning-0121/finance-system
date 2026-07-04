@@ -234,26 +234,35 @@ export function buildArReceipt(input: ReceiptInput): JournalSpec | null {
   const { order } = input
   if (!order || !order.id) throw new GlPostingError('MISSING_SOURCE_DOC', '订单不存在，无法登记收款')
   const delta = round2(Number(input.amountCnyDelta) || 0)
-  if (delta <= 0) return null   // 金额未增加 → 无需入账（幂等）
+  if (Math.abs(delta) <= 0.005) return null   // 金额无变化 → 无需入账（幂等）
   const bankCode = input.bankCode || bankAccountForCurrency(order.currency)
+  // 负增量=调减/作废后的下调 → 红字冲销(借贷反向)。此前 delta<=0 直接跳过,
+  // 总账已收永久虚高、银行/应收双双失真(审计 P1:GL 无下调路径)
+  const isReversal = delta < 0
+  const amt = round2(Math.abs(delta))
   return {
     periodCode: periodCodeOf(),
     date: bizToday(),
-    description: `收款 ${order.order_no} ${order.customer_company || ''}${input.bankName ? ' @' + input.bankName : ''}`.trim(),
+    description: `${isReversal ? '收款冲销(红字) ' : '收款 '}${order.order_no} ${order.customer_company || ''}${input.bankName ? ' @' + input.bankName : ''}`.trim(),
     sourceType: 'receipt',
     sourceId: order.id,
     businessEvent: 'receipt_saved',
     targetJournalType: 'ar_receipt',
-    amountCny: delta,
-    lines: [
-      { account_code: bankCode, description: `收款-${order.customer_company || ''}${input.bankName ? '(' + input.bankName + ')' : ''}`, debit: delta, credit: 0, customer_id: order.customer_id ?? null, order_id: order.id },
-      { account_code: '1122', description: `核销应收-${order.order_no}`, debit: 0, credit: delta, customer_id: order.customer_id ?? null, order_id: order.id },
+    amountCny: amt,
+    lines: isReversal ? [
+      { account_code: '1122', description: `恢复应收-${order.order_no}(调减冲回)`, debit: amt, credit: 0, customer_id: order.customer_id ?? null, order_id: order.id },
+      { account_code: bankCode, description: `冲回收款-${order.customer_company || ''}`, debit: 0, credit: amt, customer_id: order.customer_id ?? null, order_id: order.id },
+    ] : [
+      { account_code: bankCode, description: `收款-${order.customer_company || ''}${input.bankName ? '(' + input.bankName + ')' : ''}`, debit: amt, credit: 0, customer_id: order.customer_id ?? null, order_id: order.id },
+      { account_code: '1122', description: `核销应收-${order.order_no}`, debit: 0, credit: amt, customer_id: order.customer_id ?? null, order_id: order.id },
     ],
     provenance: {
       relatedOrderId: order.id,
       relatedCustomerId: order.customer_id ?? null,
       exchangeRateSource: 'cny_amount',
-      explanation: `回款保存自动入账（本次新增已收 ¥${delta}，收款银行 ${input.bankName || '默认'}）`,
+      explanation: isReversal
+        ? `已收调减自动冲销（下调 ¥${amt}，作废重建/撤销匹配触发）`
+        : `回款保存自动入账（本次新增已收 ¥${amt}，收款银行 ${input.bankName || '默认'}）`,
     },
   }
 }

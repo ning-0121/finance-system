@@ -521,9 +521,15 @@ export default function ReceivablesPage() {
   }
   async function handleUnallocate(allocationId: string) {
     if (!confirm('确认撤销这笔匹配？（订单已收将相应减少）')) return
+    // 先取该分配的订单 id——撤销后要入队 GL 红字冲销(此前撤销不入队,总账已收虚高——审计 P1)
+    const supabase = createClient()
+    const { data: alloc } = await supabase.from('receivable_payment_allocations').select('budget_order_id').eq('id', allocationId).maybeSingle()
     const { error } = await unallocateReceipt(allocationId, '人工撤销匹配')
     if (error) { toast.error(error); return }
     toast.success('已撤销匹配')
+    if (alloc?.budget_order_id) {
+      fetch('/api/gl/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ businessEvent: 'receipt_saved', sourceType: 'receipt', sourceId: alloc.budget_order_id }) }).catch(err => console.error('[GL] 撤销匹配入队失败:', err))
+    }
     try { await reload() } catch { /* */ }
   }
   async function handleVoidReceipt(r: ReceivablePayment) {
@@ -531,6 +537,16 @@ export default function ReceivablesPage() {
     const { error } = await voidReceivablePayment(r.id, '人工作废')
     if (error) { toast.error(error); return }
     toast.success('回款已作废')
+    // 作废后对该流水涉及的订单入队 GL 红字冲销(此前作废不入队,总账已收虚高——审计 P1)
+    try {
+      const supabase = createClient()
+      const { data: affected } = await supabase.from('receivable_payment_allocations')
+        .select('budget_order_id').eq('receipt_id', r.id)
+      const orderIds = [...new Set((affected || []).map(a => a.budget_order_id as string).filter(Boolean))]
+      orderIds.forEach(oid => {
+        fetch('/api/gl/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ businessEvent: 'receipt_saved', sourceType: 'receipt', sourceId: oid }) }).catch(err => console.error('[GL] 作废回款入队失败:', err))
+      })
+    } catch { /* 非阻塞 */ }
     try { await reload() } catch { /* */ }
   }
 
