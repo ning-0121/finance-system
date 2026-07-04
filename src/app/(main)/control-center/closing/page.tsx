@@ -46,6 +46,19 @@ interface ClosingResult {
   items: ClosingCheckItem[]
 }
 
+// GET 返回 ClosingCheckItem[](数组)，POST run_all 返回 ClosingResult(对象)——
+// 归一成 ClosingResult，避免页面对数组取 .items 崩溃(审计 P0:closing 页加载即 TypeError)
+function toClosingResult(raw: unknown, periodCode: string): ClosingResult | null {
+  if (!raw) return null
+  const items: ClosingCheckItem[] = Array.isArray(raw) ? raw as ClosingCheckItem[] : ((raw as ClosingResult).items || [])
+  if (!Array.isArray(raw) && (raw as ClosingResult).totalChecks != null) return raw as ClosingResult
+  const passed = items.filter(i => i.status === 'passed').length
+  const overridden = items.filter(i => i.status === 'overridden').length
+  const failed = items.filter(i => i.status === 'failed').length
+  const pending = items.filter(i => i.status === 'pending').length
+  return { periodCode, totalChecks: items.length, passed, failed, overridden, pending, allClear: items.length > 0 && failed === 0 && pending === 0, items }
+}
+
 const statusConfig = {
   pending:    { label: '待检查', variant: 'secondary' as const,    icon: Clock },
   passed:     { label: '通过',   variant: 'default' as const,      icon: CheckCircle },
@@ -90,7 +103,7 @@ export default function ClosingPage() {
       const res = await fetch(`/api/control-center/closing?period=${period}`)
       const d = await res.json()
       if (!res.ok) throw new Error(d.error)
-      setData(d.data)
+      setData(toClosingResult(d.data, period))
       setPanel(d.panel ?? null)
       setPeriodInfo(d.period ?? null)
     } catch (e) {
@@ -125,7 +138,7 @@ export default function ClosingPage() {
       })
       const d = await res.json()
       if (!res.ok) throw new Error(d.error)
-      setData(d.data)
+      setData(toClosingResult(d.data, period))
       toast.success('全部检查完成')
     } catch (e) { toast.error(`检查失败: ${e instanceof Error ? e.message : '未知'}`) }
     setRunningKey(null)

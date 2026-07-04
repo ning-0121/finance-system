@@ -79,11 +79,18 @@ export default function DashboardPage() {
     ? `${lowMarginOrders.length}个订单毛利率低于15%警戒线`
     : `所有订单利润率正常`
 
+  // 真实月环比（用已加载的月度序列末两月），无足够数据则不显示——此前是写死假数据(5.2/-3.4/12/-1.2)
+  const mLast = monthlyProfit[monthlyProfit.length - 1]
+  const mPrev = monthlyProfit[monthlyProfit.length - 2]
+  const pct = (a?: number, b?: number) => (mPrev && b && b !== 0 && a != null ? Math.round(((a - b) / Math.abs(b)) * 1000) / 10 : null)
+  const revChange = pct(mLast?.revenue, mPrev?.revenue)
+  const profitChange = pct(mLast?.profit, mPrev?.profit)
+  const marginChange = mLast && mPrev ? Math.round((mLast.margin - mPrev.margin) * 10) / 10 : null
   const stats = [
-    { key: 'revenue', title: '本月营收', value: `¥${(s.total_revenue / 1000).toFixed(0)}K`, change: 5.2, icon: DollarSign, color: 'text-blue-600', bgColor: 'bg-blue-50' },
-    { key: 'profit', title: '本月利润', value: `¥${(s.total_profit / 1000).toFixed(0)}K`, change: -3.4, icon: TrendingUp, color: 'text-green-600', bgColor: 'bg-green-50' },
-    { key: 'orders', title: '活跃订单', value: s.order_count.toString(), change: 12, icon: Package, color: 'text-purple-600', bgColor: 'bg-purple-50' },
-    { key: 'margin', title: '平均毛利率', value: `${s.avg_margin}%`, change: -1.2, icon: AlertTriangle, color: 'text-amber-600', bgColor: 'bg-amber-50' },
+    { key: 'revenue', title: '累计营收', value: `¥${(s.total_revenue / 1000).toFixed(0)}K`, change: revChange, icon: DollarSign, color: 'text-blue-600', bgColor: 'bg-blue-50' },
+    { key: 'profit', title: '累计利润', value: `¥${(s.total_profit / 1000).toFixed(0)}K`, change: profitChange, icon: TrendingUp, color: 'text-green-600', bgColor: 'bg-green-50' },
+    { key: 'orders', title: '活跃订单', value: s.order_count.toString(), change: null as number | null, icon: Package, color: 'text-purple-600', bgColor: 'bg-purple-50' },
+    { key: 'margin', title: '平均毛利率', value: `${s.avg_margin}%`, change: marginChange, icon: AlertTriangle, color: 'text-amber-600', bgColor: 'bg-amber-50' },
   ]
 
   const handleMarkResolved = async (alertId: string) => {
@@ -125,10 +132,12 @@ export default function DashboardPage() {
                   <div>
                     <p className="text-xs text-muted-foreground">{stat.title}</p>
                     <p className="text-2xl font-bold mt-1">{stat.value}</p>
-                    <div className="flex items-center gap-1 mt-1">
-                      {stat.change > 0 ? <ArrowUpRight className="h-3 w-3 text-green-600" /> : <ArrowDownRight className="h-3 w-3 text-red-600" />}
-                      <span className={`text-xs font-medium ${stat.change > 0 ? 'text-green-600' : 'text-red-600'}`}>{Math.abs(stat.change)}%</span>
-                    </div>
+                    {stat.change != null ? (
+                      <div className="flex items-center gap-1 mt-1">
+                        {stat.change >= 0 ? <ArrowUpRight className="h-3 w-3 text-green-600" /> : <ArrowDownRight className="h-3 w-3 text-red-600" />}
+                        <span className={`text-xs font-medium ${stat.change >= 0 ? 'text-green-600' : 'text-red-600'}`}>{Math.abs(stat.change)}{stat.key === 'margin' ? 'pt' : '%'} <span className="text-muted-foreground font-normal">环比</span></span>
+                      </div>
+                    ) : <div className="h-4 mt-1" />}
                   </div>
                   <div className={`p-2.5 rounded-xl ${stat.bgColor}`}><stat.icon className={`h-5 w-5 ${stat.color}`} /></div>
                 </div>
