@@ -14,6 +14,7 @@ import { createClient } from '@/lib/supabase/server'
 import { requireAuth, requireRole } from '@/lib/auth/api-guard'
 import { notifyPaymentReminder } from '@/lib/wecom/notifications'
 import { enqueueAndProcess } from '@/lib/accounting/gl-queue'
+import { notifyFinanceProgress } from '@/lib/integration/client'
 
 const INVOICE_TYPE_TO_COST_CATEGORY: Record<string, string> = {
   purchase_order: 'raw_material', supplier_invoice: 'raw_material',
@@ -141,6 +142,22 @@ export async function POST(
         dueDate: earliestDue || '待定',
         affectsProduction: false,
       }).catch(err => console.error('[WeChat] 付款通知发送失败:', err))
+    }
+
+    // 5. 出站回传节拍器：订单财务决算完成（审计 P1④，非阻塞；用 qimo_order_id 精确关联）
+    try {
+      const { data: bo } = await supabase.from('budget_orders').select('qimo_order_id').eq('id', budgetOrderId).maybeSingle()
+      if (bo?.qimo_order_id) {
+        notifyFinanceProgress('settlement.closed', {
+          qimo_order_id: bo.qimo_order_id as string,
+          order_no: orderNo,
+          amount: settlement.total_actual || 0,
+          currency: 'CNY',
+          note: `决算确认，生成 ${r.payables_created} 条应付`,
+        }).catch(err => console.error('[Integration] settlement.closed 回传失败:', err))
+      }
+    } catch (err) {
+      console.error('[Integration] 回传节拍器前查询失败:', err)
     }
 
     return NextResponse.json({

@@ -9,6 +9,43 @@ const ORDER_METRONOME_URL = process.env.ORDER_METRONOME_URL || ''
 const API_KEY = process.env.INTEGRATION_API_KEY || ''
 const WEBHOOK_SECRET = process.env.INTEGRATION_WEBHOOK_SECRET || ''
 
+// --- 财务进度回传节拍器（审计 P1④：结算/收款/付款完成 → 让节拍器看到资金进度）---
+export type FinanceProgressEvent = 'settlement.closed' | 'collection.received' | 'payment.completed'
+export async function notifyFinanceProgress(
+  event: FinanceProgressEvent,
+  data: { qimo_order_id?: string | null; order_no?: string | null; internal_order_no?: string | null; amount?: number; currency?: string; note?: string; at?: string }
+): Promise<{ success: boolean; error?: string }> {
+  if (!ORDER_METRONOME_URL || !API_KEY) return { success: true }  // 未配置则静默跳过,绝不阻塞财务主流程
+  const payload = {
+    event,
+    timestamp: new Date().toISOString(),
+    source: 'finance-system' as const,
+    request_id: `fin-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    data: { ...data, at: data.at || new Date().toISOString() },
+    signature: '',
+  }
+  const body = JSON.stringify(payload)
+  payload.signature = generateSignature(body, WEBHOOK_SECRET)
+  const signedBody = JSON.stringify(payload)
+  try {
+    const res = await fetch(`${ORDER_METRONOME_URL}/api/integration/finance-callback`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': API_KEY,
+        'x-webhook-signature': generateSignature(signedBody, WEBHOOK_SECRET),
+        'x-source': 'finance-system',
+      },
+      body: signedBody,
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) return { success: false, error: `HTTP ${res.status}` }
+    return { success: true }
+  } catch (e) {
+    return { success: false, error: `Network error: ${e instanceof Error ? e.message : 'unknown'}` }
+  }
+}
+
 // --- 发送审批决定到节拍器 ---
 export async function sendApprovalToMetronome(decision: ApprovalDecision): Promise<{
   success: boolean
