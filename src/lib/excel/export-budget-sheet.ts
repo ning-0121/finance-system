@@ -24,7 +24,8 @@ export interface CostItemRow {
 
 // ── 预算成本类别下的明细行（持久化在 order.items[0]._cost_breakdown.lines[category]）──
 export interface BudgetLine {
-  name: string         // 品名（如：黑纱、拉链）
+  name: string         // 品名/摘要（如：黑纱、拉链）
+  supplier?: string    // 供应商（模板 E 列；预算明细可选）
   qty: number          // 数量
   unit: string         // 单位（kg / 米 / 件 / 只 ...）
   unit_price: number   // 单价（CNY）
@@ -96,6 +97,7 @@ export function synthesizeCostItems(order: BudgetOrder): CostItemRow[] {
         const amount = Number(l.amount) || (Number(l.qty) || 0) * (Number(l.unit_price) || 0)
         rows.push({
           description: l.name || label,
+          supplier: l.supplier || undefined,
           unit: l.unit || undefined,
           qty: l.qty != null ? Number(l.qty) : null,
           unitPrice: l.unit_price != null ? Number(l.unit_price) : null,
