@@ -33,6 +33,8 @@ import { validateCostEntry, type ValidationWarning } from '@/lib/engines/validat
 import { allocateAmountByOrderQty } from '@/lib/engines/cost-allocation'
 import { BudgetOverview } from './BudgetOverview'
 import { TaxPointOverview } from './TaxPointOverview'
+import { BudgetRefPanel } from './BudgetRefPanel'
+import { PurchaseOrderInbox } from './PurchaseOrderInbox'
 
 // 录入单位下拉选项（统一口径，避免 件/kg/公斤 混录导致决算按单位拆行）
 const UNIT_OPTIONS = ['件', '米', '千克', '个']
@@ -115,8 +117,17 @@ export default function CostsPage() {
   const [syncedOrderMap, setSyncedOrderMap] = useState<Record<string, string>>({}) // budget_order_id → QM订单号
   const [syncedQtyMap, setSyncedQtyMap] = useState<Record<string, number>>({}) // budget_order_id → 订单数量(分摊权重)
   const [supplierAliases, setSupplierAliases] = useState<Record<string, string>>({}) // 旧名→标准名(归并登记)
+  const [poPendingCount, setPoPendingCount] = useState(0)        // 待处理采购单数(Tab 红点)
+  const [registeringPoId, setRegisteringPoId] = useState<string | null>(null) // 正在从采购单登记费用
   // 供应商画像主数据（录入费用时供应商从这里选，可输入筛选）
   const [supplierMasters, setSupplierMasters] = useState<{ id: string; name: string }[]>([])
+
+  const loadPoCount = useCallback(async () => {
+    const { count, error } = await createClient().from('fin_purchase_orders')
+      .select('id', { count: 'exact', head: true }).eq('fin_status', 'pending').is('deleted_at', null)
+    if (!error) setPoPendingCount(count || 0)
+  }, [])
+  useEffect(() => { loadPoCount() }, [loadPoCount])
 
   useEffect(() => {
     async function load() {
@@ -221,8 +232,9 @@ export default function CostsPage() {
   // 支持 /costs?q=单号 直达搜索（订单详情"实际归集N行"跳转用）；
   // 用 window.location 而非 useSearchParams，避免 App Router 的 Suspense 约束
   useEffect(() => {
-    const q = new URLSearchParams(window.location.search).get('q')
-    if (q) setCostSearch(q)
+    const sp = new URLSearchParams(window.location.search)
+    const q = sp.get('q'); if (q) setCostSearch(q)
+    const t = sp.get('tab'); if (t) setTab(t)
   }, [])
 
   // 搜索匹配（订单号、供应商、描述）——列表过滤与分类统计共用
@@ -553,6 +565,14 @@ export default function CostsPage() {
       }
       const totalSaved = (editItem ? 1 : 0) + newItems.length
       toast.success(editItem ? `已更新，共保存 ${totalSaved} 条` : `已录入 ${newItems.length} 条费用`)
+      // 若本次是从采购单登记 → 把该采购单标记为已登记费用，工作台红点相应减少
+      if (registeringPoId) {
+        const { data: pu } = await supabase.auth.getUser()
+        await supabase.from('fin_purchase_orders').update({
+          fin_status: 'registered', processed_at: new Date().toISOString(), processed_by: pu?.user?.id || null,
+        }).eq('id', registeringPoId)
+        setRegisteringPoId(null); loadPoCount()
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg.includes('cost_type')) toast.error('费用类型不支持，请刷新页面后重试')
@@ -662,6 +682,9 @@ export default function CostsPage() {
               </TabsTrigger>
               <TabsTrigger value="overview">预算总表</TabsTrigger>
               <TabsTrigger value="taxpoint">票点归集</TabsTrigger>
+              <TabsTrigger value="po" className={poPendingCount > 0 ? 'text-red-600 font-semibold' : ''}>
+                采购单{poPendingCount > 0 ? ` (${poPendingCount})` : ''}
+              </TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="flex items-center gap-2">
@@ -676,6 +699,7 @@ export default function CostsPage() {
               setEditItem(null)
               setEntryMode('single')
               setSharedOrderIds([])
+              setRegisteringPoId(null)   // 手动新建不关联采购单
               setShowAdd(true)
             }}
             >
@@ -688,6 +712,18 @@ export default function CostsPage() {
           <BudgetOverview costItems={costItems} />
         ) : tab === 'taxpoint' ? (
           <TaxPointOverview costItems={costItems} syncedOrderMap={syncedOrderMap} />
+        ) : tab === 'po' ? (
+          <PurchaseOrderInbox syncedOrderMap={syncedOrderMap} onChanged={loadPoCount} onRegister={(po) => {
+            // 从采购单一键回填录入费用：供应商/金额/币种/关联订单，并记住待登记的采购单
+            setEditItem(null); setEntryMode('single'); setSharedOrderIds([])
+            setFormSupplier(po.supplier_name || '')
+            setFormAmount(po.total_amount != null ? String(po.total_amount) : '')
+            setFormCurrency(po.currency || 'CNY')
+            setFormOrderId(po.budget_order_id || '')
+            setRegisteringPoId(po.id)
+            setShowAdd(true)
+            setTab('all')
+          }} />
         ) : (
         <Card>
           <CardContent className="p-0 overflow-x-auto">
@@ -1017,6 +1053,16 @@ export default function CostsPage() {
                 <Input type="number" step="0.01" placeholder="0.00" value={formAmount} onChange={e => setFormAmount(e.target.value)} className="border-primary/30" />
               </div>
             </div>
+            {/* 预算对照：关联订单后显示预算 vs 已归集，本次录入超预算实时提示 */}
+            {entryMode !== 'shared' && formOrderId && (
+              <BudgetRefPanel
+                order={orders.find(o => o.id === formOrderId)}
+                costItems={costItems}
+                editItemId={editItem?.id ?? null}
+                currentCostType={formType}
+                currentAmountCny={(Number(formAmount) || 0) * (formCurrency === 'CNY' ? 1 : (Number(formRate) || 1))}
+              />
+            )}
             {/* 历史比价：布料(品名+颜色)/加工费(款号) 实时参考价 */}
             {(formType === 'fabric' || formType === 'processing') && (priceRefLoading || (priceRef && priceRef.count > 0)) && (() => {
               const curUnitCny = (Number(formUnitPrice) || 0) * (formCurrency === 'CNY' ? 1 : (Number(formRate) || 1))
@@ -1132,7 +1178,7 @@ export default function CostsPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowAdd(false)}>取消</Button>
+            <Button variant="outline" onClick={() => { setShowAdd(false); setRegisteringPoId(null) }}>取消</Button>
             <Button onClick={handleSaveWithValidation} disabled={saving}>
               {saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />保存中...</> : '确认录入'}
             </Button>

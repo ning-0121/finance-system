@@ -31,6 +31,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [drillDown, setDrillDown] = useState<string | null>(null)
   const [monthlyProfit, setMonthlyProfit] = useState<{ month: string; revenue: number; cost: number; profit: number; margin: number }[]>([])
+  const [poPending, setPoPending] = useState(0)
 
   useEffect(() => {
     let alive = true
@@ -49,6 +50,10 @@ export default function DashboardPage() {
         getAlerts(), getPendingRiskEvents(), getPendingDocumentActions(),
         getTrustScoreSummary(), getMonthlyProfitData(),
       ])
+      // 待处理采购单数(订单系统推来待财务处理)
+      createClient().from('fin_purchase_orders').select('id', { count: 'exact', head: true })
+        .eq('fin_status', 'pending').is('deleted_at', null)
+        .then(({ count }) => { if (alive) setPoPending(count || 0) })
       if (!alive) return
       setAlerts(alertsData); setRiskEvents(risks); setPendingActions(actions)
       setTrustSummary(trust); setMonthlyProfit(monthly)
@@ -132,6 +137,18 @@ export default function DashboardPage() {
             </Card>
           ))}
         </div>
+
+        {/* 新采购单提醒（系统内通知，非企微）——财务一眼可见 */}
+        {poPending > 0 && (
+          <Link href="/costs?tab=po" className="block">
+            <div className="flex items-center justify-between p-3 rounded-lg bg-amber-50 border border-amber-300 hover:bg-amber-100 transition-colors">
+              <span className="text-sm font-medium text-amber-800 flex items-center gap-2">
+                <Package className="h-4 w-4" />有 {poPending} 张新采购单待处理（订单系统推送）
+              </span>
+              <span className="text-xs text-amber-700">去费用归集处理 →</span>
+            </div>
+          </Link>
+        )}
 
         {/* 待处理动作中心 + 信任快照 */}
         {(pendingActions.length > 0 || riskEvents.length > 0) && (
