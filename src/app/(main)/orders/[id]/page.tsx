@@ -28,8 +28,9 @@ import {
 } from '@/components/ui/dialog'
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
 import { FinanceWorkflowGuide } from '@/components/orders/FinanceWorkflowGuide'
-import { demoUser } from '@/lib/demo-data'
+import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
+import { generateOrderSettlement } from '@/lib/supabase/queries-v2'
 import { validateBudgetEdit } from '@/lib/engines/validation-engine'
 import { runOrderSubmitGate, type GateResult } from '@/lib/engines/submit-gate-engine'
 import { getSubDocuments, getActualInvoices, getShippingDocuments, getOrderSettlement } from '@/lib/supabase/queries-v2'
@@ -68,6 +69,7 @@ import {
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const router = useRouter()
+  const { user } = useCurrentUser()
 
   const [order, setOrder] = useState<BudgetOrder | null>(null)
   const [settlement, setSettlement] = useState<ReturnType<typeof useState<import('@/lib/types').SettlementOrder | null>>[0]>(null)
@@ -398,8 +400,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   }
 
   const handleStatusChange = async (action: 'submit' | 'approve' | 'reject', newStatus: BudgetOrderStatus) => {
+    // 真实登录人——此前用 demoUser('user-fiona' 非UUID)导致审批必败、日志写不进(审计 P0/P1)
+    const actorId = user?.id
+    if (!actorId) { toast.error('登录态已失效，请重新登录后再审批'); return }
     // 自审批阻止：审批人不能是创建人
-    if (action === 'approve' && demoUser.id === order.created_by) {
+    if (action === 'approve' && actorId === order.created_by) {
       toast.error('不能审批自己创建的订单')
       return
     }
@@ -411,13 +416,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     }
 
     // 1. 持久化状态变更到数据库
-    const { error: statusError } = await updateBudgetOrderStatus(order.id, newStatus, demoUser.id)
+    const { error: statusError } = await updateBudgetOrderStatus(order.id, newStatus, actorId)
     if (statusError) {
       toast.error(`操作失败: ${statusError}`)
       return
     }
 
-    // 2. 持久化审批记录
+    // 2. 持久化审批记录（检查落库结果，失败明确提示——此前静默失败致审计链为空）
     const log: ApprovalLog = {
       id: `al-${Date.now()}`,
       entity_type: 'budget_order',
@@ -425,12 +430,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       action,
       from_status: order.status,
       to_status: newStatus,
-      operator_id: demoUser.id,
-      operator: demoUser,
+      operator_id: actorId,
+      operator: user ?? undefined,
       comment: comment || null,
       created_at: new Date().toISOString(),
     }
-    await createApprovalLog(log)
+    const { error: logError } = await createApprovalLog(log)
+    if (logError) toast.warning(`状态已变更，但审批记录写入失败：${logError}`)
 
     // 3. 更新UI
     setOrder({ ...order, status: newStatus })
@@ -442,9 +448,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     toast.success(actionLabels[action], { description: `订单 ${order.order_no} 已${actionLabels[action]}` })
   }
 
-  const handleGenerateSettlement = () => {
-    toast.success('结算单已生成', { description: `基于预算单 ${order.order_no} 生成结算单` })
-    router.push('/orders')
+  const handleGenerateSettlement = async () => {
+    // 真实落库(此前只 toast+跳转,决算表不产生记录——假按钮，审计 P1)
+    const { error } = await generateOrderSettlement(order.id)
+    if (error) { toast.error(`生成决算单失败：${error}`); return }
+    toast.success('决算单已生成', { description: `基于订单 ${order.order_no}` })
+    router.push(`/orders/${order.id}/settlement`)
   }
 
   const varianceData = settlement?.variance_analysis?.map((v) => ({
@@ -501,10 +510,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   修改预算
                 </Button>
                 <Button size="sm" onClick={async () => {
+                  if (!user?.id) { toast.error('登录态已失效，请重新登录'); return }
                   // rejected → draft → pending_review
-                  const { error: e1 } = await updateBudgetOrderStatus(order.id, 'draft', demoUser.id)
+                  const { error: e1 } = await updateBudgetOrderStatus(order.id, 'draft', user.id)
                   if (e1) { toast.error(`操作失败: ${e1}`); return }
-                  const { error: e2 } = await updateBudgetOrderStatus(order.id, 'pending_review', demoUser.id)
+                  const { error: e2 } = await updateBudgetOrderStatus(order.id, 'pending_review', user.id)
                   if (e2) { toast.error(`操作失败: ${e2}`); return }
                   setOrder({ ...order, status: 'pending_review' })
                   toast.success('已重新提交审批')
