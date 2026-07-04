@@ -548,6 +548,19 @@ async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResu
     const { data: synced } = await supabase
       .from('synced_orders').select('budget_order_id').eq('id', order.id).maybeSingle()
     if (synced?.budget_order_id) {
+      // 审计 P1③:迟到金额提醒。绮陌先空头后补额/改额时,草稿已建会被幂等短路→金额永不回填、且无告警(低估收入)。
+      // 若草稿仍是 draft 且绮陌金额与草稿不一致,记一条 integration_logs 警告交财务决定;绝不自动改 draft 以外的单。
+      try {
+        const incoming = Number(order.total_amount) || (Number(order.unit_price || 0) * Number(order.quantity || 0))
+        const { data: bo } = await supabase.from('budget_orders').select('total_revenue, status').eq('id', synced.budget_order_id).maybeSingle()
+        if (bo && bo.status === 'draft' && incoming > 0 && Math.abs((Number(bo.total_revenue) || 0) - incoming) > 0.01) {
+          await supabase.from('integration_logs').insert({
+            event_type: 'order.amount_diff', direction: 'inbound',
+            request_id: `amt-diff-${order.id}-${Date.now()}`, source: 'order-metronome', status: 'warning',
+            payload_summary: `订单 ${order.order_no} 绮陌金额=${incoming} ≠ 财务草稿=${bo.total_revenue}(草稿仍 draft)，请财务确认是否采纳新金额`,
+          })
+        }
+      } catch (e) { console.error('[webhook] 金额 diff 检测失败:', e) }
       await markSyncStatus(supabase, order.id, 'draft_skipped', { budget_sync_error: null })
       return { status: 'draft_skipped', budget_order_id: synced.budget_order_id }
     }
