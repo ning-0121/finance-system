@@ -72,6 +72,7 @@ export async function POST(request: Request) {
           customer_name: o.customer_name || '',
           quantity: o.quantity,
           quantity_unit: o.quantity_unit || '件',
+          currency: o.currency || 'USD',   // 审计 P2:此前全字段重刷漏了币种,断链期改币刷不回来
           unit_price: o.unit_price,
           total_amount: o.total_amount,
           factory_name: o.factory_name,
@@ -195,8 +196,19 @@ export async function POST(request: Request) {
         continue
       }
       if (newBO) {
-        await finance.from('synced_orders').update({ budget_order_id: newBO.id }).eq('id', o.id)
-        createdCount++
+        // 原子认领：与 webhook 并发时只允许一个草稿胜出(此前竞态会建两张草稿,审计 P1)。
+        // 财务表禁物理删，落败草稿软删。
+        const { data: claim } = await finance.from('synced_orders')
+          .update({ budget_order_id: newBO.id })
+          .eq('id', o.id).is('budget_order_id', null)
+          .select('id')
+        if (claim && claim.length > 0) {
+          createdCount++
+        } else {
+          await finance.from('budget_orders').update({
+            deleted_at: new Date().toISOString(), delete_reason: '并发重复草稿自动清理(原子认领落败)',
+          }).eq('id', newBO.id)
+        }
       }
     }
 

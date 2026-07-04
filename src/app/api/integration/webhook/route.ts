@@ -74,17 +74,42 @@ export async function POST(request: Request) {
       source: payload.source || 'order-metronome',
       payload: payload as unknown as Record<string, unknown>,
       process_status: 'processing',
+      attempt_count: 1,
     })
     if (inboxErr) {
       if (/duplicate|unique/i.test(inboxErr.message)) {
-        return NextResponse.json({ status: 'already_processed', request_id: payload.request_id })
+        // 已存在同 request_id：done/ignored → 幂等返回；failed 或卡死 processing(>10分钟,
+        // 函数崩溃未回写) → 原子抢占重试。此前一律 already_processed，失败事件永久黑洞(审计 P0)。
+        const { data: prev } = await inboxDb.from('fin_inbox_events')
+          .select('process_status, attempt_count, received_at')
+          .eq('request_id', payload.request_id).maybeSingle()
+        const stale = prev?.process_status === 'processing'
+          && prev?.received_at && (Date.now() - new Date(prev.received_at as string).getTime() > 10 * 60_000)
+        if (prev && (prev.process_status === 'failed' || stale)) {
+          const { data: claimed } = await inboxDb.from('fin_inbox_events')
+            .update({ process_status: 'processing', attempt_count: (Number(prev.attempt_count) || 0) + 1, last_error: null })
+            .eq('request_id', payload.request_id)
+            .in('process_status', ['failed', 'processing'])
+            .select('request_id')
+          if (claimed && claimed.length > 0) {
+            inboxLanded = true   // 抢占成功 → 继续走处理(重试)
+          } else {
+            return NextResponse.json({ status: 'already_processed', request_id: payload.request_id })
+          }
+        } else {
+          return NextResponse.json({ status: 'already_processed', request_id: payload.request_id })
+        }
+      } else {
+        // 落账失败不再降级为内存幂等(Vercel 多实例下形同无幂等) → 503 让上游可感知重试
+        console.error('[Webhook] inbox 落账失败:', inboxErr.message)
+        return NextResponse.json({ error: 'Inbox unavailable, retry later' }, { status: 503 })
       }
-      console.error('[Webhook] inbox 落账失败(降级为内存幂等):', inboxErr.message)
     } else {
       inboxLanded = true
     }
   } catch (e) {
     console.error('[Webhook] inbox 落账异常:', e)
+    return NextResponse.json({ error: 'Inbox unavailable, retry later' }, { status: 503 })
   }
 
   // 5. 处理事件
@@ -115,7 +140,7 @@ export async function POST(request: Request) {
     await logIntegrationEvent(payload, 'inbound', 'failed', errorMsg)
     if (inboxLanded) {
       await inboxDb.from('fin_inbox_events')
-        .update({ process_status: 'failed', last_error: errorMsg.slice(0, 500), attempt_count: 1 })
+        .update({ process_status: 'failed', last_error: errorMsg.slice(0, 500) })  // attempt_count 由落账/抢占时维护,不在此重置
         .eq('request_id', payload.request_id)
     }
 
@@ -132,6 +157,7 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'order.created':
     case 'order.updated':
     case 'order.activated':
+    case 'order.resync':   // 订单系统"重新同步"按钮：payload 与 order.updated 同构,复用同步(此前落 ignored=按钮无效,审计 P0)
       return handleOrderSync(payload.data as unknown as SyncedOrder, payload.event)
 
     case 'order.completed':
@@ -487,17 +513,13 @@ async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResu
     let customerId: string | null = null
     const cleanCustomerName = order.customer_name?.trim()  // 空白字符串视作未提供
     if (cleanCustomerName) {
-      const { data: customer } = await supabase
-        .from('customers').select('id').ilike('company', `%${cleanCustomerName}%`).limit(1)
-      if (customer?.length) customerId = customer[0].id
-      else {
-        const { data: newCustomer, error: createErr } = await supabase
-          .from('customers')
-          .insert({ name: cleanCustomerName, company: cleanCustomerName, currency: order.currency || 'USD' })
-          .select('id').single()
-        if (createErr) throw new Error(`customer create failed: ${createErr.message}`)
-        if (newCustomer) customerId = newCustomer.id
-      }
+      // 与手动同步同一 RPC(advisory lock 串行化 + 等值匹配)——此前 ilike %name% 子串匹配
+      // 会把"ABC"挂到"ABC Group"，且并发下重复建客户(审计 P2)
+      const { data: cust, error: custErr } = await supabase.rpc('get_or_create_customer' as never, {
+        p_name: cleanCustomerName, p_currency: order.currency || 'USD',
+      } as never) as { data: { id?: string } | null; error: { message: string } | null }
+      if (custErr) throw new Error(`customer lookup failed: ${custErr.message}`)
+      if (cust?.id) customerId = cust.id
     }
     if (!customerId) {
       await markSyncStatus(supabase, order.id, 'manual_review', {
@@ -557,6 +579,21 @@ async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResu
     }).select('id').single()
 
     if (insertErr || !created) throw new Error(`budget_orders insert failed: ${insertErr?.message || 'unknown'}`)
+
+    // 原子认领：并发(order.created 与 order.activated / 手动同步)下只允许一个草稿胜出。
+    // 此前 check-then-insert 无锁，竞态会建出两张草稿(审计 P1)。财务表禁物理删，败者软删。
+    const { data: claim } = await supabase.from('synced_orders')
+      .update({ budget_order_id: created.id })
+      .eq('id', order.id).is('budget_order_id', null)
+      .select('id')
+    if (!claim || claim.length === 0) {
+      await supabase.from('budget_orders').update({
+        deleted_at: new Date().toISOString(), delete_reason: '并发重复草稿自动清理(原子认领落败)',
+      }).eq('id', created.id)
+      const { data: winner } = await supabase.from('synced_orders').select('budget_order_id').eq('id', order.id).maybeSingle()
+      await markSyncStatus(supabase, order.id, 'draft_skipped', { budget_sync_error: null })
+      return { status: 'draft_skipped', budget_order_id: winner?.budget_order_id ?? undefined }
+    }
 
     // 把 quotation 原始 payload 存进 synced_orders 做审计
     if (q) {
