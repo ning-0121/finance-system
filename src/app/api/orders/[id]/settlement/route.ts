@@ -60,10 +60,13 @@ export async function POST(
     // 2. 准备应付数据（route 层只组装 jsonb，不写 DB）
     const { data: order } = await supabase
       .from('budget_orders')
-      .select('order_no')
+      .select('order_no, exchange_rate')
       .eq('id', budgetOrderId)
       .single()
     const orderNo = order?.order_no || null
+    // 审计P1:预算单按 CNY 记(estimated_total 为 CNY)。外币发票要折 CNY 再比,否则 USD8000 vs ¥50000
+    // 直接比 → 恒不超、漏标超支。折算汇率用订单汇率(近似换汇汇率;仅用于 over_budget 提示)。
+    const orderRate = Number((order as { exchange_rate?: number } | null)?.exchange_rate) || 0
 
     const { data: invoices } = await supabase
       .from('actual_invoices')
@@ -81,7 +84,11 @@ export async function POST(
 
     const payablesJson = (invoices || []).map(inv => {
       const budgetAmount = inv.sub_document_id ? (subDocMap.get(inv.sub_document_id) ?? null) : null
-      const overBudget = budgetAmount !== null && inv.total_amount > budgetAmount
+      // 发票折 CNY 后再与 CNY 预算比。外币且无汇率 → 无法可靠折算,不妄标超支(overBudget=false)。
+      const invCny = (!inv.currency || inv.currency === 'CNY')
+        ? inv.total_amount
+        : (orderRate > 0 ? inv.total_amount * orderRate : null)
+      const overBudget = budgetAmount !== null && invCny !== null && invCny > budgetAmount
       return {
         invoice_id: inv.id,
         supplier_name: inv.supplier_name || '未知供应商',

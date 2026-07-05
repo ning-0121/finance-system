@@ -13,6 +13,8 @@ export type WebhookEventType =
   | 'milestone.updated'       // 里程碑状态更新
   | 'price_approval.requested' // 价格审批请求
   | 'delay.requested'         // 延期审批请求
+  | 'cancel.requested'        // 取消订单审批请求(财务批准后节拍器才取消,回传 approval_type:'cancel')
+  | 'milestone.requested'     // 里程碑财务确认请求(财务确认加工费/核准出运/收款,回传 approval_type:'milestone')
   | 'file.uploaded'           // 文件上传同步
   | 'approval.callback'       // 审批结果回调（从财务系统到节拍器）
   | 'order.resync'            // 订单全量重推

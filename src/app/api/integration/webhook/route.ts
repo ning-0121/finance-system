@@ -184,6 +184,12 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'delay.requested':
       return handleDelayApprovalRequest(payload.data as unknown as DelayApprovalRequest)
 
+    // 取消订单/里程碑 财务审批(接通:节拍器发起 → 财务审批队列 → 批/驳回传 approval_type:'cancel'/'milestone')
+    case 'cancel.requested':
+      return handleGenericApprovalRequest(payload.data as Record<string, unknown>, 'cancel')
+    case 'milestone.requested':
+      return handleGenericApprovalRequest(payload.data as Record<string, unknown>, 'milestone')
+
     case 'file.uploaded':
       return handleFileUpload(payload.data as Record<string, unknown>)
 
@@ -674,6 +680,30 @@ async function handleDelayApprovalRequest(req: DelayApprovalRequest) {
 
   if (error) throw new Error(`Delay approval sync failed: ${error.message}`)
   return { action: 'approval_queued', type: 'delay', order_no: req.order_no }
+}
+
+// --- 取消订单 / 里程碑 财务审批请求(通用)---
+// 节拍器发起,财务在审批队列批/驳 → 现有 approve 路由透传 approval_type 回传节拍器 finance-callback。
+// 载荷通用字段:id(必) / order_no / customer_name / requester_name / summary / detail / created_at。
+async function handleGenericApprovalRequest(data: Record<string, unknown>, type: 'cancel' | 'milestone') {
+  const supabase = createServiceClient()
+  const id = String(data.id || data.approval_id || '')
+  if (!id) throw new Error(`${type}.requested 缺少 id`)
+  const { error } = await supabase.from('pending_approvals').upsert({
+    id,
+    approval_type: type,
+    order_no: (data.order_no as string) ?? null,
+    customer_name: (data.customer_name as string) ?? null,
+    requested_by_name: (data.requester_name as string) ?? (data.requested_by_name as string) ?? null,
+    summary: (data.summary as string) ?? (type === 'cancel' ? '取消订单待财务审批' : '里程碑待财务确认'),
+    detail: (data.detail as Record<string, unknown>) ?? data,
+    expires_at: (data.expires_at as string) ?? null,
+    status: 'pending',
+    source_created_at: (data.created_at as string) ?? null,
+    synced_at: new Date().toISOString(),
+  }, { onConflict: 'id' })
+  if (error) throw new Error(`${type} approval sync failed: ${error.message}`)
+  return { action: 'approval_queued', type, order_no: (data.order_no as string) ?? null }
 }
 
 // --- 文件上传同步 ---
