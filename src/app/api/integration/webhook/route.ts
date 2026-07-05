@@ -198,6 +198,11 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'goods_receipt.recorded':
       return handleGoodsReceiptRecorded(payload.data as Record<string, unknown>)
 
+    // 内部报价单冻结 → 财务预算自动到位(结构化 6 桶+逐行明细+收款款号+核算日期/版本)。
+    // 只填 draft 预算(不覆盖已审批);来源标 qimo_quotation,带 _quotation_at 供版本追溯。
+    case 'quotation.frozen':
+      return handleQuotationFrozen(payload.data as Record<string, unknown>)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
@@ -283,6 +288,85 @@ async function handleGoodsReceiptRecorded(data: Record<string, unknown>) {
     return { action: 'ok', reason: '收货已接收(存 inbox 待深核销)' }
   }
   return { action: 'ok', reason: `收货已接收 line=${lineId} po=${poNo}` }
+}
+
+// --- 内部报价单冻结 → 财务预算自动到位（结构化 6 桶 + 逐行明细 + 收款款号 + 核算日期/版本）---
+// 契约：payload.data = { qimo_order_id, order_no, internal_order_no?, quote_id?, quote_version?,
+//   quotation_at(核算日期ISO), currency, exchange_rate?,
+//   revenue_lines?:[{sku,name,qty,unit_price,amount}],   // 收(款号,原币)
+//   cost_buckets?:{fabric,accessory,processing,forwarder,container,logistics},  // 6桶(CNY)
+//   cost_lines?:{ fabric:[{name,supplier?,qty,unit,unit_price,amount}], ... } } // 逐行(CNY)
+async function handleQuotationFrozen(data: Record<string, unknown>) {
+  const supabase = createServiceClient()
+  const qimoOrderId = (data.qimo_order_id as string) || ''
+  const orderNo = (data.order_no as string) || ''
+  const quotationAt = (data.quotation_at as string) || null
+  const quoteId = (data.quote_id as string) || null
+  if (!qimoOrderId && !orderNo) return { action: 'ignored', reason: 'quotation.frozen 缺 qimo_order_id/order_no' }
+
+  // 1. 定位 budget_order：优先 qimo_order_id(结构化)，退回 synced_orders.order_no → budget_order_id
+  let budgetOrderId: string | null = null
+  if (qimoOrderId) {
+    const { data: bo } = await supabase.from('budget_orders').select('id').eq('qimo_order_id', qimoOrderId).is('deleted_at', null).maybeSingle()
+    budgetOrderId = bo?.id ?? null
+  }
+  if (!budgetOrderId && orderNo) {
+    const { data: so } = await supabase.from('synced_orders').select('budget_order_id').eq('order_no', orderNo).not('budget_order_id', 'is', null).maybeSingle()
+    budgetOrderId = (so?.budget_order_id as string) ?? null
+  }
+
+  // 2. 冻结报价原文 + 核算日期回写 synced_orders（便于追溯，即便预算未建）
+  const snapPatch = { quotation_data: data, qimo_quote_id: quoteId, quotation_applied_at: quotationAt }
+  if (qimoOrderId) await supabase.from('synced_orders').update(snapPatch).eq('id', qimoOrderId)
+  else if (orderNo) await supabase.from('synced_orders').update(snapPatch).eq('order_no', orderNo)
+
+  if (!budgetOrderId) return { action: 'ok', reason: `报价已存(synced_orders)，但该订单尚未建预算单(order=${orderNo})` }
+
+  // 3. 只填 draft 预算，不覆盖已审批/已锁（报价存 synced_orders 待人工采纳）
+  const { data: bo } = await supabase.from('budget_orders').select('status, total_revenue').eq('id', budgetOrderId).maybeSingle()
+  if (bo && bo.status !== 'draft') return { action: 'ok', reason: `预算单非 draft(${bo?.status})，不自动覆盖，报价已存待人工采纳` }
+
+  // 4. 组装 _cost_breakdown（6 桶 + 逐行明细，桶标量=明细之和维持不变量）
+  const BUCKETS = ['fabric', 'accessory', 'processing', 'forwarder', 'container', 'logistics']
+  const inLines = (data.cost_lines as Record<string, Array<Record<string, unknown>>>) || {}
+  const inBuckets = (data.cost_buckets as Record<string, unknown>) || {}
+  const r2 = (n: number) => Math.round(n * 100) / 100
+  const lines: Record<string, unknown[]> = {}
+  const scalar: Record<string, number> = {}
+  for (const b of BUCKETS) {
+    const arr = Array.isArray(inLines[b]) ? inLines[b] : []
+    const mapped = arr.map(l => ({
+      name: String(l.name || '(无摘要)'),
+      ...(l.supplier ? { supplier: String(l.supplier) } : {}),
+      qty: Number(l.qty) || 0, unit: String(l.unit || ''),
+      unit_price: r2(Number(l.unit_price) || 0), amount: r2(Number(l.amount) || 0),
+    })).filter(l => l.amount || (l.qty && l.unit_price))
+    if (mapped.length) { lines[b] = mapped; scalar[b] = r2(mapped.reduce((s, l) => s + l.amount, 0)) }
+    else scalar[b] = r2(Number(inBuckets[b]) || 0)
+  }
+  const currency = (data.currency as string) || 'CNY'
+  const rate = data.exchange_rate != null ? Number(data.exchange_rate) : (currency === 'CNY' ? 1 : null)
+  const revenueLines = Array.isArray(data.revenue_lines) ? (data.revenue_lines as Array<Record<string, unknown>>) : []
+  const revItems = revenueLines.map(l => ({
+    sku: l.sku ? String(l.sku) : null,
+    product_name: [l.sku, l.name].filter(Boolean).join(' ') || '-',
+    qty: Number(l.qty) || 0, unit_price: r2(Number(l.unit_price) || 0), amount: r2(Number(l.amount) || 0),
+  }))
+  const revenueTotal = r2(revItems.reduce((s, l) => s + l.amount, 0))
+  const cb = {
+    ...scalar, extras: [], lines,
+    _currency: 'CNY', _revenue_input: revenueTotal || Number(bo?.total_revenue) || 0,
+    _revenue_currency: currency, _rate: rate,
+    _source: 'qimo_quotation', _quotation_at: quotationAt, _quote_version: data.quote_version ?? null,
+  }
+  const items = revItems.length
+    ? revItems.map((it, i) => (i === 0 ? { ...it, _cost_breakdown: cb } : it))
+    : [{ _cost_breakdown: cb }]
+  const patch: Record<string, unknown> = { items }
+  if ((!bo?.total_revenue || Number(bo.total_revenue) === 0) && revenueTotal > 0) patch.total_revenue = revenueTotal
+  const { error } = await supabase.from('budget_orders').update(patch).eq('id', budgetOrderId)
+  if (error) throw new Error(`预算自动填充失败: ${error.message}`)
+  return { action: 'done', reason: `报价冻结→预算已填 order=${orderNo} · 6桶 ${Object.values(lines).flat().length} 行 · 核算日 ${quotationAt}` }
 }
 
 async function handleSupplierUpsert(data: Record<string, unknown>) {

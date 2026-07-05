@@ -19,6 +19,7 @@ export type WebhookEventType =
   | 'supplier.upserted'       // 供应商主数据同步
   | 'purchase_order.placed'   // 采购单下单（V1.0 头；V1.1 带 lines 行数据）
   | 'goods_receipt.recorded'  // 收货登记（按实收核销应付；节拍器三条收货入口回传）
+  | 'quotation.frozen'        // 内部报价单冻结 → 财务预算自动到位（6桶+逐行+核算日期/版本）
   | 'test.ping'               // 联调签名测试（不入业务账）
 
 // --- Webhook 事件载荷 ---
