@@ -224,9 +224,15 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
   const totalAmount = data.total_amount != null ? Number(data.total_amount) : null
   // 审批门槛复核(信任节拍器但自身也把关):要求审批且确达阈值 → 待审批
   const gated = requireApproval && poRequiresApproval(totalAmount)
-  const headExtra = gated
-    ? { fin_status: 'pending_approval', requires_approval: true }
-    : (requireApproval ? { requires_approval: false } : {})
+  let headExtra: Record<string, unknown> = requireApproval && !gated ? { requires_approval: false } : {}
+  if (gated) {
+    // 审计 P1:若财务已对本单决策(approved/rejected),inbox 失败重投/内容变更重发不得把它
+    // 打回 pending_approval(否则已批已下单的单凭空回到待审、留痕与状态自相矛盾)。仅未决策态才置待审批。
+    const { data: existing } = await supabase.from('fin_purchase_orders')
+      .select('fin_status').eq('purchase_order_id', poKey).maybeSingle()
+    const decided = ['approved', 'rejected'].includes((existing as { fin_status?: string } | null)?.fin_status || '')
+    headExtra = decided ? {} : { fin_status: 'pending_approval', requires_approval: true }
+  }
 
   const { data: poRow, error: poErr } = await supabase.from('fin_purchase_orders').upsert({
     purchase_order_id: poKey,

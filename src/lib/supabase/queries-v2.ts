@@ -662,16 +662,38 @@ export async function createSupplierPayment(payment: {
   payment_ref?: string | null         // 付款凭证号/单据号(银行流水号/回单号/发票号)——同供应商唯一，DB硬防重
   source_payable_id?: string | null   // 来源应付单(出纳付款同步)——结构化幂等键，防重复已付
   force?: boolean                      // true=用户已人工确认「非重复」，跳过查重直接登记
-}): Promise<{ data: SupplierPayment | null; error: string | null; duplicate?: PaymentDup[] }> {
+}): Promise<{ data: SupplierPayment | null; error: string | null; duplicate?: PaymentDup[]; blocked?: boolean }> {
   try {
     const supabase = createClient()
     const { data: userData } = await supabase.auth.getUser()
     const cur = payment.currency || 'CNY'
+    const isManual = !payment.source_payable_id   // 手记付款(对账单侧)无来源锚点
+    const ref = (payment.payment_ref || '').trim()
+    const since = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10)
 
-    // 防重复付款(直接记付款路径此前完全没查重 → 重复付款漏洞)：非强制、非应付同步时，
-    // 查同供应商+同金额+同币种 近90天的活跃付款流水，命中则返回 duplicate 让 UI 二次确认。
+    // 审计 P0-2 硬拦(force 也不放行)：手记付款时，若该供应商近90天已有一笔【系统通道出款】
+    // (排款单执行 source_batch_line_id / 出纳同步 source_payable_id)的同额同币付款，手记同额
+    // 几乎必是对同一笔应付的双记 → 直接拒，杜绝对账单「已付」双计、余额虚减。
+    if (isManual) {
+      const { data: sysDup } = await supabase.from('supplier_payments')
+        .select('id')
+        .eq('supplier_name', payment.supplier_name).eq('amount', payment.amount).eq('currency', cur)
+        .is('deleted_at', null).gte('paid_at', since)
+        .or('source_batch_line_id.not.is.null,source_payable_id.not.is.null')
+        .limit(1)
+      if (sysDup && sysDup.length > 0) {
+        return { data: null, blocked: true, error: '该供应商近90天已有一笔同额付款由系统出款(排款单执行/出纳同步)。手记同额会造成对账单双记，已拦下。如确为另一笔付款请走排款单，或改用不同金额/带唯一凭证号并联系管理员。' }
+      }
+    }
+
+    // 审计 P1：force 登记(人工确认「非重复」)必须带唯一凭证号 —— 给重复付款留可稽核锚点，
+    // 且让 (supplier,payment_ref) 唯一索引真正兜底(payment_ref 为空时该索引不生效)。
+    if (payment.force && isManual && !ref) {
+      return { data: null, error: '确认「非重复」登记时必须填写付款凭证号(银行流水号/回单号)，以便数据库唯一约束兜底防重复付款。' }
+    }
+
+    // 防重复付款软查重(可 force 绕过)：非强制、非应付同步时，查同供应商+同额+同币 近90天付款，命中则弹二次确认。
     if (!payment.force && !payment.source_payable_id) {
-      const since = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10)
       const { data: dups } = await supabase.from('supplier_payments')
         .select('amount, currency, paid_at, note')
         .eq('supplier_name', payment.supplier_name).eq('amount', payment.amount).eq('currency', cur)
@@ -689,7 +711,6 @@ export async function createSupplierPayment(payment: {
       created_by: userData?.user?.id || null,
     }
     if (payment.source_payable_id) row.source_payable_id = payment.source_payable_id
-    const ref = (payment.payment_ref || '').trim()
     if (ref) row.payment_ref = ref
 
     const { data, error } = await supabase.from('supplier_payments').insert(row).select().single()

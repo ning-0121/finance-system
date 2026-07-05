@@ -307,6 +307,18 @@ export default function PaymentsPage() {
       if (suspects.length > 0) { setDupSuspects(suspects); return }
       setDupSuspects([])
     }
+    // 审计 P1:该应付若已排入周排款单(存在未关闭排款行),不能再走直接付款——否则整额覆盖
+    // paid_amount 会留下永远执行不了的孤儿排款行、排款单关不掉。引导到排款页放款。
+    {
+      const supabase = createClient()
+      const { data: openLines } = await supabase.from('payment_batch_lines')
+        .select('id').eq('payable_id', payDialog.id).is('deleted_at', null)
+        .in('status', ['planned', 'held']).limit(1)
+      if (openLines && openLines.length > 0) {
+        toast.error('该应付已排入「周排款」单，请到 周排款(付款执行) 页放款，勿在此直接付款（避免重复付款/孤儿排款行）。')
+        return
+      }
+    }
     setProcessing(true)
     try {
       const supabase = createClient()

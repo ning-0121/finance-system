@@ -435,7 +435,19 @@ async function executeSingleAction(
       const amount = Number(f.amount || f.total_amount || 0)
       if (!amount || amount <= 0) throw new Error('update_receivable: 金额必须 > 0')
       const transactionDate = (f.transaction_date as string) || bizToday()
-      const currency = String(f.currency || 'USD')
+      const currency = String(f.currency || 'USD').toUpperCase()
+
+      // 审计 P0-3:外币回款必须带真实汇率折 CNY 入账(否则 GL 现金/应收双双失真)。
+      // 优先用单据汇率,缺则取订单汇率;外币仍无汇率 → 拒绝(不再静默按 1:1)。
+      let exchangeRate = Number(f.exchange_rate || 0)
+      if (currency === 'CNY') exchangeRate = 1
+      if (!exchangeRate || exchangeRate <= 0) {
+        const { data: ord } = await supabase.from('budget_orders').select('exchange_rate').eq('id', recvOrderId).maybeSingle()
+        exchangeRate = Number((ord as { exchange_rate?: number } | null)?.exchange_rate) || 0
+      }
+      if (!exchangeRate || exchangeRate <= 0) {
+        throw new Error(`update_receivable: 外币回款(${currency})缺汇率，无法折算入账。请在单据或订单上补录汇率后重试。`)
+      }
 
       // RPC 内部完整事务：actual_invoices + journal_entries + journal_lines + gl_balances
       // 任一失败整体 rollback，executor 收到 throw → retry → 永久失败时 subledger 也不存在
@@ -449,6 +461,7 @@ async function executeSingleAction(
           p_transaction_date: transactionDate,
           p_actor_id: confirmedBy,
           p_invoice_no: `RCV-${Date.now().toString(36)}`,
+          p_exchange_rate: exchangeRate,
         } as never,
       )
       if (rpcErr) throw new Error(`record_customer_receipt_atomic: ${rpcErr.message}`)

@@ -394,10 +394,12 @@ export default function SupplierReportPage() {
     if (!sup) { toast.error('请填写供应商'); return }
     if (!amt || amt <= 0) { toast.error('请输入有效付款金额'); return }
     setPaySaving(true)
-    const { data, error, duplicate } = await createSupplierPayment({
+    const { data, error, duplicate, blocked } = await createSupplierPayment({
       supplier_name: sup, amount: amt, paid_at: payDate || null, note: payNote.trim() || null, payment_ref: payRef.trim() || null, force,
     })
     setPaySaving(false)
+    // 硬拦(不可 force)：同额已由系统通道出款 / force 缺凭证号 → 直接报错，不给绕过入口
+    if (blocked) { toast.error(error || '该付款已被系统拦下(疑似双记)'); return }
     // 防重复付款：命中疑似重复 → 弹确认，列出已有的同额付款，用户确认非重复才 force 登记
     if (duplicate && duplicate.length > 0) {
       const list = duplicate.map(d => `· ${d.currency} ${Number(d.amount).toLocaleString()}${d.paid_at ? ' 付于 ' + String(d.paid_at).slice(0, 10) : ''}${d.note ? '（' + String(d.note).slice(0, 20) + '）' : ''}`).join('\n')
