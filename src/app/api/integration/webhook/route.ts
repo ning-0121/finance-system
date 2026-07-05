@@ -13,6 +13,7 @@ import {
 } from '@/lib/integration/security'
 import type { WebhookPayload, SyncedOrder, PriceApprovalRequest, DelayApprovalRequest } from '@/lib/integration/types'
 import { createServiceClient } from '@/lib/supabase/service'
+import { poRequiresApproval } from '@/lib/integration/purchase-approval'
 
 export async function POST(request: Request) {
   // 1. 速率限制
@@ -187,6 +188,11 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'purchase_order.placed':
       return handlePurchaseOrderPlaced(payload.data as Record<string, unknown>, payload.request_id)
 
+    // 采购单审批(≥¥5000):节拍器下单前发本事件卡住采购,财务侧本单进「待审批」。
+    // 复用采购单落库逻辑,仅把 fin_status 置 pending_approval + requires_approval。
+    case 'purchase_order.approval_requested':
+      return handlePurchaseOrderPlaced(payload.data as Record<string, unknown>, payload.request_id, true)
+
     // 审计 P0-3:此前无 case→落 default ignored→inbox 假 pending 永久堆积(生产库卡了 61 条)。
     // 现消费为供应商主数据 upsert，财务侧供应商档随节拍器同步。
     case 'supplier.upserted':
@@ -209,17 +215,25 @@ async function handleWebhookEvent(payload: WebhookPayload) {
 }
 
 // --- 采购单下单入账（V1.0 头；V1.1 lines 行数据预留） ---
-async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestId: string) {
+// requireApproval=true(来自 purchase_order.approval_requested)：≥¥5000 采购,本单进「待审批」。
+async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestId: string, requireApproval = false) {
   const supabase = createServiceClient()
   const poKey = String(data.purchase_order_id || data.po_no || '')
-  if (!poKey) throw new Error('purchase_order.placed 缺少 purchase_order_id/po_no')
+  if (!poKey) throw new Error('purchase_order 缺少 purchase_order_id/po_no')
+
+  const totalAmount = data.total_amount != null ? Number(data.total_amount) : null
+  // 审批门槛复核(信任节拍器但自身也把关):要求审批且确达阈值 → 待审批
+  const gated = requireApproval && poRequiresApproval(totalAmount)
+  const headExtra = gated
+    ? { fin_status: 'pending_approval', requires_approval: true }
+    : (requireApproval ? { requires_approval: false } : {})
 
   const { data: poRow, error: poErr } = await supabase.from('fin_purchase_orders').upsert({
     purchase_order_id: poKey,
     po_no: String(data.po_no || poKey),
     supplier_id: (data.supplier_id as string) ?? null,
     supplier_name: (data.supplier_name as string) ?? null,
-    total_amount: data.total_amount != null ? Number(data.total_amount) : null,
+    total_amount: totalAmount,
     currency: (data.currency as string) || 'CNY',
     payment_terms: (data.payment_terms as string) ?? null,
     delivery_date: (data.delivery_date as string) ?? null,
@@ -228,6 +242,7 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
     order_refs: (data.order_refs as unknown[]) ?? [],
     source_request_id: requestId,
     updated_at: new Date().toISOString(),
+    ...headExtra,
   }, { onConflict: 'purchase_order_id' }).select('id').single()
   if (poErr) throw new Error(`fin_purchase_orders 写入失败: ${poErr.message}`)
 
@@ -258,7 +273,7 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
     }
   }
 
-  return { action: 'po_registered', po_no: String(data.po_no || poKey), lines: lineCount }
+  return { action: gated ? 'po_pending_approval' : 'po_registered', po_no: String(data.po_no || poKey), lines: lineCount }
 }
 
 // --- 供应商主数据 upsert（审计 P0-3）---

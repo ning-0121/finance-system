@@ -18,6 +18,7 @@ export type WebhookEventType =
   | 'order.resync'            // 订单全量重推
   | 'supplier.upserted'       // 供应商主数据同步
   | 'purchase_order.placed'   // 采购单下单（V1.0 头；V1.1 带 lines 行数据）
+  | 'purchase_order.approval_requested'  // 采购单≥¥5000 请求财务审批（前置卡单，批/驳回传节拍器）
   | 'goods_receipt.recorded'  // 收货登记（按实收核销应付；节拍器三条收货入口回传）
   | 'quotation.frozen'        // 内部报价单冻结 → 财务预算自动到位（6桶+逐行+核算日期/版本）
   | 'test.ping'               // 联调签名测试（不入业务账）
@@ -118,13 +119,14 @@ export interface DelayApprovalRequest {
 
 // --- 审批决定（财务系统 -> 节拍器） ---
 export interface ApprovalDecision {
-  approval_id: string
-  approval_type: 'price' | 'delay' | 'cancel'
+  approval_id: string        // price/delay/cancel=审批ID；purchase=采购单 purchase_order_id
+  approval_type: 'price' | 'delay' | 'cancel' | 'purchase'
   decision: 'approved' | 'rejected'
   decided_by: string         // 财务系统用户ID
   decider_name: string       // 财务系统用户名
   decision_note: string | null
   decided_at: string
+  po_no?: string             // 采购审批回传：便于节拍器按单号定位
 }
 
 // --- 集成日志 ---

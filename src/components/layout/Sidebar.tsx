@@ -31,6 +31,7 @@ const baseNavigation = [
   { name: '订单成本核算', href: '/orders', icon: Package },
   { name: '文档智能中心', href: '/documents', icon: FileText },
   { name: '费用归集', href: '/costs', icon: ShoppingCart },
+  { name: '采购审批', href: '/purchase-approvals', icon: ShieldCheck },
   { name: '应收账款', href: '/receivables', icon: CreditCard },
   { name: '应付账款', href: '/payables', icon: CreditCard },
   { name: '汇总报表', href: '/reports', icon: ScrollText },
