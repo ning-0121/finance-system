@@ -49,7 +49,7 @@ DECLARE
   v_ccy   text := upper(coalesce(nullif(trim(p_currency),''),'CNY'));
   v_seq   int; v_no text; v_id uuid;
 BEGIN
-  SELECT coalesce(max(substring(batch_no from '[0-9]+$')::int),0)+1 INTO v_seq
+  SELECT coalesce(max(nullif(split_part(batch_no,'-',4),'')::int),0)+1 INTO v_seq
   FROM public.payment_batches
   WHERE batch_no LIKE 'PR-'||to_char(v_date,'YYYYMMDD')||'-'||v_ccy||'-%';
   v_no := 'PR-'||to_char(v_date,'YYYYMMDD')||'-'||v_ccy||'-'||lpad(v_seq::text,2,'0');
