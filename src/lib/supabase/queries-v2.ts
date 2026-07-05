@@ -652,6 +652,7 @@ export async function getSupplierPayments(filters?: {
   }
 }
 
+export type PaymentDup = { amount: number; currency: string; paid_at: string | null; note: string | null }
 export async function createSupplierPayment(payment: {
   supplier_name: string
   amount: number
@@ -659,23 +660,36 @@ export async function createSupplierPayment(payment: {
   paid_at?: string | null
   note?: string | null
   source_payable_id?: string | null   // 来源应付单(出纳付款同步)——结构化幂等键，防重复已付
-}): Promise<{ data: SupplierPayment | null; error: string | null }> {
+  force?: boolean                      // true=用户已人工确认「非重复」，跳过查重直接登记
+}): Promise<{ data: SupplierPayment | null; error: string | null; duplicate?: PaymentDup[] }> {
   try {
     const supabase = createClient()
     const { data: userData } = await supabase.auth.getUser()
-    const { data, error } = await supabase
-      .from('supplier_payments')
-      .insert({
-        supplier_name: payment.supplier_name,
-        amount: payment.amount,
-        currency: payment.currency || 'CNY',
-        paid_at: payment.paid_at || null,
-        note: payment.note || null,
-        source_payable_id: payment.source_payable_id || null,
-        created_by: userData?.user?.id || null,
-      })
-      .select()
-      .single()
+    const cur = payment.currency || 'CNY'
+
+    // 防重复付款(直接记付款路径此前完全没查重 → 重复付款漏洞)：非强制、非应付同步时，
+    // 查同供应商+同金额+同币种 近90天的活跃付款流水，命中则返回 duplicate 让 UI 二次确认。
+    if (!payment.force && !payment.source_payable_id) {
+      const since = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10)
+      const { data: dups } = await supabase.from('supplier_payments')
+        .select('amount, currency, paid_at, note')
+        .eq('supplier_name', payment.supplier_name).eq('amount', payment.amount).eq('currency', cur)
+        .is('deleted_at', null).gte('paid_at', since).order('paid_at', { ascending: false }).limit(5)
+      if (dups && dups.length > 0) return { data: null, error: null, duplicate: dups as PaymentDup[] }
+    }
+
+    // source_payable_id 条件带入(该列由迁移 20260702 建；未建时不带，直接付款路径不受影响)
+    const row: Record<string, unknown> = {
+      supplier_name: payment.supplier_name,
+      amount: payment.amount,
+      currency: cur,
+      paid_at: payment.paid_at || null,
+      note: payment.force ? `${payment.note || ''}\n[重复付款已人工确认 ${new Date().toLocaleString('zh-CN')}]`.trim() : (payment.note || null),
+      created_by: userData?.user?.id || null,
+    }
+    if (payment.source_payable_id) row.source_payable_id = payment.source_payable_id
+
+    const { data, error } = await supabase.from('supplier_payments').insert(row).select().single()
     if (error) {
       // 命中幂等唯一索引 = 该应付已同步过，视为成功(不重复已付)
       if (/supplier_payments_source_payable_uniq|duplicate key/i.test(error.message)) return { data: null, error: null }

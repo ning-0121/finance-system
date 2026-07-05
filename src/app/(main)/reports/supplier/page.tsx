@@ -386,17 +386,25 @@ export default function SupplierReportPage() {
     toast.success('已修正')
   }
 
-  // 登记供应商付款（负数流水）
-  const handleAddPayment = async () => {
+  // 登记供应商付款（负数流水）。force=用户在"疑似重复"提示后仍确认登记
+  const handleAddPayment = async (force = false) => {
     const sup = normalizeSupplierName(paySupplier)
     const amt = Number(payAmount)
     if (!sup) { toast.error('请填写供应商'); return }
     if (!amt || amt <= 0) { toast.error('请输入有效付款金额'); return }
     setPaySaving(true)
-    const { data, error } = await createSupplierPayment({
-      supplier_name: sup, amount: amt, paid_at: payDate || null, note: payNote.trim() || null,
+    const { data, error, duplicate } = await createSupplierPayment({
+      supplier_name: sup, amount: amt, paid_at: payDate || null, note: payNote.trim() || null, force,
     })
     setPaySaving(false)
+    // 防重复付款：命中疑似重复 → 弹确认，列出已有的同额付款，用户确认非重复才 force 登记
+    if (duplicate && duplicate.length > 0) {
+      const list = duplicate.map(d => `· ${d.currency} ${Number(d.amount).toLocaleString()}${d.paid_at ? ' 付于 ' + String(d.paid_at).slice(0, 10) : ''}${d.note ? '（' + String(d.note).slice(0, 20) + '）' : ''}`).join('\n')
+      if (confirm(`⚠ 疑似重复付款！\n\n「${sup}」近90天已有 ${duplicate.length} 笔同额同币种付款：\n${list}\n\n确认这是另一笔、不是重复付款吗？确认则继续登记。`)) {
+        return handleAddPayment(true)   // 用户确认非重复 → force 登记
+      }
+      return   // 用户取消 → 不登记
+    }
     if (error || !data) { toast.error(`登记失败: ${error || '未知错误'}`); return }
     setPayments([...payments, { ...data, supplier_name: normalizeSupplierName(data.supplier_name) }])
     // 付款登记 → GL 受控灰度：入队生成「应付/银行」草稿凭证（非阻塞；
@@ -778,7 +786,7 @@ export default function SupplierReportPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPayDialogOpen(false)}>取消</Button>
-            <Button onClick={handleAddPayment} disabled={paySaving}>
+            <Button onClick={() => handleAddPayment()} disabled={paySaving}>
               {paySaving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}登记付款
             </Button>
           </DialogFooter>
