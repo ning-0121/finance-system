@@ -75,6 +75,7 @@ export default function SupplierReportPage() {
   const [payAmount, setPayAmount] = useState('')
   const [payDate, setPayDate] = useState(bizToday())
   const [payNote, setPayNote] = useState('')
+  const [payRef, setPayRef] = useState('')   // 付款凭证号/单据号——防重复付款硬约束
   const [paySaving, setPaySaving] = useState(false)
 
   useEffect(() => {
@@ -394,7 +395,7 @@ export default function SupplierReportPage() {
     if (!amt || amt <= 0) { toast.error('请输入有效付款金额'); return }
     setPaySaving(true)
     const { data, error, duplicate } = await createSupplierPayment({
-      supplier_name: sup, amount: amt, paid_at: payDate || null, note: payNote.trim() || null, force,
+      supplier_name: sup, amount: amt, paid_at: payDate || null, note: payNote.trim() || null, payment_ref: payRef.trim() || null, force,
     })
     setPaySaving(false)
     // 防重复付款：命中疑似重复 → 弹确认，列出已有的同额付款，用户确认非重复才 force 登记
@@ -779,10 +780,14 @@ export default function SupplierReportPage() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>备注</Label>
-              <Textarea placeholder="付款方式/凭证号等（可选）" value={payNote} onChange={e => setPayNote(e.target.value)} rows={2} />
+              <Label>付款凭证号 / 单据号 <span className="text-[11px] text-muted-foreground">（银行流水号/回单号/发票号，防重复付款）</span></Label>
+              <Input placeholder="填了则同供应商同凭证号不可重复付款（强烈建议填）" value={payRef} onChange={e => setPayRef(e.target.value)} />
             </div>
-            <p className="text-[11px] text-muted-foreground">付款只挂供应商、不挂订单号。登记后对账单会以负数流水计入，累计余额即实际未付。</p>
+            <div className="space-y-2">
+              <Label>备注</Label>
+              <Textarea placeholder="付款方式/说明（可选）" value={payNote} onChange={e => setPayNote(e.target.value)} rows={2} />
+            </div>
+            <p className="text-[11px] text-muted-foreground">付款只挂供应商、不挂订单号。填付款凭证号可从数据库层杜绝重复付款。登记后对账单以负数流水计入，累计余额即实际未付。</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPayDialogOpen(false)}>取消</Button>

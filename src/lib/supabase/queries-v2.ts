@@ -659,6 +659,7 @@ export async function createSupplierPayment(payment: {
   currency?: string
   paid_at?: string | null
   note?: string | null
+  payment_ref?: string | null         // 付款凭证号/单据号(银行流水号/回单号/发票号)——同供应商唯一，DB硬防重
   source_payable_id?: string | null   // 来源应付单(出纳付款同步)——结构化幂等键，防重复已付
   force?: boolean                      // true=用户已人工确认「非重复」，跳过查重直接登记
 }): Promise<{ data: SupplierPayment | null; error: string | null; duplicate?: PaymentDup[] }> {
@@ -688,11 +689,18 @@ export async function createSupplierPayment(payment: {
       created_by: userData?.user?.id || null,
     }
     if (payment.source_payable_id) row.source_payable_id = payment.source_payable_id
+    const ref = (payment.payment_ref || '').trim()
+    if (ref) row.payment_ref = ref
 
     const { data, error } = await supabase.from('supplier_payments').insert(row).select().single()
     if (error) {
-      // 命中幂等唯一索引 = 该应付已同步过，视为成功(不重复已付)
-      if (/supplier_payments_source_payable_uniq|duplicate key/i.test(error.message)) return { data: null, error: null }
+      // 出纳同步幂等唯一索引命中 = 该应付已同步过，视为成功(不重复已付)
+      if (/supplier_payments_source_payable_uniq/i.test(error.message)) return { data: null, error: null }
+      // 付款凭证号唯一约束命中 = 同供应商同凭证号已付 → 硬拦重复付款
+      if (/supplier_payments_supplier_ref_uniq/i.test(error.message)) {
+        return { data: null, error: `付款凭证号「${ref}」在该供应商下已登记过付款，不可重复付款` }
+      }
+      if (/duplicate key/i.test(error.message)) return { data: null, error: null }
       return { data: null, error: error.message }
     }
     return { data: data as SupplierPayment, error: null }
