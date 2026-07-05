@@ -326,11 +326,40 @@ async function handleQuotationFrozen(data: Record<string, unknown>) {
   const { data: bo } = await supabase.from('budget_orders').select('status, total_revenue').eq('id', budgetOrderId).maybeSingle()
   if (bo && bo.status !== 'draft') return { action: 'ok', reason: `预算单非 draft(${bo?.status})，不自动覆盖，报价已存待人工采纳` }
 
-  // 4. 组装 _cost_breakdown（6 桶 + 逐行明细，桶标量=明细之和维持不变量）
-  const BUCKETS = ['fabric', 'accessory', 'processing', 'forwarder', 'container', 'logistics']
-  const inLines = (data.cost_lines as Record<string, Array<Record<string, unknown>>>) || {}
-  const inBuckets = (data.cost_buckets as Record<string, unknown>) || {}
   const r2 = (n: number) => Math.round(n * 100) / 100
+  const BUCKETS = ['fabric', 'accessory', 'processing', 'forwarder', 'container', 'logistics']
+
+  // 4a. 单件成本模式：内部成本核算单给的是【每件单价】(面料/加工/辅料 + 含税售价)。
+  //     财务用共享的订单数量 synced_orders.quantity 换算订单预算(单价×数量)。
+  //     面料给净布价+单耗 → 按 kg 口径出带供应商明细;货代/装柜/物流不在核算单里,留财务补录。
+  let inLines = (data.cost_lines as Record<string, Array<Record<string, unknown>>>) || {}
+  let revLinesSrc = Array.isArray(data.revenue_lines) ? (data.revenue_lines as Array<Record<string, unknown>>) : []
+  const uc = data.unit_costs as Record<string, unknown> | undefined
+  let qtyUsed: number | null = null
+  if (uc) {
+    const { data: so } = await supabase.from('synced_orders').select('quantity')
+      .eq(qimoOrderId ? 'id' : 'order_no', qimoOrderId || orderNo).maybeSingle()
+    const qty = Number(so?.quantity) || 0
+    qtyUsed = qty
+    const num = (k: string) => Number(uc[k]) || 0
+    if (qty > 0) {
+      const fLine: Record<string, unknown> = { name: String(uc.fabric_name || '面料'), qty, unit: '件', unit_price: num('fabric_per_piece'), amount: r2(qty * num('fabric_per_piece')) }
+      if (uc.fabric_supplier) fLine.supplier = String(uc.fabric_supplier)
+      if (num('fabric_consumption_kg') > 0 && num('fabric_net_price_per_kg') > 0) {
+        fLine.qty = r2(qty * num('fabric_consumption_kg')); fLine.unit = 'kg'
+        fLine.unit_price = num('fabric_net_price_per_kg'); fLine.amount = r2(qty * num('fabric_consumption_kg') * num('fabric_net_price_per_kg'))
+      }
+      inLines = {
+        fabric: [fLine],
+        processing: [{ name: '加工费', qty, unit: '件', unit_price: num('processing_per_piece'), amount: r2(qty * num('processing_per_piece')) }],
+        accessory: [{ name: '辅料', qty, unit: '件', unit_price: num('accessory_per_piece'), amount: r2(qty * num('accessory_per_piece')) }],
+      }
+      if (num('selling_price_per_piece') > 0) revLinesSrc = [{ sku: null, name: '货款', qty, unit_price: num('selling_price_per_piece'), amount: r2(qty * num('selling_price_per_piece')) }]
+    }
+  }
+
+  // 4b. 组装 _cost_breakdown（6 桶 + 逐行明细，桶标量=明细之和维持不变量）
+  const inBuckets = (data.cost_buckets as Record<string, unknown>) || {}
   const lines: Record<string, unknown[]> = {}
   const scalar: Record<string, number> = {}
   for (const b of BUCKETS) {
@@ -346,7 +375,7 @@ async function handleQuotationFrozen(data: Record<string, unknown>) {
   }
   const currency = (data.currency as string) || 'CNY'
   const rate = data.exchange_rate != null ? Number(data.exchange_rate) : (currency === 'CNY' ? 1 : null)
-  const revenueLines = Array.isArray(data.revenue_lines) ? (data.revenue_lines as Array<Record<string, unknown>>) : []
+  const revenueLines = revLinesSrc
   const revItems = revenueLines.map(l => ({
     sku: l.sku ? String(l.sku) : null,
     product_name: [l.sku, l.name].filter(Boolean).join(' ') || '-',
@@ -366,7 +395,7 @@ async function handleQuotationFrozen(data: Record<string, unknown>) {
   if ((!bo?.total_revenue || Number(bo.total_revenue) === 0) && revenueTotal > 0) patch.total_revenue = revenueTotal
   const { error } = await supabase.from('budget_orders').update(patch).eq('id', budgetOrderId)
   if (error) throw new Error(`预算自动填充失败: ${error.message}`)
-  return { action: 'done', reason: `报价冻结→预算已填 order=${orderNo} · 6桶 ${Object.values(lines).flat().length} 行 · 核算日 ${quotationAt}` }
+  return { action: 'done', reason: `报价冻结→预算已填 order=${orderNo} · ${Object.values(lines).flat().length} 行 · 核算日 ${quotationAt}${qtyUsed != null ? ` · 单件×数量${qtyUsed}` : ''}` }
 }
 
 async function handleSupplierUpsert(data: Record<string, unknown>) {
