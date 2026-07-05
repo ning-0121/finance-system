@@ -10,7 +10,8 @@
 -- 修法:加 p_exchange_rate 入参;金额折 CNY 记 GL;现金科目按币种选 100201(CNY)/100202(外币)。
 --   ar_received_amount 仍按原币累计(不改既有口径,避免牵连;若需统一见后续)。
 --
--- 仅重定义函数,不动表/数据。可重复执行。⚠️ 财务库(qpoboelobqnfbytugzkw)执行。
+-- 注:函数体用带名 dollar 标签,避免 Supabase 编辑器切分器误判。仅重定义函数,不动表/数据,可重复执行。
+-- ⚠️ 财务库(qpoboelobqnfbytugzkw)执行。
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.record_customer_receipt_atomic(
   p_budget_order_id  uuid,
@@ -26,7 +27,7 @@ CREATE OR REPLACE FUNCTION public.record_customer_receipt_atomic(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-AS $$
+AS $fn$
 DECLARE
   v_invoice_id    uuid;
   v_invoice_no    text;
@@ -110,6 +111,6 @@ BEGIN
     'exchange_rate', v_rate,
     'currency', v_ccy
   );
-END $$;
+END $fn$;
 
-DO $$ BEGIN RAISE NOTICE '✓ 客户回款 RPC 已按币种折 CNY 记账 + 现金科目按币种(100201/100202)'; END $$;
+DO $do$ BEGIN RAISE NOTICE '✓ 客户回款 RPC 已按币种折 CNY 记账 + 现金科目按币种(100201/100202)'; END $do$;

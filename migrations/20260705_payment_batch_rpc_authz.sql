@@ -8,17 +8,19 @@
 --
 -- 修法(照 20260608_receivable_role_enforcement 范式):
 --   ① _finance_actor_guard(p_actor, roles):有 JWT(登录用户)则校验 _app_role ∈ roles,
---      不合规 RAISE FORBIDDEN,并返回**真实 auth.uid()**(记账用真人,杜绝冒名);
+--      不合规 RAISE FORBIDDEN,并返回真实 auth.uid()(记账用真人,杜绝冒名);
 --      无 JWT(service_role 服务端调用)则信任 p_actor。
 --   ② 每个 RPC 顶部过闸;写 actor 的列一律用返回的 v_actor,不再信任 p_actor。
 --   ③ 角色分配:approve=finance_manager/admin(老板审批放款);其余=finance_staff+。
 --
--- 仅重定义函数体,不动表/数据。可重复执行。⚠️ 财务库(qpoboelobqnfbytugzkw)执行。
+-- 注:函数体用带名 dollar 标签(非双美元),避免 Supabase 编辑器切分器误判;批次序号用
+--   split_part 取,不含裸美元符。仅重定义函数,不动表/数据,可重复执行。
+-- ⚠️ 财务库(qpoboelobqnfbytugzkw)执行。
 -- ============================================================
 
 -- ── 鉴权+取真身 helper ──
 CREATE OR REPLACE FUNCTION public._finance_actor_guard(p_actor uuid, p_roles text[])
-RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
 DECLARE v_uid uuid := auth.uid();
 BEGIN
   IF v_uid IS NOT NULL THEN
@@ -28,20 +30,18 @@ BEGIN
     RETURN v_uid;          -- 记录真实登录者,杜绝冒名
   END IF;
   RETURN p_actor;          -- 无 JWT = service_role 服务端调用,信任 p_actor
-END $$;
+END $fn$;
 REVOKE ALL ON FUNCTION public._finance_actor_guard(uuid, text[]) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public._finance_actor_guard(uuid, text[]) TO authenticated, service_role;
 
--- 便捷常量:财务侧可操作角色 / 审批放款角色
---   staff+  = finance_staff / finance_manager / admin
---   mgr+    = finance_manager / admin
+-- 角色简写:staff+ = finance_staff/finance_manager/admin;mgr+ = finance_manager/admin
 
 -- ── create_payment_batch(staff+) ──
 CREATE OR REPLACE FUNCTION public.create_payment_batch(
   p_actor uuid, p_currency text, p_planned_pay_date date DEFAULT NULL,
   p_title text DEFAULT NULL, p_week_label text DEFAULT NULL, p_notes text DEFAULT NULL
 )
-RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
 DECLARE
   v_actor uuid := public._finance_actor_guard(p_actor, ARRAY['finance_staff','finance_manager','admin']);
   v_date  date := coalesce(p_planned_pay_date, current_date);
@@ -57,13 +57,13 @@ BEGIN
   VALUES (v_no, p_title, v_ccy, v_week, p_planned_pay_date, 'draft', v_actor, p_notes)
   RETURNING id INTO v_id;
   RETURN jsonb_build_object('id', v_id, 'batch_no', v_no, 'currency', v_ccy, 'status', 'draft', 'week_label', v_week);
-END $$;
+END $fn$;
 
 -- ── add_payment_batch_line(staff+) ──
 CREATE OR REPLACE FUNCTION public.add_payment_batch_line(
   p_batch_id uuid, p_payable_id uuid, p_pay_amount numeric, p_actor uuid
 )
-RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
 DECLARE
   v_batch record; v_payable record; v_reserved numeric; v_remaining numeric; v_pay numeric; v_line_id uuid;
 BEGIN
@@ -103,11 +103,11 @@ BEGIN
   ) RETURNING id INTO v_line_id;
   UPDATE public.payment_batches SET total_amount = total_amount + v_pay WHERE id = p_batch_id;
   RETURN jsonb_build_object('line_id', v_line_id, 'pay_amount', v_pay, 'remaining_before', v_remaining, 'payable_id', p_payable_id);
-END $$;
+END $fn$;
 
 -- ── remove_payment_batch_line(staff+) ──
 CREATE OR REPLACE FUNCTION public.remove_payment_batch_line(p_line_id uuid, p_actor uuid, p_reason text DEFAULT NULL)
-RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
 DECLARE
   v_actor uuid := public._finance_actor_guard(p_actor, ARRAY['finance_staff','finance_manager','admin']);
   v_line record; v_batch record;
@@ -125,11 +125,11 @@ BEGIN
   UPDATE public.payment_batches SET total_amount = greatest(total_amount - v_line.pay_amount, 0)
   WHERE id = v_line.batch_id;
   RETURN jsonb_build_object('line_id', p_line_id, 'removed', true);
-END $$;
+END $fn$;
 
 -- ── submit_payment_batch(staff+) ──
 CREATE OR REPLACE FUNCTION public.submit_payment_batch(p_batch_id uuid, p_actor uuid)
-RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
 DECLARE
   v_actor uuid := public._finance_actor_guard(p_actor, ARRAY['finance_staff','finance_manager','admin']);
   v_batch record; v_n int;
@@ -141,11 +141,11 @@ BEGIN
   IF v_n < 1 THEN RAISE EXCEPTION 'EMPTY_BATCH: 排款单没有明细,不能提交'; END IF;
   UPDATE public.payment_batches SET status='submitted', submitted_by=v_actor, submitted_at=now() WHERE id=p_batch_id;
   RETURN jsonb_build_object('id', p_batch_id, 'status', 'submitted', 'lines', v_n);
-END $$;
+END $fn$;
 
 -- ── approve_payment_batch(mgr+ 老板审批放款) ──
 CREATE OR REPLACE FUNCTION public.approve_payment_batch(p_batch_id uuid, p_actor uuid)
-RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
 DECLARE
   v_actor uuid := public._finance_actor_guard(p_actor, ARRAY['finance_manager','admin']);
   v_batch record;
@@ -159,13 +159,13 @@ BEGIN
   END IF;
   UPDATE public.payment_batches SET status='approved', approved_by=v_actor, approved_at=now() WHERE id=p_batch_id;
   RETURN jsonb_build_object('id', p_batch_id, 'status', 'approved');
-END $$;
+END $fn$;
 
 -- ── execute_batch_line_payment(staff+ 出纳放款) ──
 CREATE OR REPLACE FUNCTION public.execute_batch_line_payment(
   p_line_id uuid, p_actor uuid, p_payment_ref text, p_paid_at date DEFAULT NULL, p_note text DEFAULT NULL
 )
-RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
 DECLARE
   v_actor uuid := public._finance_actor_guard(p_actor, ARRAY['finance_staff','finance_manager','admin']);
   v_line record; v_batch record; v_payable record; v_new_paid numeric; v_status text; v_pay_id uuid; v_left int;
@@ -218,11 +218,11 @@ BEGIN
   RETURN jsonb_build_object('payment_id', v_pay_id, 'line_id', p_line_id, 'payable_id', v_payable.id,
     'paid_amount', v_new_paid, 'payable_status', v_status,
     'batch_status', CASE WHEN v_left = 0 THEN 'closed' ELSE 'executing' END);
-END $$;
+END $fn$;
 
 -- ── close_payment_batch(staff+) ──
 CREATE OR REPLACE FUNCTION public.close_payment_batch(p_batch_id uuid, p_actor uuid)
-RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
 DECLARE v_batch record;
 BEGIN
   PERFORM public._finance_actor_guard(p_actor, ARRAY['finance_staff','finance_manager','admin']);
@@ -235,11 +235,11 @@ BEGIN
   WHERE batch_id=p_batch_id AND deleted_at IS NULL AND status IN ('planned','held');
   UPDATE public.payment_batches SET status='closed', closed_at=now() WHERE id=p_batch_id;
   RETURN jsonb_build_object('id', p_batch_id, 'status', 'closed');
-END $$;
+END $fn$;
 
 -- ── cancel_payment_batch(staff+) ──
 CREATE OR REPLACE FUNCTION public.cancel_payment_batch(p_batch_id uuid, p_actor uuid, p_reason text DEFAULT NULL)
-RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
 DECLARE v_batch record; v_paid int;
 BEGIN
   PERFORM public._finance_actor_guard(p_actor, ARRAY['finance_staff','finance_manager','admin']);
@@ -251,13 +251,13 @@ BEGIN
   UPDATE public.payment_batch_lines SET status='skipped' WHERE batch_id=p_batch_id AND deleted_at IS NULL;
   UPDATE public.payment_batches SET status='cancelled', delete_reason=p_reason WHERE id=p_batch_id;
   RETURN jsonb_build_object('id', p_batch_id, 'status', 'cancelled');
-END $$;
+END $fn$;
 
 -- 自验证
-DO $$
+DO $do$
 DECLARE v int;
 BEGIN
   SELECT count(*) INTO v FROM pg_proc WHERE proname = '_finance_actor_guard';
   IF v < 1 THEN RAISE EXCEPTION '缺 _finance_actor_guard'; END IF;
   RAISE NOTICE '✓ 排款 8 RPC 已加角色门 + 不信任 p_actor(approve=mgr+,余 staff+;actor 记真实登录者)';
-END $$;
+END $do$;
