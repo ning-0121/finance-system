@@ -192,6 +192,12 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'supplier.upserted':
       return handleSupplierUpsert(payload.data as Record<string, unknown>)
 
+    // 收货回财务(审计修 2026-07-05):节拍器三条收货入口发本事件(po_no/line_id/
+    // received_qty_total/inspection_result)。当前先确认接收(原始数据存 fin_inbox_events,
+    // 不再当 unknown 堆积);按实收核销应付需建 fin_goods_receipts 表(finance 迁移)后深处理。
+    case 'goods_receipt.recorded':
+      return handleGoodsReceiptRecorded(payload.data as Record<string, unknown>)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
@@ -254,6 +260,31 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
 // 节拍器 supplier.upserted → 财务 suppliers 档。按【精确名】匹配(不用子串,避免串号)：
 // 已有则补溯源 notes(不覆盖财务已维护的银行/联系资料)，没有则新建。
 // suppliers 非 trigger 保护的核心财务表，可安全 upsert。
+/**
+ * 收货回财务(审计修 2026-07-05):节拍器收货入口发来实收+验收结论。
+ * 尝试把实收写到对账行 fin_po_lines.received_qty(按 line_id);列未建则优雅确认
+ * (原始数据已进 fin_inbox_events,不丢),按实收深核销应付待建 fin_goods_receipts 表后做。
+ */
+async function handleGoodsReceiptRecorded(data: Record<string, unknown>) {
+  const lineId = String(data.line_id || '')
+  const poNo = String(data.po_no || '')
+  const received = data.received_qty_total != null ? Number(data.received_qty_total) : null
+  if (!lineId && !poNo) return { action: 'ignored', reason: 'goods_receipt.recorded 缺 line_id/po_no' }
+  try {
+    if (lineId && received != null) {
+      const supabase = createServiceClient()
+      const { error } = await supabase.from('fin_po_lines')
+        .update({ received_qty: received, inspection_result: (data.inspection_result as string) ?? null, received_at: new Date().toISOString() })
+        .eq('line_id', lineId)
+      if (error) return { action: 'ok', reason: `收货已接收(fin_po_lines.received_qty 列未建,数据存 inbox 待建表深核销):${error.message}` }
+      return { action: 'done', reason: `收货核销 line=${lineId} received=${received}` }
+    }
+  } catch (e) {
+    return { action: 'ok', reason: '收货已接收(存 inbox 待深核销)' }
+  }
+  return { action: 'ok', reason: `收货已接收 line=${lineId} po=${poNo}` }
+}
+
 async function handleSupplierUpsert(data: Record<string, unknown>) {
   const supabase = createServiceClient()
   const name = String(data.name || '').trim()

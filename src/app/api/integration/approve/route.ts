@@ -8,16 +8,24 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { sendApprovalToMetronome } from '@/lib/integration/client'
-import { verifyApiKey } from '@/lib/integration/security'
+import { validateRequest } from '@/lib/integration/security'
 import type { ApprovalDecision } from '@/lib/integration/types'
 
 export async function POST(request: Request) {
   try {
-    // 鉴权：检查API Key（集成调用）或 Supabase Auth（前端调用）
+    // 鉴权(审计修 2026-07-05):集成调用不再只验静态 API Key(持 key 即可伪造审批),
+    // 改用 validateRequest 全套 = API Key + HMAC 签名 + 时间戳窗口(与 webhook 同强度)。
+    // 前端调用仍走 Supabase Auth + 角色。请求体只能读一次,按分支各自读取。
     const apiKey = request.headers.get('x-api-key')
-    const isIntegrationCall = apiKey && verifyApiKey(apiKey)
-
-    if (!isIntegrationCall) {
+    let body: ApprovalDecision
+    if (apiKey) {
+      // 集成调用:强鉴权(签名+时间戳),防伪造/重放
+      const v = await validateRequest(request)
+      if (!v.valid) {
+        return NextResponse.json({ error: 'Unauthorized', reason: v.error }, { status: 401 })
+      }
+      body = JSON.parse(v.body!) as ApprovalDecision
+    } else {
       // 前端调用：必须验证登录状态和角色，无演示模式绕过
       const supabase = await createClient()
       const { data: { user } } = await supabase.auth.getUser()
@@ -35,9 +43,9 @@ export async function POST(request: Request) {
       if (!profile || !['admin', 'finance_manager'].includes(profile.role)) {
         return NextResponse.json({ error: '需要 admin 或 finance_manager 权限' }, { status: 403 })
       }
+      body = await request.json() as ApprovalDecision
     }
 
-    const body = await request.json() as ApprovalDecision
     const { approval_id, approval_type, decision, decided_by, decider_name, decision_note } = body
 
     if (!approval_id || !approval_type || !decision || !decided_by) {
