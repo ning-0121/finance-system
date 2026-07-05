@@ -15,6 +15,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { syncFxRate } from '@/lib/engines/fx-sync'
 import { runIntegrityCheck } from '@/lib/engines/integrity-engine'
 import { runFullAudit } from '@/lib/engines/audit-engine'
+import { retryFinanceOutbox } from '@/lib/integration/client'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60 // Allow up to 60s for full orchestration run
@@ -125,6 +126,11 @@ export async function GET(request: Request) {
       sendOverdueReceivableReminders().catch(err =>
         console.error('[cron] 逾期应收提醒发送失败:', err)
       )
+
+      // 6b2. 重推失败的对节拍器回传（审计P1:结算/收款/付款进度、采购审批结论首发失败→outbox 退避重试）
+      retryFinanceOutbox()
+        .then(r => { if (r.due) console.log(`[cron] 财务→节拍器 outbox: due=${r.due} sent=${r.sent} dead=${r.dead}`) })
+        .catch(err => console.error('[cron] 财务→节拍器 outbox 重试失败:', err))
 
       // 6c. 推送日报到群机器人（如果配置了webhook）
       if (process.env.WECOM_ROBOT_WEBHOOK_KEY) {

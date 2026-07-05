@@ -79,11 +79,12 @@ export async function getMaterialPriceHistory(
     const name = (material.material_name || '').trim()
     if (!code && !name) return []
 
-    // 1. 命中的历史采购行(带其 fin_po_id + 价格)
+    // 1. 命中的历史采购行(带其 fin_po_id + 价格)。审计P2:无 code 时按名【等值】匹配,
+    //    不用 ilike——否则物料名里的 %/_ 会被当通配符,串到其它物料的历史价、误导审批。
     const { data: lines } = await fetchAll<{ fin_po_id: string; unit_price: number | null; ordered_unit: string | null; ordered_qty: number | null; amount: number | null; specification: string | null }>((from, to) => {
       let q = sb.from('fin_po_lines')
         .select('fin_po_id, unit_price, ordered_unit, ordered_qty, amount, specification')
-      q = code ? q.eq('material_code', code) : q.ilike('material_name', name)
+      q = code ? q.eq('material_code', code) : q.eq('material_name', name)
       return q.range(from, to)
     })
     if (!lines || lines.length === 0) return []

@@ -93,7 +93,9 @@ export async function POST(request: Request) {
           // 胜者把它 +1，另一实例此时读到的版本已过期，匹配 0 行,安全退出。
           const prevAttempt = Number(prev.attempt_count) || 0
           const { data: claimed } = await inboxDb.from('fin_inbox_events')
-            .update({ process_status: 'processing', attempt_count: prevAttempt + 1, last_error: null })
+            // 审计P2:抢占时刷新 received_at,让 10 分钟 stale 冷却从「本次认领」起算,
+            // 否则一直从最初收报起算 → 连续失败的事件每次重投都立刻可再抢、无冷却、反复重跑。
+            .update({ process_status: 'processing', attempt_count: prevAttempt + 1, last_error: null, received_at: new Date().toISOString() })
             .eq('request_id', payload.request_id)
             .eq('attempt_count', prevAttempt)                     // ← 原子 CAS：版本号
             .in('process_status', ['failed', 'processing'])       // 仅 failed / (stale)processing 可抢
@@ -299,16 +301,19 @@ async function handleGoodsReceiptRecorded(data: Record<string, unknown>) {
   try {
     if (lineId && received != null) {
       const supabase = createServiceClient()
-      const { error } = await supabase.from('fin_po_lines')
+      // 审计P1:必须 .select 判影响行数;写失败/0行匹配都不能报 done(否则 inbox 置 done 永不重试、
+      // 收货静默蒸发)。改返回 ignored → inbox 留 pending 可重投,原始数据也在 fin_inbox_events。
+      const { data: hit, error } = await supabase.from('fin_po_lines')
         .update({ received_qty: received, inspection_result: (data.inspection_result as string) ?? null, received_at: new Date().toISOString() })
-        .eq('line_id', lineId)
-      if (error) return { action: 'ok', reason: `收货已接收(fin_po_lines.received_qty 列未建,数据存 inbox 待建表深核销):${error.message}` }
+        .eq('line_id', lineId).select('line_id')
+      if (error) return { action: 'ignored', reason: `收货写入失败,待重试(数据存 inbox):${error.message}` }
+      if (!hit || hit.length === 0) return { action: 'ignored', reason: `line_id=${lineId} 未匹配到采购对账行(采购明细可能未同步),待重试/人工核对——收货未核销` }
       return { action: 'done', reason: `收货核销 line=${lineId} received=${received}` }
     }
   } catch (e) {
-    return { action: 'ok', reason: '收货已接收(存 inbox 待深核销)' }
+    return { action: 'ignored', reason: `收货处理异常,待重试(数据存 inbox):${e instanceof Error ? e.message : e}` }
   }
-  return { action: 'ok', reason: `收货已接收 line=${lineId} po=${poNo}` }
+  return { action: 'ignored', reason: `收货缺 line_id/received,未核销 line=${lineId} po=${poNo}` }
 }
 
 // --- 内部报价单冻结 → 财务预算自动到位（结构化 6 桶 + 逐行明细 + 收款款号 + 核算日期/版本）---
@@ -576,6 +581,22 @@ async function handleOrderReversal(order: SyncedOrder, event: string) {
       if (pays && pays.length) warnings.push('存在应付记录,需人工红冲——未自动改')
     } catch { /* ignore */ }
   }
+
+  // 2.6 已同步的采购单应付(审计P1):节拍器 order.deleted 带 po_nos(该订单关联的采购单号)。
+  // fin_purchase_orders 不挂 budget_order_id,上面 budgetId 分支覆盖不到 → 订单删了采购应付成幽灵单。
+  // 保守口径:存在则标记待人工红冲,绝不自动改账。
+  try {
+    const poNos = Array.isArray((order as unknown as { po_nos?: unknown[] }).po_nos)
+      ? ((order as unknown as { po_nos?: unknown[] }).po_nos as unknown[]).map(String).map(s => s.trim()).filter(Boolean)
+      : []
+    if (poNos.length) {
+      const { data: fpos } = await supabase.from('fin_purchase_orders')
+        .select('po_no').in('po_no', poNos).is('deleted_at', null)
+      if (fpos && fpos.length) {
+        warnings.push(`存在 ${fpos.length} 张已同步采购单(${fpos.map(f => (f as { po_no?: string }).po_no).join('、')}),订单已${event === 'order.deleted' ? '删除' : '取消'},其采购应付需人工红冲——未自动改`)
+      }
+    }
+  } catch { /* ignore */ }
 
   // 3. 撤未决审批（pending_approvals 无状态转换约束,可直接置 cancelled）
   try {

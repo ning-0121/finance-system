@@ -40,10 +40,10 @@ interface BLine { bucket: string; name: string; supplier?: string; qty?: number;
 const money = (n: number | null | undefined) => (n == null ? '-' : Number(n).toLocaleString())
 const r2 = (n: number) => Math.round(n * 100) / 100
 const norm = (x?: string | null) => (x || '').replace(/[（(].*?[)）]|\s/g, '').toLowerCase()
-// 供应商名匹配(含归并的模糊)：相等 或 互相包含
+// 供应商名匹配：规范化后【等值】(审计P2:双向子串会把「恒生」误配「恒生源辅料」「大恒生物」→ 预算对照失真)
 const supMatch = (a?: string | null, b?: string | null) => {
   const na = norm(a), nb = norm(b)
-  return !!na && !!nb && (na === nb || na.includes(nb) || nb.includes(na))
+  return !!na && !!nb && na === nb
 }
 
 export function PurchaseOrderInbox({ syncedOrderMap, onRegister, onChanged }: {

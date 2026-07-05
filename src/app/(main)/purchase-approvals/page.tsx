@@ -22,9 +22,11 @@ const money = (n: number | null | undefined) => (n == null ? '-' : Number(n).toL
 const r2 = (n: number) => Math.round(n * 100) / 100
 const fmtDate = (s: string | null | undefined) => (s ? String(s).slice(0, 10) : '-')
 const norm = (x?: string | null) => (x || '').replace(/[（(].*?[)）]|\s/g, '').toLowerCase()
+// 审计P2:供应商对照用规范化后【等值】,不再双向子串——否则「恒生」会吸附「恒生源辅料」「大恒生物」
+// 等无关预算行,budgetTotal 虚高/虚低致超预算误判。
 const supMatch = (a?: string | null, b?: string | null) => {
   const na = norm(a), nb = norm(b)
-  return !!na && !!nb && (na === nb || na.includes(nb) || nb.includes(na))
+  return !!na && !!nb && na === nb
 }
 
 export default function PurchaseApprovalsPage() {
