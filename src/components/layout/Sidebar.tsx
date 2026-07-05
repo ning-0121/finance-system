@@ -36,6 +36,7 @@ const baseNavigation = [
   { name: '汇总报表', href: '/reports', icon: ScrollText },
   { name: '出口退税', href: '/tax-refund', icon: FileText },
   { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
+  { name: '周排款（付款执行）', href: '/payment-batches', icon: Calendar },
   { name: '银行对账', href: '/bank', icon: Scale },
   { name: '银行日记账', href: '/bank-journal', icon: BookOpen },
   { name: '工资条发放', href: '/payroll', icon: Users },
