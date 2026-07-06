@@ -275,6 +275,9 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
       material_code: (l.material_code as string) ?? null,
       specification: (l.specification as string) ?? null,
       category: (l.category as string) ?? null,
+      // 行级供应商(预算原辅料按供应商分组的源;不同料下给不同供应商)
+      supplier_id: (l.supplier_id as string) ?? null,
+      supplier_name: (l.supplier_name as string) ?? null,
       ordered_qty: l.ordered_qty != null ? Number(l.ordered_qty) : null,
       ordered_unit: (l.ordered_unit as string) ?? null,
       unit_price: l.unit_price != null ? Number(l.unit_price) : null,
