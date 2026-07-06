@@ -313,8 +313,20 @@ async function handleGoodsReceiptRecorded(data: Record<string, unknown>) {
         .update({ received_qty: received, inspection_result: (data.inspection_result as string) ?? null, received_at: new Date().toISOString() })
         .eq('line_id', lineId).select('line_id')
       if (error) return { action: 'ignored', reason: `收货写入失败,待重试(数据存 inbox):${error.message}` }
-      if (!hit || hit.length === 0) return { action: 'ignored', reason: `line_id=${lineId} 未匹配到采购对账行(采购明细可能未同步),待重试/人工核对——收货未核销` }
-      return { action: 'done', reason: `收货核销 line=${lineId} received=${received}` }
+      if (hit && hit.length > 0) return { action: 'done', reason: `收货核销 line=${lineId} received=${received}` }
+      // 审计:line_id 常对不上(采购明细同步用了不同 id)→ po_no + 料名 双锚点兜底匹配
+      const matName = (data.material_name as string) || ''
+      if (poNo && matName) {
+        const { data: pos } = await supabase.from('fin_purchase_orders').select('id').eq('po_no', poNo).is('deleted_at', null)
+        const poIds = (pos || []).map(p => (p as { id: string }).id)
+        if (poIds.length) {
+          const { data: hit2 } = await supabase.from('fin_po_lines')
+            .update({ received_qty: received, inspection_result: (data.inspection_result as string) ?? null, received_at: new Date().toISOString() })
+            .in('fin_po_id', poIds).eq('material_name', matName).select('line_id')
+          if (hit2 && hit2.length > 0) return { action: 'done', reason: `收货核销(po_no+料名兜底) po=${poNo} 料=${matName} received=${received}` }
+        }
+      }
+      return { action: 'ignored', reason: `line_id=${lineId}/po_no=${poNo} 均未匹配到采购对账行(采购明细未同步),待重试/人工核对——收货未核销` }
     }
   } catch (e) {
     return { action: 'ignored', reason: `收货处理异常,待重试(数据存 inbox):${e instanceof Error ? e.message : e}` }

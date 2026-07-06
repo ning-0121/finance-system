@@ -391,6 +391,15 @@ export default function ReceivablesPage() {
           return
         }
         toast.success(row.hasLedger ? `已生成回款流水并匹配 ¥${amountCny.toLocaleString()}` : '已将累计已收合并为回款流水并匹配')
+        // 往返:收款到账 → 回传节拍器(让订单部门看到"客户回款到账"进度)。best-effort,失败自动入 outbox。
+        try {
+          const sb = createClient()
+          const { data: so } = await sb.from('synced_orders').select('id').eq('budget_order_id', row.id).maybeSingle()
+          void fetch('/api/integration/finance-progress', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ event: 'collection.received', qimo_order_id: (so as { id?: string } | null)?.id || null, order_no: row.orderNo || null, amount: amountOriginal, currency: row.currency, note: `客户回款到账 ¥${amountCny.toLocaleString()}` }),
+          }).catch(() => {})
+        } catch { /* 进度回传不阻断收款 */ }
       } else if (row.currency !== 'CNY' && row.hasLedger) {
         // 金额没变但可能要改汇率：把原流水作废、按新结汇汇率重建（可追溯）
         const supabase = createClient()

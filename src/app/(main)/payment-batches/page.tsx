@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Loader2, Plus, CalendarClock, CheckCircle, Banknote, Trash2, ShieldCheck, X, Send, Lock } from 'lucide-react'
 import { toast } from 'sonner'
+import { createClient } from '@/lib/supabase/client'
 import {
   getPaymentBatches, getBatchLines, getSchedulablePayables, getAppRole,
   createPaymentBatch, addBatchLine, removeBatchLine, submitBatch, approveBatch,
@@ -165,7 +166,23 @@ export default function PaymentBatchesPage() {
     const { error } = await executeBatchLine(execLine.id, { payment_ref: execRef.trim(), paid_at: execDate || null, note: execNote.trim() || null })
     setBusy(false)
     if (error) return toast.error(error)
-    toast.success('付款已登记，应付已核销'); setExecLine(null); await refresh()
+    toast.success('付款已登记，应付已核销')
+    // 往返:付款完成 → 回传节拍器(让采购/订单部门看到"付款完成"进度)。best-effort,失败自动入 outbox。
+    try {
+      const sb = createClient()
+      const { data: pay } = await sb.from('payable_records').select('order_no, budget_order_id').eq('id', execLine.payable_id).maybeSingle()
+      let qimo: string | null = null
+      const boId = (pay as { budget_order_id?: string } | null)?.budget_order_id
+      if (boId) {
+        const { data: so } = await sb.from('synced_orders').select('id').eq('budget_order_id', boId).maybeSingle()
+        qimo = (so as { id?: string } | null)?.id || null
+      }
+      void fetch('/api/integration/finance-progress', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event: 'payment.completed', qimo_order_id: qimo, order_no: (pay as { order_no?: string } | null)?.order_no || null, amount: execLine.pay_amount, currency: execLine.currency, note: `供应商 ${execLine.supplier_name} 付款完成` }),
+      }).catch(() => {})
+    } catch { /* 进度回传不阻断付款 */ }
+    setExecLine(null); await refresh()
   }
 
   const plannedLines = lines.filter(l => l.status === 'planned')
