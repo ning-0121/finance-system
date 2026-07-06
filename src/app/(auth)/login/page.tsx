@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,6 +18,19 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [mode, setMode] = useState<'login' | 'register'>('login')
+
+  // 从节拍器 SSO 跳转失败时,给出可读提示(?sso_error=)
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get('sso_error')
+    if (!code) return
+    setError(
+      code === 'no_account'
+        ? '你的账号尚未在财务系统开通,请联系管理员建号后,再从节拍器进入。'
+        : ['expired', 'replay', 'bad_token', 'no_token', 'no_nonce', 'no_email', 'bad_issuer'].includes(code)
+        ? '单点登录令牌无效或已过期,请回节拍器重新进入(或用下方账号密码登录)。'
+        : '单点登录失败,请回节拍器重试,或用下方账号密码登录。'
+    )
+  }, [])
 
   const handleLogin = async () => {
     if (!email || !password) { setError('请输入邮箱和密码'); return }
