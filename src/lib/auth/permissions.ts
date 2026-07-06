@@ -24,7 +24,7 @@ const PERMISSION_MATRIX: Record<Permission, UserRole[]> = {
   'cost:create': ['admin', 'finance_manager', 'finance_staff'],
   'cost:import': ['admin', 'finance_manager', 'finance_staff'],
   'report:export': ['admin', 'finance_manager', 'finance_staff'],
-  'approval:view_queue': ['admin', 'finance_manager'],
+  'approval:view_queue': ['admin', 'finance_manager', 'finance_staff'],
 }
 
 export function hasPermission(role: UserRole, permission: Permission): boolean {

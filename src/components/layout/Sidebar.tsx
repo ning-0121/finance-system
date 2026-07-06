@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
+import { createClient } from '@/lib/supabase/client'
 import {
   Package,
   ShoppingCart,
@@ -79,11 +80,34 @@ export function Sidebar() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [ccOpen, setCcOpen] = useState(false)
   const { user } = useCurrentUser()
+  // 待办数(集成/订单审批 + 采购审批)——财务人在任何页面都能看到有多少待处理(此前完全无通知)
+  const [counts, setCounts] = useState({ approvals: 0, purchase: 0 })
 
   // 自动展开控制中心组（如果当前路径在组内）
   useEffect(() => {
     if (pathname.startsWith('/control-center')) setCcOpen(true)
   }, [pathname])
+
+  // 轮询待办数(60s):pending_approvals 待处理 + fin_purchase_orders 待审批
+  useEffect(() => {
+    if (!user) return
+    let alive = true
+    const load = async () => {
+      try {
+        const sb = createClient()
+        const [a, p] = await Promise.all([
+          sb.from('pending_approvals').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+          sb.from('fin_purchase_orders').select('id', { count: 'exact', head: true }).eq('fin_status', 'pending_approval').is('deleted_at', null),
+        ])
+        if (alive) setCounts({ approvals: a.count || 0, purchase: p.count || 0 })
+      } catch { /* 忽略,不阻断导航 */ }
+    }
+    load()
+    const t = setInterval(load, 60_000)
+    return () => { alive = false; clearInterval(t) }
+  }, [user, pathname])
+
+  const badgeFor = (href: string) => href === '/purchase-approvals' ? counts.purchase : href === '/approvals' ? counts.approvals : 0
 
   // 根据角色动态生成导航
   const navigation = user && canViewApprovalQueue(user)
@@ -148,13 +172,18 @@ export function Sidebar() {
               )}
               title={collapsed ? item.name : undefined}
             >
-              <item.icon className="h-4.5 w-4.5 shrink-0" aria-hidden="true" />
+              <div className="relative shrink-0">
+                <item.icon className="h-4.5 w-4.5" aria-hidden="true" />
+                {collapsed && badgeFor(item.href) > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 h-2 w-2 rounded-full bg-amber-500" />
+                )}
+              </div>
               {!collapsed && (
                 <>
                   <span className="flex-1 truncate">{item.name}</span>
-                  {'badge' in item && item.badge && (
-                    <span className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
-                      {item.badge as number}
+                  {badgeFor(item.href) > 0 && (
+                    <span className="ml-auto flex h-5 min-w-[1.25rem] shrink-0 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-white">
+                      {badgeFor(item.href)}
                     </span>
                   )}
                 </>

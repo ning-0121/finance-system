@@ -40,8 +40,8 @@ export async function POST(request: Request) {
         .eq('id', user.id)
         .single()
 
-      if (!profile || !['admin', 'finance_manager'].includes(profile.role)) {
-        return NextResponse.json({ error: '需要 admin 或 finance_manager 权限' }, { status: 403 })
+      if (!profile || !['admin', 'finance_manager', 'finance_staff'].includes(profile.role)) {
+        return NextResponse.json({ error: '需要财务角色权限' }, { status: 403 })
       }
       body = await request.json() as ApprovalDecision
     }

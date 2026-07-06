@@ -689,13 +689,16 @@ async function handleGenericApprovalRequest(data: Record<string, unknown>, type:
   const supabase = createServiceClient()
   const id = String(data.id || data.approval_id || '')
   if (!id) throw new Error(`${type}.requested 缺少 id`)
+  // ⚠️ pending_approvals.order_no / requested_by_name / summary 均为 NOT NULL。节拍器可能传空
+  // (如申请人 profiles.name 未设 → requester_name 为 null)→ 若写 null 会 insert 失败、审批静默丢。
+  // 一律给安全兜底,保证审批必落库(宁可显示"未标注",也不能丢)。
   const { error } = await supabase.from('pending_approvals').upsert({
     id,
     approval_type: type,
-    order_no: (data.order_no as string) ?? null,
+    order_no: (data.order_no as string) || (data.po_no as string) || '(未标注订单)',
     customer_name: (data.customer_name as string) ?? null,
-    requested_by_name: (data.requester_name as string) ?? (data.requested_by_name as string) ?? null,
-    summary: (data.summary as string) ?? (type === 'cancel' ? '取消订单待财务审批' : '里程碑待财务确认'),
+    requested_by_name: (data.requester_name as string) || (data.requested_by_name as string) || '节拍器申请',
+    summary: (data.summary as string) || (type === 'cancel' ? '取消订单待财务审批' : '里程碑待财务确认'),
     detail: (data.detail as Record<string, unknown>) ?? data,
     expires_at: (data.expires_at as string) ?? null,
     status: 'pending',

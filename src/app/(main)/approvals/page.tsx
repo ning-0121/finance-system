@@ -17,7 +17,7 @@ import { CheckCircle, XCircle, AlertTriangle, Loader2, Clock, Eye } from 'lucide
 import { toast } from 'sonner'
 import { getBudgetOrders, updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
-import { canApprove, requiresExtraConfirmation } from '@/lib/auth/permissions'
+import { canApprove, canViewApprovalQueue, requiresExtraConfirmation } from '@/lib/auth/permissions'
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
 import { IntegrationApprovals } from './IntegrationApprovals'
 import Link from 'next/link'
@@ -42,16 +42,18 @@ export default function ApprovalsPage() {
     load()
   }, [])
 
-  if (!user || !canApprove(user)) {
+  // 财务全角色可【查看】审批队列(否则财务员看不到订单/集成审批通知);预算单审批动作仍限财务总监。
+  if (!user || !canViewApprovalQueue(user)) {
     return (
       <div className="flex flex-col h-full">
-        <Header title="审批队列" subtitle="仅财务总监可访问" />
+        <Header title="审批队列" subtitle="仅财务可访问" />
         <div className="flex-1 flex items-center justify-center">
-          <p className="text-muted-foreground">您没有审批权限。请联系财务总监。</p>
+          <p className="text-muted-foreground">您没有查看审批队列的权限。</p>
         </div>
       </div>
     )
   }
+  const canApproveBudget = canApprove(user)  // 预算单审批仅财务总监/admin
 
   const handleApproval = async (action: 'approve' | 'reject') => {
     if (!showDialog || !user) return
@@ -204,12 +206,16 @@ export default function ApprovalsPage() {
                             <Link href={`/orders/${order.id}`}>
                               <Button variant="ghost" size="sm"><Eye className="h-4 w-4" /></Button>
                             </Link>
-                            <Button size="sm" variant="default" onClick={() => { setShowDialog({ order, action: 'approve' }); setHighValueConfirmed(false) }}>
-                              <CheckCircle className="h-3.5 w-3.5 mr-1" />通过
-                            </Button>
-                            <Button size="sm" variant="destructive" onClick={() => setShowDialog({ order, action: 'reject' })}>
-                              <XCircle className="h-3.5 w-3.5 mr-1" />驳回
-                            </Button>
+                            {canApproveBudget ? (
+                              <>
+                                <Button size="sm" variant="default" onClick={() => { setShowDialog({ order, action: 'approve' }); setHighValueConfirmed(false) }}>
+                                  <CheckCircle className="h-3.5 w-3.5 mr-1" />通过
+                                </Button>
+                                <Button size="sm" variant="destructive" onClick={() => setShowDialog({ order, action: 'reject' })}>
+                                  <XCircle className="h-3.5 w-3.5 mr-1" />驳回
+                                </Button>
+                              </>
+                            ) : <span className="text-xs text-muted-foreground">待总监审批</span>}
                           </div>
                         </TableCell>
                       </TableRow>
