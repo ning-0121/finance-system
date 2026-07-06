@@ -451,7 +451,11 @@ async function executeSingleAction(
 
       // RPC 内部完整事务：actual_invoices + journal_entries + journal_lines + gl_balances
       // 任一失败整体 rollback，executor 收到 throw → retry → 永久失败时 subledger 也不存在
-      const { data: rpcResult, error: rpcErr } = await supabase.rpc(
+      // 审计P0:executor 用的是浏览器 client(服务端上下文=anon)。改用 service client 调此写账 RPC,
+      //   以便 DB 侧 REVOKE anon 后仍可执行(executor 仅服务端运行,documents/execute 路由已 requireAuth)。
+      const { createServiceClient } = await import('@/lib/supabase/service')
+      const svc = createServiceClient()
+      const { data: rpcResult, error: rpcErr } = await svc.rpc(
         'record_customer_receipt_atomic',
         {
           p_budget_order_id: recvOrderId,

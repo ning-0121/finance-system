@@ -2,7 +2,7 @@
 // GET /api/control-center/freeze?entityType=customer&status=frozen
 // POST /api/control-center/freeze
 import { NextRequest, NextResponse } from 'next/server'
-import { requireAuth } from '@/lib/auth/api-guard'
+import { requireAuth, requireRole } from '@/lib/auth/api-guard'
 import {
   getActiveFreezes,
   freezeEntity,
@@ -33,6 +33,9 @@ export async function POST(request: NextRequest) {
   try {
     const auth = await requireAuth()
     if (!auth.authenticated) return auth.error!
+    // 审计:冻结/解冻/批准解冻是管控动作,不能只 requireAuth——加角色门(职责分离另由引擎的『不同人』触发器兜)
+    const roleErr = requireRole(auth, ['admin', 'finance_manager'])
+    if (roleErr) return roleErr
 
     const body = await request.json()
     const { action } = body
