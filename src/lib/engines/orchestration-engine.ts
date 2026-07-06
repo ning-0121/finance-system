@@ -13,7 +13,7 @@ import { getAuditFindings } from './audit-engine'
 import { getActiveFreezes } from './freeze-engine'
 import { getClosingStatus } from './closing-engine'
 import { getBudgetOrders, getPendingRiskEvents } from '@/lib/supabase/queries'
-import { checkOverride } from './override-engine'
+import { getSkipRuleEntityIds } from './override-engine'
 
 // --------------- Types ---------------
 
@@ -97,10 +97,13 @@ export async function runOrchestration(options?: {
       result.rulesTriggered++
       const actionsTaken: { action_type: string; entity_id: string; result: string; error?: string }[] = []
 
+      // 审计#22:循环前一次批量取该规则的 skip_rule 覆盖(替代循环内逐个 checkOverride N+1)
+      const overriddenIds = await getSkipRuleEntityIds(ruleId)
+
       for (const entity of conditionResult.entities) {
         try {
           // === 覆盖检查 ===
-          const isOverridden = await checkOverride(ruleId, entity.id)
+          const isOverridden = overriddenIds.has(entity.id)
           if (isOverridden) {
             actionsTaken.push({ action_type: rule.action_type as string, entity_id: entity.id, result: 'overridden' })
             continue
@@ -666,40 +669,43 @@ async function evaluateDuplicatePayment(): Promise<ConditionResult> {
   const entities: TriggeredEntity[] = []
   const seenPairs = new Set<string>()
 
-  for (let i = 0; i < payables.length; i++) {
-    for (let j = i + 1; j < payables.length; j++) {
-      const a = payables[i]
-      const b = payables[j]
-
-      if (
-        a.supplier_name === b.supplier_name &&
-        Math.abs((a.amount as number) - (b.amount as number)) < 0.01
-      ) {
+  // 审计#21:原 O(n²) 全表笛卡尔(随应付量平方级劣化)。改按【供应商|金额】分组,只在同组内
+  //   两两比对 —— amount 为 numeric(15,2) 精确到分,toFixed(2) 与原 <0.01 容差完全等价,行为不变;
+  //   组通常只有 1-2 条,整体近线性。payables 已按 created_at 升序,组内保序。
+  const groups = new Map<string, typeof payables>()
+  for (const p of payables) {
+    const key = `${p.supplier_name}|${Number(p.amount).toFixed(2)}`
+    const g = groups.get(key)
+    if (g) g.push(p); else groups.set(key, [p])
+  }
+  for (const group of groups.values()) {
+    if (!group || group.length < 2) continue
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const a = group[i]
+        const b = group[j]
         const dayDiff =
           Math.abs(
             new Date(b.created_at as string).getTime() -
               new Date(a.created_at as string).getTime()
           ) / (1000 * 60 * 60 * 24)
-
-        if (dayDiff <= 7) {
-          const pairKey = [a.id, b.id].sort().join('-')
-          if (seenPairs.has(pairKey)) continue
-          seenPairs.add(pairKey)
-
-          entities.push({
-            type: 'supplier',
-            id: a.supplier_name as string,
-            name: a.supplier_name as string,
-            detail: {
-              supplier_name: a.supplier_name,
-              amount: a.amount,
-              currency: a.currency,
-              record_a: a.id,
-              record_b: b.id,
-              days_between: Math.round(dayDiff),
-            },
-          })
-        }
+        if (dayDiff > 7) continue
+        const pairKey = [a.id, b.id].sort().join('-')
+        if (seenPairs.has(pairKey)) continue
+        seenPairs.add(pairKey)
+        entities.push({
+          type: 'supplier',
+          id: a.supplier_name as string,
+          name: a.supplier_name as string,
+          detail: {
+            supplier_name: a.supplier_name,
+            amount: a.amount,
+            currency: a.currency,
+            record_a: a.id,
+            record_b: b.id,
+            days_between: Math.round(dayDiff),
+          },
+        })
       }
     }
   }

@@ -250,39 +250,41 @@ export async function auditMissingVouchers(db: SupabaseClient): Promise<AuditFin
 
   const findings: Omit<AuditFinding, 'id' | 'resolvedBy' | 'resolvedAt' | 'resolutionNote' | 'createdAt'>[] = []
 
+  // 审计#29:原对每个决算各查一次 journal_entries(count)+ budget_orders(order_no) = 双 N+1。
+  // 改为一次性批量:有凭证的 budget_order_id 集合 + 单号映射,循环内只查内存 —— 行为不变、查询降到 2 次。
+  const boIds = [...new Set(settlements.map(s => s.budget_order_id as string).filter(Boolean))]
+  const { data: jrows } = await supabase
+    .from('journal_entries')
+    .select('source_id')
+    .eq('source_type', 'settlement')
+    .in('source_id', boIds)
+  const hasVoucher = new Set((jrows || []).map(r => r.source_id as string))
+  const { data: orows } = await supabase
+    .from('budget_orders')
+    .select('id, order_no')
+    .in('id', boIds)
+  const orderNoMap = new Map((orows || []).map(o => [o.id as string, o.order_no as string | null]))
+
   for (const s of settlements) {
-    // Check if a journal entry exists for this settlement
-    const { count } = await supabase
-      .from('journal_entries')
-      .select('id', { count: 'exact', head: true })
-      .eq('source_type', 'settlement')
-      .eq('source_id', s.budget_order_id as string)
-
-    if ((count ?? 0) === 0) {
-      // Look up order_no
-      const { data: order } = await supabase
-        .from('budget_orders')
-        .select('order_no')
-        .eq('id', s.budget_order_id as string)
-        .single()
-
-      findings.push({
-        findingType: 'missing_voucher',
-        severity: 'warning',
-        entityType: 'order_settlement',
-        entityId: s.id as string,
-        title: `决算缺少记账凭证: ${order?.order_no || s.budget_order_id}`,
-        description: `决算单已${s.status === 'locked' ? '锁定' : '确认'}但未找到对应的记账凭证, 金额${s.total_actual}`,
-        evidence: {
-          settlementId: s.id,
-          budgetOrderId: s.budget_order_id,
-          orderNo: order?.order_no,
-          totalActual: s.total_actual,
-          status: s.status,
-        },
-        status: 'open',
-      })
-    }
+    const boId = s.budget_order_id as string
+    if (hasVoucher.has(boId)) continue
+    const orderNo = orderNoMap.get(boId) || null
+    findings.push({
+      findingType: 'missing_voucher',
+      severity: 'warning',
+      entityType: 'order_settlement',
+      entityId: s.id as string,
+      title: `决算缺少记账凭证: ${orderNo || boId}`,
+      description: `决算单已${s.status === 'locked' ? '锁定' : '确认'}但未找到对应的记账凭证, 金额${s.total_actual}`,
+      evidence: {
+        settlementId: s.id,
+        budgetOrderId: s.budget_order_id,
+        orderNo,
+        totalActual: s.total_actual,
+        status: s.status,
+      },
+      status: 'open',
+    })
   }
 
   return insertFindings(supabase, findings)

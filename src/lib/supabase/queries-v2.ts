@@ -598,31 +598,6 @@ export async function getPayableRecords(filters?: {
 // 汇总报表查询
 // ============================================================
 
-export async function getSupplierStatements(filters?: {
-  supplierName?: string
-  startDate?: string
-  endDate?: string
-}): Promise<Record<string, unknown>[]> {
-  try {
-    const supabase = createClient()
-    const { data, error } = await fetchAll<Record<string, unknown>>((from, to) => {
-      let query = supabase
-        .from('actual_invoices')
-        .select('supplier_name, total_amount, currency, status, invoice_date, invoice_no, budget_order_id')
-        .not('supplier_name', 'is', null)
-        .order('invoice_date', { ascending: false }).order('id', { ascending: true })
-      if (filters?.supplierName) query = query.ilike('supplier_name', `%${filters.supplierName}%`)
-      if (filters?.startDate) query = query.gte('invoice_date', filters.startDate)
-      if (filters?.endDate) query = query.lte('invoice_date', filters.endDate)
-      return query.range(from, to)
-    })
-    if (error || !data) return []
-    return data
-  } catch {
-    return []
-  }
-}
-
 // ============================================================
 // 供应商付款流水（对账单负数行）
 // ============================================================

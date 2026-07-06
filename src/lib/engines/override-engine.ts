@@ -92,6 +92,21 @@ export async function checkOverride(ruleId: string, entityId: string): Promise<b
 }
 
 /**
+ * 批量:一次取该规则下所有 skip_rule 覆盖的 entity_id 集合。
+ * 审计#22:编排引擎原在实体循环里逐个 checkOverride → 规则×实体 N+1。改为循环前一次拉全、
+ * 循环内用 Set.has() 命中,行为等价、查询从 N 次降到 1 次。
+ */
+export async function getSkipRuleEntityIds(ruleId: string): Promise<Set<string>> {
+  const supabase = createClient()
+  const { data } = await supabase
+    .from('manual_overrides')
+    .select('entity_id')
+    .eq('rule_id', ruleId)
+    .eq('override_type', 'skip_rule')
+  return new Set((data || []).map(d => d.entity_id as string))
+}
+
+/**
  * 获取最近的覆盖记录
  */
 export async function getRecentOverrides(limit = 20): Promise<ManualOverride[]> {
