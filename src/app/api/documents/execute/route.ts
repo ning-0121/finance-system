@@ -6,7 +6,7 @@
 
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { requireAuth } from '@/lib/auth/api-guard'
+import { requireAuth, requireRole } from '@/lib/auth/api-guard'
 import { executeDocumentActions } from '@/lib/document-engine/executor'
 import { z } from 'zod'
 import type { DocCategory } from '@/lib/types/document'
@@ -22,6 +22,10 @@ const ExecuteSchema = z.object({
 export async function POST(request: Request) {
   const auth = await requireAuth()
   if (!auth.authenticated) return auth.error!
+  // 治理铁律(老板 2026-07-06):AI 抽取的动作要落库(建/改财务资料)必须【财务审批】。
+  // 收紧为财务角色;审批人一律记真实 auth.userId,不信任客户端传的 confirmed_by。
+  const roleErr = requireRole(auth, ['finance_staff', 'finance_manager', 'admin'])
+  if (roleErr) return roleErr
 
   try {
     const raw = await request.json()
@@ -73,28 +77,31 @@ export async function POST(request: Request) {
         await supabase.from('accuracy_feedback_events').insert(corrections)      }
     }
 
+    // 审批人一律用真实登录的财务用户(不信任客户端 confirmed_by)
+    const approver = auth.userId!
+
     // 更新document_actions的decision状态
     if (approved_actions?.length) {
       const { error: approveErr } = await supabase.from('document_actions')
-        .update({ decision: 'accepted', decided_by: confirmed_by, decided_at: new Date().toISOString() })
+        .update({ decision: 'accepted', decided_by: approver, decided_at: new Date().toISOString() })
         .eq('document_id', document_id)
         .in('action_type', approved_actions)
       if (approveErr) console.error('动作审批状态更新失败:', approveErr.message)
     }
     if (rejected_actions?.length) {
       const { error: rejectErr } = await supabase.from('document_actions')
-        .update({ decision: 'rejected', decided_by: confirmed_by, decided_at: new Date().toISOString() })
+        .update({ decision: 'rejected', decided_by: approver, decided_at: new Date().toISOString() })
         .eq('document_id', document_id)
         .in('action_type', rejected_actions)
       if (rejectErr) console.error('动作拒绝状态更新失败:', rejectErr.message)
     }
 
-    // 执行（只执行approved的）
+    // 执行（只执行approved的；审批人=真实财务用户）
     const result = await executeDocumentActions(
       document_id,
       doc.doc_category as DocCategory,
       confirmed_fields || {},
-      confirmed_by || '00000000-0000-0000-0000-000000000000',
+      approver,
       undefined,
       approved_actions // 传递给executor做过滤
     )

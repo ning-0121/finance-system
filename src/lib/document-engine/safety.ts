@@ -19,7 +19,9 @@ export const SAFETY_LEVEL_CONFIG: Record<SafetyLevel, {
   requires_approval: boolean // 是否需要审批
   requires_ceo: boolean     // 是否需要老板审批
 }> = {
-  L1: { label: '低风险', description: '可自动执行', auto_execute: true, requires_confirm: false, requires_approval: false, requires_ceo: false },
+  // 治理铁律(老板 2026-07-06):AI 不许自主写库,任何建/改必须人(财务)确认后才落库。
+  // 故 auto_execute 一律 false、requires_confirm 一律 true —— AI 只出建议+警示。
+  L1: { label: '低风险', description: 'AI建议·需财务确认', auto_execute: false, requires_confirm: true, requires_approval: false, requires_ceo: false },
   L2: { label: '中风险', description: '自动生成草稿，需责任人确认', auto_execute: false, requires_confirm: true, requires_approval: false, requires_ceo: false },
   L3: { label: '高风险', description: '必须审批', auto_execute: false, requires_confirm: true, requires_approval: true, requires_ceo: false },
   L4: { label: '极高风险', description: '需老板审批', auto_execute: false, requires_confirm: true, requires_approval: true, requires_ceo: true },
