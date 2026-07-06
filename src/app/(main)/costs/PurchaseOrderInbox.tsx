@@ -121,8 +121,11 @@ export function PurchaseOrderInbox({ syncedOrderMap, onRegister, onChanged }: {
     load(); onChanged?.()
   }
 
-  const shown = rows.filter(r => tab === 'all' ? true : r.fin_status === 'pending')
-  const pendingCount = rows.filter(r => r.fin_status === 'pending').length
+  // 审计#9:approved(≥¥5000已审批放行)与 pending 一样应可登记为费用 —— 否则批准后进不了付款链。
+  //   pending_approval(待审批)不在此处理(去「采购审批」页);registered/ignored/rejected 也不在待办。
+  const isActionable = (s: string) => s === 'pending' || s === 'approved'
+  const shown = rows.filter(r => tab === 'all' ? true : isActionable(r.fin_status))
+  const pendingCount = rows.filter(r => isActionable(r.fin_status)).length
 
   // 渲染某采购单的预算对比（按供应商匹配到的预算明细行）
   const renderBudgetCompare = (p: PoRow) => {
@@ -221,15 +224,20 @@ export function PurchaseOrderInbox({ syncedOrderMap, onRegister, onChanged }: {
                       <TableCell className="text-sm">{p.delivery_date ? String(p.delivery_date).slice(0, 10) : '-'}</TableCell>
                       <TableCell>
                         {p.fin_status === 'pending' && <Badge className="bg-amber-100 text-amber-700 border-0 text-[10px]">待处理</Badge>}
+                        {p.fin_status === 'approved' && <Badge className="bg-purple-100 text-purple-700 border-0 text-[10px]">已批准·待登记</Badge>}
+                        {p.fin_status === 'pending_approval' && <Badge className="bg-blue-100 text-blue-700 border-0 text-[10px]">待财务审批</Badge>}
+                        {p.fin_status === 'rejected' && <Badge className="bg-red-100 text-red-700 border-0 text-[10px]">已驳回</Badge>}
                         {p.fin_status === 'registered' && <Badge className="bg-green-100 text-green-700 border-0 text-[10px]">已登记费用</Badge>}
                         {p.fin_status === 'ignored' && <Badge variant="outline" className="text-[10px]">已忽略</Badge>}
                       </TableCell>
                       <TableCell className="text-center" onClick={e => e.stopPropagation()}>
-                        {p.fin_status === 'pending' ? (
+                        {isActionable(p.fin_status) ? (
                           <div className="flex items-center justify-center gap-1">
                             <Button size="sm" className="h-7 text-xs" onClick={() => onRegister(p)}><PackageCheck className="h-3.5 w-3.5 mr-1" />登记为费用<ChevronRight className="h-3 w-3" /></Button>
                             <Button size="sm" variant="outline" className="h-7 px-2 text-muted-foreground" onClick={() => setStatus(p.id, 'ignored')}><Ban className="h-3.5 w-3.5" /></Button>
                           </div>
+                        ) : p.fin_status === 'pending_approval' ? (
+                          <a href="/purchase-approvals" className="text-xs text-blue-600 hover:underline">去审批 →</a>
                         ) : p.fin_status === 'ignored' ? (
                           <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setStatus(p.id, 'pending')}>恢复</Button>
                         ) : <span className="text-xs text-green-600">✓</span>}

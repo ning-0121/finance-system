@@ -19,6 +19,7 @@ import { getBudgetOrders, updateBudgetOrderStatus, createApprovalLog } from '@/l
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canApprove, requiresExtraConfirmation } from '@/lib/auth/permissions'
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
+import { IntegrationApprovals } from './IntegrationApprovals'
 import Link from 'next/link'
 import type { BudgetOrder, ApprovalLog } from '@/lib/types'
 
@@ -219,6 +220,9 @@ export default function ApprovalsPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* 集成审批(来自节拍器):price/delay/cancel/milestone —— 此前无 UI 的死信队列(审计#8) */}
+        <IntegrationApprovals userId={user.id} userName={user.name} />
       </div>
 
       {/* Approve/Reject Dialog */}
