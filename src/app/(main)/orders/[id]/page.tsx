@@ -565,6 +565,78 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
           {/* Budget Tab */}
           <TabsContent value="budget" className="space-y-4 mt-4">
+            {/* 预算表 —— 逐类目预算金额(总额口径)+ 实际归集对照。数据源:预算单 _cost_breakdown */}
+            {(() => {
+              const cbTop = (order.items as unknown as Record<string, unknown>[])?.[0]?._cost_breakdown as Record<string, number | string> | undefined
+              if (!cbTop) return null
+              const cats: { key: string; label: string }[] = [
+                { key: 'fabric', label: '面料' },
+                { key: 'accessory', label: '辅料' },
+                { key: 'processing', label: '加工费' },
+                { key: 'forwarder', label: '货代费' },
+                { key: 'container', label: '装柜费' },
+                { key: 'logistics', label: '物流费' },
+              ]
+              const rows = cats.map(c => {
+                const budget = Number(cbTop[c.key]) || 0
+                const actual = (costDetail[c.key] || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
+                return { label: c.label, budget, actual, diff: actual - budget }
+              })
+              const extras = (cbTop.extras as unknown as { name: string; amount: number }[] | undefined) || []
+              extras.forEach(e => rows.push({ label: e.name || '其他', budget: Number(e.amount) || 0, actual: 0, diff: -(Number(e.amount) || 0) }))
+              const budgetTotal = order.total_cost || rows.reduce((s, r) => s + r.budget, 0)
+              const actualTotal = rows.reduce((s, r) => s + r.actual, 0)
+              const revenueCny = order.currency === 'CNY' ? order.total_revenue : order.total_revenue * (order.exchange_rate || 1)
+              const hasActual = actualTotal > 0
+              const fmt = (n: number) => `¥${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+              return (
+                <Card className="border-primary/20">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <CardTitle className="text-base font-semibold">预算表</CardTitle>
+                      <div className="flex gap-4 text-xs">
+                        <span className="text-muted-foreground">预算收入 <span className="font-semibold text-foreground">{fmt(revenueCny)}</span></span>
+                        <span className="text-muted-foreground">预算利润 <span className={`font-semibold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>{fmt(order.estimated_profit)}</span></span>
+                        <span className="text-muted-foreground">预算毛利率 <span className="font-semibold text-foreground">{order.estimated_margin}%</span></span>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="text-sm">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-muted-foreground border-b">
+                            <th className="text-left font-medium py-1.5">成本类目</th>
+                            <th className="text-right font-medium py-1.5">预算 (CNY)</th>
+                            {hasActual && <th className="text-right font-medium py-1.5">实际归集</th>}
+                            {hasActual && <th className="text-right font-medium py-1.5">差异</th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((r, i) => (
+                            <tr key={i} className="border-b border-muted/40">
+                              <td className="py-1.5 text-muted-foreground">{r.label}</td>
+                              <td className="py-1.5 text-right font-medium">{fmt(r.budget)}</td>
+                              {hasActual && <td className="py-1.5 text-right text-amber-700">{r.actual ? fmt(r.actual) : '—'}</td>}
+                              {hasActual && <td className={`py-1.5 text-right ${r.actual ? (r.diff > 0 ? 'text-red-600' : 'text-green-600') : 'text-muted-foreground/50'}`}>{r.actual ? `${r.diff > 0 ? '+' : ''}${fmt(r.diff)}` : '—'}</td>}
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="font-semibold border-t-2">
+                            <td className="py-2">预算成本合计</td>
+                            <td className="py-2 text-right">{fmt(budgetTotal)}</td>
+                            {hasActual && <td className="py-2 text-right text-amber-700">{fmt(actualTotal)}</td>}
+                            {hasActual && <td className={`py-2 text-right ${actualTotal - budgetTotal > 0 ? 'text-red-600' : 'text-green-600'}`}>{actualTotal - budgetTotal > 0 ? '+' : ''}{fmt(actualTotal - budgetTotal)}</td>}
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                    {!hasActual && <p className="text-[11px] text-muted-foreground mt-2">尚无实际归集(采购/费用录入),差异待采购明细回传后自动比对。</p>}
+                  </CardContent>
+                </Card>
+              )
+            })()}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               <Card>
                 <CardHeader className="pb-2">

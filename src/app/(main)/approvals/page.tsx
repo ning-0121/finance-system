@@ -53,7 +53,7 @@ export default function ApprovalsPage() {
       </div>
     )
   }
-  const canApproveBudget = canApprove(user)  // 预算单审批仅财务总监/admin
+  const canApproveBudget = canApprove(user)  // 预算单审批:财务(finance_staff)/总监/admin —— 老板 2026-07-08 取消总监专审
 
   const handleApproval = async (action: 'approve' | 'reject') => {
     if (!showDialog || !user) return

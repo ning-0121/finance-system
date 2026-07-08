@@ -18,8 +18,8 @@ export type Permission =
 const PERMISSION_MATRIX: Record<Permission, UserRole[]> = {
   'order:create': ['admin', 'finance_manager', 'finance_staff', 'sales'],
   'order:submit': ['admin', 'finance_manager', 'finance_staff'],
-  'order:approve': ['admin', 'finance_manager'],
-  'order:reject': ['admin', 'finance_manager'],
+  'order:approve': ['admin', 'finance_manager', 'finance_staff'],
+  'order:reject': ['admin', 'finance_manager', 'finance_staff'],
   'order:revoke': ['admin', 'finance_manager', 'finance_staff'],
   'cost:create': ['admin', 'finance_manager', 'finance_staff'],
   'cost:import': ['admin', 'finance_manager', 'finance_staff'],
