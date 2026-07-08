@@ -217,6 +217,12 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'quotation.frozen':
       return handleQuotationFrozen(payload.data as Record<string, unknown>)
 
+    // 采购核料预算即时更新(2026-07-08):业务在采购核料按真实物料填/改预算 → 节拍器送【绝对总额】
+    // budget_totals{fabric_amount,cmt_amount,accessory_amount}。复用 quotation.frozen 的预算填充
+    // (映射成 cost_buckets 绝对桶,不走 unit_costs 的单件×数量,避免逐款件数不一致的漂移)。只填 draft。
+    case 'order.budget_updated':
+      return handleOrderBudgetUpdated(payload.data as Record<string, unknown>)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
@@ -443,6 +449,70 @@ async function handleQuotationFrozen(data: Record<string, unknown>) {
   const { error } = await supabase.from('budget_orders').update(patch).eq('id', budgetOrderId)
   if (error) throw new Error(`预算自动填充失败: ${error.message}`)
   return { action: 'done', reason: `报价冻结→预算已填 order=${orderNo} · ${Object.values(lines).flat().length} 行 · 核算日 ${quotationAt}${qtyUsed != null ? ` · 单件×数量${qtyUsed}` : ''}` }
+}
+
+// --- 采购核料预算即时更新 → 财务 draft 预算(2026-07-08)---
+// 节拍器弃用报价单识别后,业务在「采购核料」按真实物料填预算,保存即推本事件(内容哈希幂等,改了才更新)。
+// 契约:data = { qimo_order_id, order_no, internal_order_no?, currency, quantity?,
+//   budget_totals: { fabric_amount, cmt_amount, accessory_amount, total },   // 绝对总额(CNY,权威口径)
+//   unit_costs?: {...元/件, 仅参考}, source:'procurement_verify' }
+// 只填 draft 预算(已审批/锁定不覆盖);写法与 quotation.frozen 的 _cost_breakdown 同构(桶标量=明细之和),
+// 但绝对总额直接入桶,不走"单件×数量"(逐款件数不一会漂),且不碰 synced_orders 的报价审计字段。
+async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
+  const supabase = createServiceClient()
+  const qimoOrderId = (data.qimo_order_id as string) || ''
+  const orderNo = (data.order_no as string) || ''
+  if (!qimoOrderId && !orderNo) return { action: 'ignored', reason: 'order.budget_updated 缺 qimo_order_id/order_no' }
+
+  const bt = (data.budget_totals as Record<string, unknown>) || {}
+  const r2 = (n: number) => Math.round(n * 100) / 100
+  const fabric = r2(Number(bt.fabric_amount) || 0)
+  const accessory = r2(Number(bt.accessory_amount) || 0)
+  const processing = r2(Number(bt.cmt_amount) || 0)   // 加工费 → processing 桶
+  if (fabric + accessory + processing <= 0) return { action: 'ignored', reason: 'order.budget_updated 预算为 0,跳过(等业务填了再推)' }
+
+  // 1. 定位 budget_order:优先 qimo_order_id(结构化),退回 synced_orders.order_no → budget_order_id
+  let budgetOrderId: string | null = null
+  if (qimoOrderId) {
+    const { data: bo } = await supabase.from('budget_orders').select('id').eq('qimo_order_id', qimoOrderId).is('deleted_at', null).maybeSingle()
+    budgetOrderId = bo?.id ?? null
+  }
+  if (!budgetOrderId && orderNo) {
+    const { data: so } = await supabase.from('synced_orders').select('budget_order_id').eq('order_no', orderNo).not('budget_order_id', 'is', null).maybeSingle()
+    budgetOrderId = (so?.budget_order_id as string) ?? null
+  }
+  if (!budgetOrderId) return { action: 'ok', reason: `预算已收到,但该订单尚未建预算单(order=${orderNo})——待建单后由下次保存补推` }
+
+  // 2. 只填 draft 预算,不覆盖已审批/锁定(与 quotation.frozen 同一保守口径)
+  const { data: bo } = await supabase.from('budget_orders').select('status, total_revenue, items').eq('id', budgetOrderId).maybeSingle()
+  if (bo && bo.status !== 'draft') return { action: 'ok', reason: `预算单非 draft(${bo?.status}),不自动覆盖` }
+
+  // 3. 绝对总额 → _cost_breakdown 三桶(桶标量=该桶明细之和,维持不变量)
+  const mkLine = (name: string, amount: number) => amount > 0 ? [{ name, qty: 0, unit: '', unit_price: 0, amount }] : []
+  const lines: Record<string, unknown[]> = {
+    fabric: mkLine('面料预算(采购核料)', fabric),
+    accessory: mkLine('辅料预算(采购核料)', accessory),
+    processing: mkLine('加工费预算(采购核料)', processing),
+  }
+  const currency = (data.currency as string) || 'CNY'
+  const cb = {
+    fabric, accessory, processing, forwarder: 0, container: 0, logistics: 0,
+    extras: [], lines,
+    _currency: 'CNY',
+    _revenue_input: Number(bo?.total_revenue) || 0,
+    _revenue_currency: currency,
+    _rate: data.exchange_rate != null ? Number(data.exchange_rate) : (currency === 'CNY' ? 1 : null),
+    _source: 'qimo_procurement_budget',
+    _budget_updated_at: new Date().toISOString(),
+  }
+  // 保留已有 items 的收入行(如 SKU 款号行),只替换首行的 _cost_breakdown 载体
+  const existingItems = Array.isArray((bo as { items?: unknown })?.items) ? ((bo as { items?: unknown[] }).items as unknown[]) : []
+  const items = existingItems.length
+    ? existingItems.map((it, i) => (i === 0 ? { ...(it as Record<string, unknown>), _cost_breakdown: cb } : it))
+    : [{ _cost_breakdown: cb }]
+  const { error } = await supabase.from('budget_orders').update({ items }).eq('id', budgetOrderId)
+  if (error) throw new Error(`采购核料预算填充失败: ${error.message}`)
+  return { action: 'done', reason: `采购核料预算已填 order=${orderNo || qimoOrderId} · 面料 ${fabric} / 加工 ${processing} / 辅料 ${accessory}` }
 }
 
 async function handleSupplierUpsert(data: Record<string, unknown>) {
