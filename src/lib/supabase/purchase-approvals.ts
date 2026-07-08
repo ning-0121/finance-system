@@ -6,6 +6,7 @@ export interface PendingPO {
   id: string
   purchase_order_id: string
   po_no: string
+  supplier_id: string | null
   supplier_name: string | null
   total_amount: number | null
   currency: string
@@ -49,7 +50,7 @@ export async function getPendingPurchaseApprovals(): Promise<PendingPO[]> {
     const sb = createClient()
     const { data } = await fetchAll<PendingPO>((from, to) =>
       sb.from('fin_purchase_orders')
-        .select('id, purchase_order_id, po_no, supplier_name, total_amount, currency, delivery_date, placed_at, payment_terms, order_refs, requires_approval')
+        .select('id, purchase_order_id, po_no, supplier_id, supplier_name, total_amount, currency, delivery_date, placed_at, payment_terms, order_refs, requires_approval')
         .eq('fin_status', 'pending_approval').is('deleted_at', null)
         .order('placed_at', { ascending: true, nullsFirst: true }).order('id', { ascending: true }).range(from, to))
     return data || []

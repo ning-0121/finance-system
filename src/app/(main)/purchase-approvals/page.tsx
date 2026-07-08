@@ -174,6 +174,18 @@ export default function PurchaseApprovalsPage() {
                     </div>
                   </div>
 
+                  {/* 节拍器 payload 缺字段时诚实提示(供应商名/明细未回传时,财务无从核对) */}
+                  {(!sel.supplier_name || (!linesLoading && lines.length === 0)) && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 space-y-1">
+                      <div className="font-medium">⚠️ 节拍器仅回传了单头金额,以下未附带:</div>
+                      <ul className="list-disc pl-4 space-y-0.5">
+                        {!sel.supplier_name && <li>供应商名{sel.supplier_id ? `(仅收到 id:${sel.supplier_id})` : ''} —— 无法对账/看付款条件</li>}
+                        {!linesLoading && lines.length === 0 && <li>原辅料明细行 —— 无法逐料看数量/单价/历史采购价、无法按料做预算对照</li>}
+                      </ul>
+                      <div className="text-amber-700/80">需节拍器在采购审批推送(<code>purchase_order.approval_requested</code>)里补 <code>supplier_name</code> + <code>lines[]</code>,财务这边收到即自动落库显示。</div>
+                    </div>
+                  )}
+
                   {/* 预算对照 */}
                   <div className="rounded-lg border bg-muted/20 p-3">
                     <div className="flex items-center gap-2 text-sm mb-2">
