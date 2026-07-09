@@ -1,6 +1,7 @@
 // 采购单审批(≥¥5000)· 查询层
 import { createClient } from './client'
 import { fetchAll } from './fetch-all'
+import { normalizeOrderRefs } from '@/lib/integration/order-refs'
 
 export interface PendingPO {
   id: string
@@ -58,8 +59,9 @@ export async function getPendingPurchaseApprovals(): Promise<PendingPO[]> {
         .order('placed_at', { ascending: true, nullsFirst: true }).order('id', { ascending: true }).range(from, to))
     const pos = data || []
     if (!pos.length) return pos
-    // order_refs(=synced_orders.id)→ 内部单号/QM号/是否已删。用于 #2 按内部单号分组 + #1 过滤已删订单的采购单。
-    const refs = [...new Set(pos.flatMap(p => Array.isArray(p.order_refs) ? (p.order_refs as unknown[]).map(String) : []))]
+    // order_refs → 内部单号/QM号/是否已删。用于 #2 按内部单号分组 + #1 过滤已删订单的采购单。
+    // 2026-07-09:内部单号优先取 order_refs 富对象自带(节拍器新事件),退回 synced_orders(旧库存字符串数组)。
+    const refs = [...new Set(pos.flatMap(p => normalizeOrderRefs(p.order_refs).map(r => r.id)))]
     const orderMap: Record<string, { qm: string | null; internal: string | null; deleted: boolean }> = {}
     if (refs.length) {
       const { data: so } = await sb.from('synced_orders')
@@ -74,12 +76,15 @@ export async function getPendingPurchaseApprovals(): Promise<PendingPO[]> {
       }
     }
     const enriched = pos.map(p => {
-      const rs = Array.isArray(p.order_refs) ? (p.order_refs as unknown[]).map(String) : []
-      const infos = rs.map(r => orderMap[r]).filter(Boolean)
+      const nrefs = normalizeOrderRefs(p.order_refs)
+      const infos = nrefs.map(r => orderMap[r.id]).filter(Boolean)
       return {
         ...p,
-        internal_order_no: infos.map(i => i.internal).find(Boolean) || null,
-        qm_order_no: infos.map(i => i.qm).find(Boolean) || null,
+        // 富对象自带内部单号优先(不依赖 synced_orders 是否已同步/style_no 是否为空)
+        internal_order_no: nrefs.map(r => r.internal_order_no).find(Boolean)
+          || infos.map(i => i.internal).find(Boolean) || null,
+        qm_order_no: nrefs.map(r => r.order_no).find(Boolean)
+          || infos.map(i => i.qm).find(Boolean) || null,
         // 仅当所有关联订单都已删/取消才算废单(部分关联仍在则保留,避免误藏)
         order_deleted: infos.length > 0 && infos.every(i => i.deleted),
       }

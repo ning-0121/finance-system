@@ -16,6 +16,7 @@ import {
   type PendingPO, type PoLine, type PriceHistoryRow,
 } from '@/lib/supabase/purchase-approvals'
 import { PURCHASE_APPROVAL_THRESHOLD_CNY } from '@/lib/integration/purchase-approval'
+import { normalizeOrderRefs } from '@/lib/integration/order-refs'
 
 interface BLine { bucket: string; name: string; supplier?: string; qty?: number; unit?: string; unit_price?: number; amount?: number }
 const money = (n: number | null | undefined) => (n == null ? '-' : Number(n).toLocaleString('zh-CN', { maximumFractionDigits: 2 }))
@@ -75,10 +76,12 @@ export default function PurchaseApprovalsPage() {
   // order_refs(QM号) → synced_orders.budget_order_id → budget_orders._cost_breakdown.lines
   const loadBudgetLines = async (po: PendingPO): Promise<BLine[]> => {
     try {
-      const refs = Array.isArray(po.order_refs) ? (po.order_refs as unknown[]).map(String).map(s => s.trim()).filter(Boolean) : []
-      if (refs.length === 0) return []
+      const nrefs = normalizeOrderRefs(po.order_refs)
+      const ids = nrefs.map(r => r.id).filter(Boolean)
+      if (ids.length === 0) return []
       const sb = createClient()
-      const { data: synced } = await sb.from('synced_orders').select('order_no, budget_order_id').in('order_no', refs).not('budget_order_id', 'is', null)
+      // order_refs 元素 = synced_orders.id(UUID);按 id 反查预算单(此前误用 order_no 查,永远不命中)
+      const { data: synced } = await sb.from('synced_orders').select('id, budget_order_id').in('id', ids).not('budget_order_id', 'is', null)
       const boIds = [...new Set((synced || []).map(s => (s as Record<string, unknown>).budget_order_id as string).filter(Boolean))]
       if (boIds.length === 0) return []
       const { data: bos } = await sb.from('budget_orders').select('items').in('id', boIds)
@@ -204,7 +207,7 @@ export default function PurchaseApprovalsPage() {
                       <p className="text-xs text-muted-foreground mt-1">
                         供应商 {sel.supplier_name || '—'} · 交期 {fmtDate(sel.delivery_date)}
                         {sel.payment_terms ? ` · 账期 ${sel.payment_terms}` : ''}
-                        {Array.isArray(sel.order_refs) && (sel.order_refs as unknown[]).length ? ` · 关联 ${(sel.order_refs as unknown[]).map(String).join(', ')}` : ''}
+                        {(sel.internal_order_no || sel.qm_order_no) ? ` · 关联 ${[sel.internal_order_no, sel.qm_order_no].filter(Boolean).join(' / ')}` : ''}
                       </p>
                     </div>
                     <div className="text-right">

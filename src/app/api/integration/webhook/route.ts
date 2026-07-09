@@ -201,6 +201,11 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'purchase_order.approval_requested':
       return handlePurchaseOrderPlaced(payload.data as Record<string, unknown>, payload.request_id, true)
 
+    // 采购审批撤销(2026-07-09):节拍器删单/取消单时,对其下"待审"采购单发本事件 →
+    // 财务把该单移出「采购审批」队列(soft-delete),否则订单没了、审批还挂着。
+    case 'purchase_order.approval_cancelled':
+      return handlePurchaseOrderApprovalCancelled(payload.data as Record<string, unknown>)
+
     // 审计 P0-3:此前无 case→落 default ignored→inbox 假 pending 永久堆积(生产库卡了 61 条)。
     // 现消费为供应商主数据 upsert，财务侧供应商档随节拍器同步。
     case 'supplier.upserted':
@@ -297,6 +302,37 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
   }
 
   return { action: gated ? 'po_pending_approval' : 'po_registered', po_no: String(data.po_no || poKey), lines: lineCount }
+}
+
+// --- 采购审批撤销(订单删/取消时,节拍器逐张发)---
+// 只撤"未决"(pending/pending_approval)的:soft-delete 即移出审批队列(getPendingPurchaseApprovals 过滤 deleted_at)。
+// 已批/已付(approved/paid)绝不自动动 → 仅警告需人工红冲。幂等:已 deleted 的当已撤。
+async function handlePurchaseOrderApprovalCancelled(data: Record<string, unknown>) {
+  const supabase = createServiceClient()
+  const poId = data.purchase_order_id ? String(data.purchase_order_id) : ''
+  const poNo = data.po_no ? String(data.po_no) : ''
+  if (!poId && !poNo) return { action: 'ignored', reason: 'approval_cancelled 缺 purchase_order_id/po_no' }
+
+  let q = supabase.from('fin_purchase_orders').select('id, po_no, fin_status, deleted_at')
+  q = poId ? q.eq('purchase_order_id', poId) : q.eq('po_no', poNo)
+  const { data: rows } = await q
+  const list = (rows as { id: string; po_no?: string; fin_status?: string; deleted_at?: string | null }[] | null) || []
+  if (!list.length) return { action: 'ok', reason: `未找到采购单(po=${poNo || poId}),可能尚未同步或已清除` }
+
+  const now = new Date().toISOString()
+  const reason = String(data.reason || 'order_removed')
+  const undecided = list.filter(p => !p.deleted_at && (p.fin_status === 'pending' || p.fin_status === 'pending_approval'))
+  const decided = list.filter(p => !p.deleted_at && (p.fin_status === 'approved' || p.fin_status === 'paid'))
+  if (undecided.length) {
+    const { error } = await supabase.from('fin_purchase_orders')
+      .update({ deleted_at: now, approval_note: `节拍器撤销采购审批(${reason})`, updated_at: now })
+      .in('id', undecided.map(p => p.id))
+    if (error) throw new Error(`采购审批撤销失败: ${error.message}`)
+  }
+  if (decided.length) {
+    return { action: 'done', reason: `撤销 ${undecided.length} 张待审;另有 ${decided.length} 张已批/已付需人工红冲(未自动动)` }
+  }
+  return { action: 'done', reason: `撤销 ${undecided.length} 张待审采购审批(po=${poNo || poId})` }
 }
 
 // --- 供应商主数据 upsert（审计 P0-3）---
@@ -483,7 +519,54 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
     const { data: so } = await supabase.from('synced_orders').select('budget_order_id').eq('order_no', orderNo).not('budget_order_id', 'is', null).maybeSingle()
     budgetOrderId = (so?.budget_order_id as string) ?? null
   }
-  if (!budgetOrderId) return { action: 'ok', reason: `预算已收到,但该订单尚未建预算单(order=${orderNo})——待建单后由下次保存补推` }
+  // 尚未建预算单 → 自动建一张 draft 预算单再填(2026-07-09)。此前只寄存不落库 → 业务在采购核料填的
+  // 预算永远到不了财务、三端(采购核料/采购下单/财务)口径对不上,预算控制失去意义。数字全来自本事件
+  // (源头=业务采购核料),财务不自造数;只建 draft(不审批/不入账),与 autoCreateBudgetDraft 同一系统同步口径(created_by=null)。
+  if (!budgetOrderId) {
+    const { data: so } = await supabase.from('synced_orders')
+      .select('id, order_no, customer_name, currency, total_amount, unit_price, quantity, budget_order_id')
+      .eq(qimoOrderId ? 'id' : 'order_no', qimoOrderId || orderNo).maybeSingle()
+    if (!so) return { action: 'ignored', reason: `预算已收到,但订单未同步到财务(order=${orderNo})——待订单同步后重推` }
+    if (so.budget_order_id) {
+      budgetOrderId = so.budget_order_id as string   // 竞态:order.created/activated 已建单 → 直接用
+    } else {
+      const cleanName = String(so.customer_name || '').trim()
+      if (!cleanName) return { action: 'ignored', reason: `预算已收到,但订单无客户名、无法建预算单(order=${orderNo})` }
+      const { data: cust, error: custErr } = await supabase.rpc('get_or_create_customer' as never, {
+        p_name: cleanName, p_currency: (so.currency as string) || 'CNY',
+      } as never) as { data: { id?: string } | null; error: { message: string } | null }
+      if (custErr || !cust?.id) return { action: 'ignored', reason: `预算已收到,但客户匹配失败(order=${orderNo}):${custErr?.message || '无客户'}` }
+      const revenue = Number(so.total_amount) || (Number(so.unit_price || 0) * Number(so.quantity || 0)) || 0
+      // order_no='' → 触发器自动生成 BO 号;金额桶待下方步骤 3 用事件预算填 items[0]._cost_breakdown
+      const { data: created, error: insErr } = await supabase.from('budget_orders').insert({
+        order_no: '', qimo_order_id: qimoOrderId || (so.id as string), customer_id: cust.id,
+        total_revenue: revenue, currency: (so.currency as string) || 'CNY',
+        status: 'draft', created_by: null, has_sub_documents: false,
+        notes: `来源: 采购核料预算自动建单(节拍器 order.budget_updated)\n节拍器订单号: ${orderNo || ''}`,
+      }).select('id').single()
+      if (insErr || !created) {
+        // 并发已建(qimo_order_id 唯一索引冲突)→ 重读用现有,不重复建
+        const { data: exist } = await supabase.from('budget_orders').select('id')
+          .eq('qimo_order_id', qimoOrderId || (so.id as string)).is('deleted_at', null).maybeSingle()
+        if (exist?.id) budgetOrderId = exist.id
+        else throw new Error(`预算单自动创建失败: ${insErr?.message || 'unknown'}`)
+      } else {
+        // 原子认领 synced_orders.budget_order_id;并发落败 → 软删本行、用胜者(与 autoCreateBudgetDraft 同一防护)
+        const { data: claim } = await supabase.from('synced_orders')
+          .update({ budget_order_id: created.id }).eq('id', so.id).is('budget_order_id', null).select('id')
+        if (!claim || claim.length === 0) {
+          await supabase.from('budget_orders').update({
+            deleted_at: new Date().toISOString(), delete_reason: '并发重复草稿自动清理(采购核料预算建单落败)',
+          }).eq('id', created.id)
+          const { data: winner } = await supabase.from('synced_orders').select('budget_order_id').eq('id', so.id).maybeSingle()
+          budgetOrderId = (winner?.budget_order_id as string) ?? null
+        } else {
+          budgetOrderId = created.id
+        }
+      }
+    }
+    if (!budgetOrderId) return { action: 'ignored', reason: `预算单创建落败且无胜者(order=${orderNo}),下次重推` }
+  }
 
   // 2. 只填 draft 预算,不覆盖已审批/锁定(与 quotation.frozen 同一保守口径)
   const { data: bo } = await supabase.from('budget_orders').select('status, total_revenue, items').eq('id', budgetOrderId).maybeSingle()
@@ -685,11 +768,23 @@ async function handleOrderReversal(order: SyncedOrder, event: string) {
     const poNos = Array.isArray((order as unknown as { po_nos?: unknown[] }).po_nos)
       ? ((order as unknown as { po_nos?: unknown[] }).po_nos as unknown[]).map(String).map(s => s.trim()).filter(Boolean)
       : []
-    const orConds: string[] = [`order_refs.cs.{${order.id}}`]
-    if (poNos.length) orConds.push(`po_no.in.(${poNos.map(s => `"${s}"`).join(',')})`)
-    const { data: fpos } = await supabase.from('fin_purchase_orders')
-      .select('id, po_no, fin_status').or(orConds.join(',')).is('deleted_at', null)
-    const list = (fpos as { id: string; po_no?: string; fin_status?: string }[] | null) || []
+    // 匹配关联采购单:po_no ∪ order_refs 含本订单 id。order_refs 两种历史格式都覆盖:
+    //   旧=["<uuid>"](字符串数组)、新(2026-07-09)=[{id,order_no,internal_order_no,...}](对象数组)。
+    // 分开查再按 id 去重(避免 .or 里塞 jsonb 对象字面量的转义脆弱性)。
+    type FPo = { id: string; po_no?: string; fin_status?: string }
+    const collected = new Map<string, FPo>()
+    const add = (arr: FPo[] | null) => { for (const p of arr || []) collected.set(p.id, p) }
+    if (poNos.length) {
+      const { data } = await supabase.from('fin_purchase_orders')
+        .select('id, po_no, fin_status').in('po_no', poNos).is('deleted_at', null)
+      add(data as FPo[] | null)
+    }
+    for (const pat of [[order.id] as unknown, [{ id: order.id }] as unknown]) {
+      const { data } = await supabase.from('fin_purchase_orders')
+        .select('id, po_no, fin_status').contains('order_refs', pat as never).is('deleted_at', null)
+      add(data as FPo[] | null)
+    }
+    const list = [...collected.values()]
     const undecided = list.filter(p => p.fin_status === 'pending' || p.fin_status === 'pending_approval')
     const decided = list.filter(p => p.fin_status === 'approved' || p.fin_status === 'paid')
     if (undecided.length) {

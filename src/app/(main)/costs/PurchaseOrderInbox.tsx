@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback, Fragment } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { normalizeOrderRefs } from '@/lib/integration/order-refs'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Loader2, PackageCheck, ChevronRight, ChevronDown, Ban, Inbox } from 'lucide-react'
@@ -72,16 +73,16 @@ export function PurchaseOrderInbox({ syncedOrderMap, onRegister, onChanged }: {
       if (qm) qmToBoId.set(qm, boId)
     }
     setRows((data || []).map(p => {
-      const refs = Array.isArray(p.order_refs) ? (p.order_refs as unknown[]).map(String) : []
+      const nrefs = normalizeOrderRefs(p.order_refs)
       let boId: string | null = null
-      for (const r of refs) { const hit = qmToBoId.get(String(r).trim()); if (hit) { boId = hit; break } }
+      for (const r of nrefs) { const hit = qmToBoId.get(String(r.order_no || r.id).trim()); if (hit) { boId = hit; break } }
       return {
         id: p.id as string, po_no: p.po_no as string, supplier_name: (p.supplier_name as string) || null,
         total_amount: p.total_amount as number | null, currency: (p.currency as string) || 'CNY',
         delivery_date: (p.delivery_date as string) || null, status: (p.status as string) || null,
         placed_at: (p.placed_at as string) || null, order_refs: p.order_refs,
         budget_order_id: boId, fin_status: (p.fin_status as string) || 'pending',
-        orderLabel: boId ? (syncedOrderMap[boId] || '') : (refs.join(', ') || ''),
+        orderLabel: boId ? (syncedOrderMap[boId] || '') : (nrefs.map(r => r.internal_order_no || r.order_no || r.id).join(', ') || ''),
       }
     }))
     setLoading(false)

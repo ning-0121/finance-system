@@ -21,6 +21,7 @@ export type WebhookEventType =
   | 'supplier.upserted'       // 供应商主数据同步
   | 'purchase_order.placed'   // 采购单下单（V1.0 头；V1.1 带 lines 行数据）
   | 'purchase_order.approval_requested'  // 采购单≥¥5000 请求财务审批（前置卡单，批/驳回传节拍器）
+  | 'purchase_order.approval_cancelled'  // 采购审批撤销（节拍器删单/取消单时，移出财务审批队列）
   | 'goods_receipt.recorded'  // 收货登记（按实收核销应付；节拍器三条收货入口回传）
   | 'quotation.frozen'        // 内部报价单冻结 → 财务预算自动到位（6桶+逐行+核算日期/版本）
   | 'order.budget_updated'    // 采购核料预算即时更新（业务在采购核料填/改预算 → 送绝对总额，填 draft 预算）
