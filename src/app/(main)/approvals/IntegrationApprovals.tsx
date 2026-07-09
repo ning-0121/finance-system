@@ -50,6 +50,9 @@ const KEY_LABEL: Record<string, string> = {
   step_key: '审批环节', due_at: '截止时间', milestone_status: '里程碑状态', notes: '备注',
   reason: '原因', old_price: '原价', new_price: '新价', old_unit_price: '原单价', new_unit_price: '新单价',
   currency: '币种', delay_days: '延期天数', amount: '金额', qty: '数量', new_due_at: '新截止时间', old_due_at: '原截止时间',
+  // 节拍器审批 detail 若带本次金额,自动以中文显示(加工费确认/价格审批等)
+  processing_amount: '本次加工费', processing_fee: '本次加工费', per_piece: '单件加工费', unit_price: '单价',
+  total_amount: '总额', fee: '费用', delta: '差额', variance_pct: '差异%', supplier_name: '供应商', material_name: '物料',
 }
 
 function fmtDate(v: unknown): string {
