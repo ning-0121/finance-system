@@ -181,7 +181,7 @@ export default function ApprovalsPage() {
                     <TableHead>内部订单号</TableHead>
                     <TableHead>客户</TableHead>
                     <TableHead className="text-right">总收入</TableHead>
-                    <TableHead className="text-right">预计利润</TableHead>
+                    <TableHead className="text-right">预计利润 (¥)</TableHead>
                     <TableHead className="text-right">毛利率</TableHead>
                     <TableHead>提交时间</TableHead>
                     <TableHead className="text-center">操作</TableHead>
@@ -208,7 +208,7 @@ export default function ApprovalsPage() {
                         <TableCell>{order.customer?.company || '-'}</TableCell>
                         <TableCell className="text-right font-medium">{order.currency} {order.total_revenue.toLocaleString()}</TableCell>
                         <TableCell className={`text-right font-semibold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          {order.currency} {order.estimated_profit.toLocaleString()}
+                          ¥ {order.estimated_profit.toLocaleString()}
                         </TableCell>
                         <TableCell className="text-right">
                           <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
