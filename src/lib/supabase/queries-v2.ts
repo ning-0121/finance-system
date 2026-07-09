@@ -43,6 +43,7 @@ export async function createReceivablePayment(p: {
   customer_id?: string | null; customer_name?: string | null; budget_order_id?: string | null
   amount_original: number; currency?: string; exchange_rate?: number
   received_at?: string | null; bank_account?: string | null; payment_reference?: string | null
+  attachment_url?: string | null
   source_type?: ReceivablePayment['source_type']; notes?: string | null
 }): Promise<{ data: ReceivablePayment | null; error: string | null }> {
   try {
@@ -61,6 +62,8 @@ export async function createReceivablePayment(p: {
       received_at: p.received_at || null,
       bank_account: p.bank_account?.trim() || null,
       payment_reference: p.payment_reference?.trim() || null,
+      // 仅在有水单时才带该列——迁移未跑的环境下(列不存在)不影响无附件登记
+      ...(p.attachment_url ? { attachment_url: p.attachment_url } : {}),
       source_type: p.source_type || 'manual',
       notes: p.notes?.trim() || null,
       created_by: userData?.user?.id || null,
@@ -80,6 +83,34 @@ export async function voidReceivablePayment(id: string, reason?: string): Promis
     const supabase = createClient()
     const { data: userData } = await supabase.auth.getUser()
     const { error } = await supabase.rpc('void_receivable_payment', { p_receipt_id: id, p_actor: userData?.user?.id || null, p_reason: reason || null })
+    return { error: error?.message || null }
+  } catch (e) { return { error: e instanceof Error ? e.message : '未知错误' } }
+}
+
+// 编辑回款流水（RPC：元数据永远可改；金额仅未匹配流水可改，改则重算 amount_cny）
+// 收紧了 RLS 的 receivable_payments 直接 update 无效——必走 SECURITY DEFINER RPC。
+export async function editReceivablePayment(a: {
+  receipt_id: string
+  received_at?: string | null; bank?: string | null; reference?: string | null; notes?: string | null
+  amount_original?: number | null   // 传 null/undefined = 只改元数据、不动金额
+  currency?: string | null; rate?: number | null
+  reason?: string
+}): Promise<{ error: string | null }> {
+  try {
+    const supabase = createClient()
+    const { data: userData } = await supabase.auth.getUser()
+    const { error } = await supabase.rpc('edit_receivable_payment', {
+      p_receipt_id: a.receipt_id,
+      p_received_at: a.received_at ? a.received_at.slice(0, 10) : null,
+      p_bank: a.bank ?? null,
+      p_reference: a.reference ?? null,
+      p_notes: a.notes ?? null,
+      p_amount_original: a.amount_original != null ? Number(a.amount_original) : null,
+      p_currency: a.currency ?? null,
+      p_rate: a.rate != null ? Number(a.rate) : null,
+      p_actor: userData?.user?.id || null,
+      p_reason: a.reason || null,
+    })
     return { error: error?.message || null }
   } catch (e) { return { error: e instanceof Error ? e.message : '未知错误' } }
 }

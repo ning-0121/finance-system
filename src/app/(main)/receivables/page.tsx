@@ -9,18 +9,20 @@
 // ============================================================
 
 import { bizToday } from '@/lib/biz-date'
-import { useState, useEffect, useMemo, Fragment } from 'react'
+import { useState, useEffect, useMemo, Fragment, type ChangeEvent } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { DollarSign, AlertTriangle, Search, Loader2, CheckCircle2, Pencil, Download, X, Plus, Link2, ChevronDown, ChevronRight, Trash2, Inbox } from 'lucide-react'
+import { DollarSign, AlertTriangle, Search, Loader2, CheckCircle2, Pencil, Download, X, Plus, Link2, ChevronDown, ChevronRight, Trash2, Inbox, Upload, Image as ImageIcon } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { uploadAttachment, openAttachment, attachmentName } from '@/lib/supabase/storage'
 import { getBudgetOrders, writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
-import { getReceivablePayments, getReceivableAllocations, createReceivablePayment, allocateReceipt, unallocateReceipt, voidReceivablePayment, correctReceivableRate } from '@/lib/supabase/queries-v2'
+import { getReceivablePayments, getReceivableAllocations, createReceivablePayment, allocateReceipt, unallocateReceipt, voidReceivablePayment, correctReceivableRate, editReceivablePayment } from '@/lib/supabase/queries-v2'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { normalizeCustomerName } from '@/lib/utils'
 import Link from 'next/link'
@@ -59,6 +61,7 @@ type ReceivableRow = {
   agingDays: number
   notes: string
   hasLedger: boolean    // 已收是否来自回款流水（true=流水权威；false=历史 projection）
+  isDraft: boolean      // 未审草稿(导入/同步历史单):仅显示、不计入任何合计(2026-07-09)
 }
 
 type CustomerAR = {
@@ -94,7 +97,8 @@ function parseField(notes: string | null | undefined, label: RegExp): string {
 function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, allocatedByOrder: Map<string, number>, allocatedOrigByOrder: Map<string, number>): ReceivableRow[] {
   const now = new Date()
   return orders
-    .filter(o => (o.status === 'approved' || o.status === 'closed') && o.total_revenue && o.total_revenue > 0)
+    // 2026-07-09:draft(未审草稿,多为导入/同步历史单)也纳入显示,标 isDraft;下游聚合/KPI 不计入,仅可见。
+    .filter(o => (o.status === 'approved' || o.status === 'closed' || o.status === 'draft') && o.total_revenue && o.total_revenue > 0)
     .map(o => {
       const deliveryDate = o.delivery_date ? new Date(o.delivery_date) : new Date(o.order_date)
       const dueDate = new Date(deliveryDate); dueDate.setDate(dueDate.getDate() + 30)
@@ -152,6 +156,7 @@ function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, a
         status, agingDays,
         notes: o.notes || '',
         hasLedger,
+        isDraft: o.status === 'draft',
       }
     })
 }
@@ -171,6 +176,7 @@ export default function ReceivablesPage() {
   const [loading, setLoading] = useState(true)
   const [receivables, setReceivables] = useState<ReceivableRow[]>([])
   const [draftCount, setDraftCount] = useState(0)
+  const [showDrafts, setShowDrafts] = useState(false)   // 含未审草稿(默认关):开则显示 draft 单,仅可见不计合计
   const [openTabs, setOpenTabs] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
   // 回款流水层
@@ -180,8 +186,13 @@ export default function ReceivablesPage() {
   const [expandedOrder, setExpandedOrder] = useState<Record<string, boolean>>({})
   // 登记回款 Dialog
   const [regOpen, setRegOpen] = useState(false)
-  const [regForm, setRegForm] = useState({ customer: '', amount: '', currency: 'CNY', rate: '1', date: bizToday(), bank: '', ref: '', source: 'manual' as ReceivablePayment['source_type'], notes: '' })
+  // ref 改为 attachmentUrl(水单照片存储路径)；customer 由「订单号搜索」带出
+  const [regForm, setRegForm] = useState({ customer: '', amount: '', currency: 'CNY', rate: '1', date: bizToday(), bank: '', attachmentUrl: '', source: 'manual' as ReceivablePayment['source_type'], notes: '' })
   const [regSaving, setRegSaving] = useState(false)
+  const [regOrderId, setRegOrderId] = useState('')       // 选中的订单(登记后自动匹配)
+  const [regOrderQuery, setRegOrderQuery] = useState('')  // 订单号搜索框文本
+  const [regOrderOpen, setRegOrderOpen] = useState(false) // 搜索下拉展开
+  const [regUploading, setRegUploading] = useState(false) // 水单上传中
   // 匹配 Dialog（把某回款匹配到某订单）
   const [matchReceipt, setMatchReceipt] = useState<ReceivablePayment | null>(null)
   const [matchOrderId, setMatchOrderId] = useState('')
@@ -204,13 +215,18 @@ export default function ReceivablesPage() {
   const [correctReason, setCorrectReason] = useState('')
   const [correctSaving, setCorrectSaving] = useState(false)
 
+  // 编辑回款流水 Dialog（元数据永远可改；金额仅未匹配流水可改）
+  const [editReceipt, setEditReceipt] = useState<ReceivablePayment | null>(null)
+  const [editForm, setEditForm] = useState({ date: '', bank: '', ref: '', notes: '', amount: '', currency: 'CNY', rate: '1' })
+  const [editSaving, setEditSaving] = useState(false)
+
   async function reload() {
     const [orders, recv, allocs] = await Promise.all([getBudgetOrders(), getReceivablePayments(), getReceivableAllocations()])
     setDraftCount(orders.filter(o => o.status === 'draft' || o.status === 'pending_review').length)
     setReceipts(recv)
     setAllocations(allocs)
-    const arOrders = orders.filter(o => (o.status === 'approved' || o.status === 'closed') && o.total_revenue && o.total_revenue > 0)
-    // 内部订单号：仅按相关订单精准查询 synced_orders（不拉全表）
+    const arOrders = orders.filter(o => (o.status === 'approved' || o.status === 'closed' || o.status === 'draft') && o.total_revenue && o.total_revenue > 0)
+    // 内部订单号：仅按相关订单精准查询 synced_orders（不拉全表）；含 draft 以便未审草稿也显示内部号
     const boIds = arOrders.map(o => o.id)
     const syncMap = new Map<string, string>()
     if (boIds.length > 0) {
@@ -240,9 +256,11 @@ export default function ReceivablesPage() {
   const customers = useMemo<CustomerAR[]>(() => {
     const map = new Map<string, CustomerAR>()
     for (const r of receivables) {
+      if (r.isDraft && !showDrafts) continue          // 未审草稿:开关关时完全不进
       let c = map.get(r.customer)
       if (!c) { c = { customer: r.customer, country: r.country, contractCny: 0, receivedCny: 0, unpaidCny: 0, overdueCny: 0, overdueCount: 0, lastReceiptDate: null, recoveryRate: 0, avgAgingDays: 0, risk: '低', rows: [] }; map.set(r.customer, c) }
-      c.rows.push(r)
+      c.rows.push(r)                                    // 草稿也进列表(可见)
+      if (r.isDraft) continue                           // …但不计入任何金额合计(不锁账)
       c.contractCny += r.amountCny
       c.receivedCny += r.paidCny
       if (r.balanceCny > 0.01) c.unpaidCny += r.balanceCny
@@ -263,7 +281,9 @@ export default function ReceivablesPage() {
         avgAgingDays: avgAging, risk,
       }
     }).sort((a, b) => b.unpaidCny - a.unpaidCny)
-  }, [receivables])
+  }, [receivables, showDrafts])
+
+  const draftRevCount = useMemo(() => receivables.filter(r => r.isDraft).length, [receivables])
 
   const customerMap = useMemo(() => { const m = new Map<string, CustomerAR>(); customers.forEach(c => m.set(c.customer, c)); return m }, [customers])
 
@@ -477,23 +497,83 @@ export default function ReceivablesPage() {
     try { await reload() } catch { /* */ }
   }
 
+  // 订单号搜索：选中订单 → 带出客户/币种/结汇汇率，并记订单以便登记后自动匹配
+  const regOrderMatches = useMemo(() => {
+    const q = regOrderQuery.trim().toLowerCase()
+    if (!q || regOrderId) return []   // 已选中则不再展开候选
+    return receivables.filter(r =>
+      r.internalNo.toLowerCase().includes(q) || r.orderNo.toLowerCase().includes(q) ||
+      r.customerPO.toLowerCase().includes(q) || r.customer.toLowerCase().includes(q),
+    ).slice(0, 20)
+  }, [receivables, regOrderQuery, regOrderId])
+
+  const pickRegOrder = (o: ReceivableRow) => {
+    setRegForm(f => ({ ...f, customer: o.customer, currency: o.currency || 'CNY', rate: o.currency === 'CNY' ? '1' : String(o.settleRate || o.rate || 1) }))
+    setRegOrderId(o.id)
+    setRegOrderQuery(`${o.internalNo || o.orderNo} · ${o.customer}`)
+    setRegOrderOpen(false)
+  }
+
+  // 上传水单照片(银行回单/付款截图) → finance-attachments，路径存 regForm.attachmentUrl
+  async function handleRegUpload(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]; e.target.value = ''
+    if (!file) return
+    setRegUploading(true)
+    const { path, error } = await uploadAttachment(file, 'receivable-receipts')
+    setRegUploading(false)
+    if (error || !path) { toast.error(error || '上传失败'); return }
+    setRegForm(f => ({ ...f, attachmentUrl: path }))
+    toast.success('水单已上传')
+  }
+
+  const resetRegForm = () => {
+    setRegForm({ customer: '', amount: '', currency: 'CNY', rate: '1', date: bizToday(), bank: '', attachmentUrl: '', source: 'manual', notes: '' })
+    setRegOrderId(''); setRegOrderQuery(''); setRegOrderOpen(false)
+  }
+
   // ── 登记回款（写入流水层）──
   async function handleRegister() {
     const amt = Number(regForm.amount)
-    if (!regForm.customer.trim()) { toast.error('请填写客户'); return }
+    if (!regForm.customer.trim()) { toast.error('请先搜索并选择订单（或填写客户）'); return }
     if (!amt || amt <= 0) { toast.error('请输入有效金额'); return }
     setRegSaving(true)
-    const { error } = await createReceivablePayment({
-      customer_name: regForm.customer.trim(), amount_original: amt, currency: regForm.currency,
-      exchange_rate: regForm.currency === 'CNY' ? 1 : Number(regForm.rate) || 1,
+    const effRate = regForm.currency === 'CNY' ? 1 : Number(regForm.rate) || 1
+    const { data: pay, error } = await createReceivablePayment({
+      customer_name: regForm.customer.trim(), budget_order_id: regOrderId || null,
+      amount_original: amt, currency: regForm.currency, exchange_rate: effRate,
       received_at: regForm.date || null, bank_account: regForm.bank.trim() || null,
-      payment_reference: regForm.ref.trim() || null, source_type: regForm.source, notes: regForm.notes.trim() || null,
+      attachment_url: regForm.attachmentUrl || null, source_type: regForm.source, notes: regForm.notes.trim() || null,
     })
+    if (error || !pay) { setRegSaving(false); toast.error(error || '登记失败'); return }
+    // 选了订单 → 自动匹配（按订单未收余额封顶；超出部分留在「未匹配回款」）
+    let matched = false
+    if (regOrderId) {
+      const order = receivables.find(r => r.id === regOrderId)
+      const amountCny = r2(amt * effRate)
+      const cap = order ? Math.max(0, order.balanceCny) : amountCny
+      const allocCny = Math.min(amountCny, cap)
+      if (allocCny > 0.005) {
+        const allocOrig = effRate > 0 ? r2(allocCny / effRate) : amt
+        const { error: aErr } = await allocateReceipt({ receipt_id: pay.id, budget_order_id: regOrderId, amount_cny: allocCny, amount_original: allocOrig })
+        if (!aErr) {
+          matched = true
+          fetch('/api/gl/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ businessEvent: 'receipt_saved', sourceType: 'receipt', sourceId: regOrderId }) }).catch(err => console.error('[GL] 登记匹配入队失败:', err))
+          // 收款到账 → 回传节拍器(best-effort)
+          try {
+            const sb = createClient()
+            const { data: so } = await sb.from('synced_orders').select('id').eq('budget_order_id', regOrderId).maybeSingle()
+            void fetch('/api/integration/finance-progress', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ event: 'collection.received', qimo_order_id: (so as { id?: string } | null)?.id || null, order_no: order?.orderNo || null, amount: allocOrig, currency: regForm.currency, note: `客户回款到账 ¥${allocCny.toLocaleString()}` }),
+            }).catch(() => {})
+          } catch { /* 进度回传不阻断登记 */ }
+        }
+      }
+    }
     setRegSaving(false)
-    if (error) { toast.error(error); return }
-    toast.success('回款已登记，进入「未匹配回款」等待匹配')
+    toast.success(matched ? '回款已登记并自动匹配到订单' : '回款已登记，进入「未匹配回款」等待匹配')
     setRegOpen(false)
-    setRegForm({ customer: '', amount: '', currency: 'CNY', rate: '1', date: bizToday(), bank: '', ref: '', source: 'manual', notes: '' })
+    resetRegForm()
     try { await reload() } catch { /* */ }
   }
 
@@ -559,6 +639,53 @@ export default function ReceivablesPage() {
     try { await reload() } catch { /* */ }
   }
 
+  // ── 编辑回款流水 ──
+  const openEdit = (rc: ReceivablePayment) => {
+    setEditReceipt(rc)
+    setEditForm({
+      date: rc.received_at ? rc.received_at.slice(0, 10) : '',
+      bank: rc.bank_account || '',
+      ref: rc.payment_reference || '',
+      notes: rc.notes || '',
+      amount: String(rc.amount_original ?? ''),
+      currency: rc.currency || 'CNY',
+      rate: String(rc.exchange_rate || 1),
+    })
+  }
+  async function handleEditReceipt() {
+    if (!editReceipt) return
+    const locked = (allocatedByReceipt.get(editReceipt.id) || 0) > 0.005  // 已匹配 → 金额锁定，只改元数据
+    let amount_original: number | null = null
+    let currency: string | null = null
+    let rate: number | null = null
+    if (!locked) {
+      const amt = Number(editForm.amount)
+      if (!amt || amt <= 0) { toast.error('请输入有效金额（原币）'); return }
+      currency = editForm.currency || 'CNY'
+      rate = currency === 'CNY' ? 1 : (Number(editForm.rate) || 0)
+      if (rate <= 0) { toast.error('请输入有效汇率'); return }
+      amount_original = amt
+    }
+    setEditSaving(true)
+    const { error } = await editReceivablePayment({
+      receipt_id: editReceipt.id,
+      received_at: editForm.date || null,
+      bank: editForm.bank, reference: editForm.ref, notes: editForm.notes,
+      amount_original, currency, rate, reason: '人工编辑',
+    })
+    setEditSaving(false)
+    if (error) {
+      if (/RECEIPT_HAS_ALLOCATIONS/.test(error)) toast.error('该回款已匹配订单，不能直接改金额。请先撤销匹配后再改，或用「汇率修正」作废重建。')
+      else if (/INVALID_AMOUNT/.test(error)) toast.error('金额无效')
+      else if (/INVALID_RATE/.test(error)) toast.error('汇率无效')
+      else toast.error(error)
+      return
+    }
+    toast.success('回款流水已更新')
+    setEditReceipt(null)
+    try { await reload() } catch { /* */ }
+  }
+
   const exportCustomer = (c: CustomerAR) => {
     const headers = ['内部订单号', '客户PO', '合同额原币', '币种', '汇率', '合同额¥', '已收原币', '已收¥', '未收¥', '应收日期', '实际收款日', '收款银行', '状态', '备注']
     const lines = c.rows.map(r => [
@@ -601,6 +728,15 @@ export default function ReceivablesPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input placeholder="搜索客户 / 内部订单号 / 客户PO..." className="pl-9 h-9" value={search} onChange={e => setSearch(e.target.value)} />
             </div>
+            {draftRevCount > 0 && (
+              <label className="flex items-center gap-2 text-xs cursor-pointer select-none px-0.5">
+                <Checkbox checked={showDrafts} onCheckedChange={v => setShowDrafts(v === true)} />
+                <span className="text-muted-foreground">含未审草稿(<b className="text-amber-700">{draftRevCount}</b> 张导入/同步历史单)</span>
+              </label>
+            )}
+            {showDrafts && (
+              <p className="text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1 leading-snug">未审草稿仅显示、<b>不计入上方合计与客户对账</b>;可能含审计发现的重复单/脏数据,清洗审批后才正式入账。</p>
+            )}
             {canRegister && (
               <div className="flex items-center gap-2">
                 <Button size="sm" className="flex-1 h-8" onClick={() => setRegOpen(true)}><Plus className="h-4 w-4 mr-1" />登记回款</Button>
@@ -656,7 +792,7 @@ export default function ReceivablesPage() {
                       <TableHead>到账日</TableHead><TableHead>客户</TableHead>
                       <TableHead className="text-right">金额(原币)</TableHead><TableHead>币种</TableHead>
                       <TableHead className="text-right">金额¥</TableHead><TableHead className="text-right">已分配¥</TableHead><TableHead className="text-right">未分配¥</TableHead>
-                      <TableHead>银行</TableHead><TableHead>流水号</TableHead><TableHead>来源</TableHead>
+                      <TableHead>银行</TableHead><TableHead>水单/流水号</TableHead><TableHead>来源</TableHead>
                       <TableHead className="text-right">操作</TableHead>
                     </TableRow></TableHeader>
                     <TableBody>
@@ -673,10 +809,11 @@ export default function ReceivablesPage() {
                             <TableCell className="text-right text-sm text-green-700">¥{allocated.toLocaleString()}</TableCell>
                             <TableCell className="text-right text-sm font-semibold text-amber-600">¥{remain.toLocaleString()}</TableCell>
                             <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">{r.bank_account || '—'}</TableCell>
-                            <TableCell className="text-xs text-muted-foreground">{r.payment_reference || '—'}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{r.attachment_url ? <button className="text-primary underline inline-flex items-center gap-0.5" onClick={() => openAttachment(r.attachment_url)}><ImageIcon className="h-3 w-3" />水单</button> : (r.payment_reference || '—')}</TableCell>
                             <TableCell className="text-xs text-muted-foreground">{r.source_type}</TableCell>
                             <TableCell className="text-right whitespace-nowrap">
                               {canMatch && <Button variant="outline" size="sm" className="h-7 text-xs mr-1" onClick={() => openMatch(r)}><Link2 className="h-3 w-3 mr-1" />匹配</Button>}
+                              {canManage && <Button variant="ghost" size="sm" className="h-7 text-xs mr-1" onClick={() => openEdit(r)}><Pencil className="h-3 w-3" /></Button>}
                               {(canManage || canDispute) && <Button variant="ghost" size="sm" className="h-7 text-xs text-red-500" onClick={() => handleVoidReceipt(r)}><Trash2 className="h-3 w-3" /></Button>}
                               {!canMatch && !canManage && <span className="text-xs text-muted-foreground">只读</span>}
                             </TableCell>
@@ -763,6 +900,7 @@ export default function ReceivablesPage() {
                                       </button>
                                     )}
                                     <Link href={`/orders/${r.id}`} className="text-primary hover:underline">{r.internalNo || r.orderNo}</Link>
+                                    {r.isDraft && <Badge variant="secondary" className="ml-1 bg-amber-100 text-amber-700 text-[10px]">未审</Badge>}
                                     {orderAllocs.length > 0 && <span className="ml-1 text-[10px] text-muted-foreground">({orderAllocs.length}笔回款)</span>}
                                   </TableCell>
                                   <TableCell className="text-sm">{r.customerPO || '—'}</TableCell>
@@ -798,7 +936,7 @@ export default function ReceivablesPage() {
                                         <p className="text-xs font-medium text-muted-foreground mb-1">回款明细（该订单）</p>
                                         <table className="w-full text-xs">
                                           <thead><tr className="text-muted-foreground">
-                                            <th className="text-left py-1">到账日</th><th className="text-left">银行</th><th className="text-left">流水号</th>
+                                            <th className="text-left py-1">到账日</th><th className="text-left">银行</th><th className="text-left">水单/流水号</th>
                                             <th className="text-right">分配金额¥</th><th className="text-left pl-3">来源回款</th><th className="text-right">操作</th>
                                           </tr></thead>
                                           <tbody>
@@ -808,7 +946,7 @@ export default function ReceivablesPage() {
                                                 <tr key={a.id} className="border-t border-border/40">
                                                   <td className="py-1">{rc?.received_at ? new Date(rc.received_at).toLocaleDateString('zh-CN') : '—'}</td>
                                                   <td>{rc?.bank_account || '—'}</td>
-                                                  <td>{rc?.payment_reference || '—'}</td>
+                                                  <td>{rc?.attachment_url ? <button className="text-primary underline inline-flex items-center gap-0.5" onClick={() => openAttachment(rc.attachment_url)}><ImageIcon className="h-3 w-3" />水单</button> : (rc?.payment_reference || '—')}</td>
                                                   <td className="text-right text-green-700">¥{(Number(a.amount_cny) || 0).toLocaleString()}</td>
                                                   <td className="pl-3 text-muted-foreground">{rc ? `${rc.currency} ${rc.amount_original.toLocaleString()}` : '—'}</td>
                                                   <td className="text-right">{canManage ? <button className="text-red-500 hover:underline" onClick={() => handleUnallocate(a.id)}>撤销匹配</button> : <span className="text-muted-foreground">—</span>}</td>
@@ -846,7 +984,7 @@ export default function ReceivablesPage() {
                             <TableHeader><TableRow>
                               <TableHead>到账日</TableHead><TableHead className="text-right">金额(原币)</TableHead><TableHead>币种</TableHead>
                               <TableHead className="text-right">金额¥</TableHead><TableHead className="text-right">已分配¥</TableHead>
-                              <TableHead>银行</TableHead><TableHead>流水号</TableHead><TableHead>来源</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead>
+                              <TableHead>银行</TableHead><TableHead>水单/流水号</TableHead><TableHead>来源</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead>
                             </TableRow></TableHeader>
                             <TableBody>
                               {(receiptsByCustomer.get(c.customer) || []).map(rc => {
@@ -861,11 +999,12 @@ export default function ReceivablesPage() {
                                     <TableCell className="text-right text-sm">¥{rc.amount_cny.toLocaleString()}</TableCell>
                                     <TableCell className="text-right text-sm text-green-700">¥{allocated.toLocaleString()}</TableCell>
                                     <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">{rc.bank_account || '—'}</TableCell>
-                                    <TableCell className="text-xs text-muted-foreground">{rc.payment_reference || '—'}</TableCell>
+                                    <TableCell className="text-xs text-muted-foreground">{rc.attachment_url ? <button className="text-primary underline inline-flex items-center gap-0.5" onClick={() => openAttachment(rc.attachment_url)}><ImageIcon className="h-3 w-3" />水单</button> : (rc.payment_reference || '—')}</TableCell>
                                     <TableCell className="text-xs text-muted-foreground">{rc.source_type}</TableCell>
                                     <TableCell><Badge variant={ms === 'matched' ? 'default' : ms === 'unmatched' ? 'destructive' : 'secondary'}>{msLabel}</Badge></TableCell>
                                     <TableCell className="text-right whitespace-nowrap">
                                       {canMatch && ms !== 'matched' && ms !== 'disputed' && <Button variant="outline" size="sm" className="h-7 text-xs mr-1" onClick={() => openMatch(rc)}><Link2 className="h-3 w-3 mr-1" />匹配</Button>}
+                                      {canManage && ms !== 'disputed' && <Button variant="ghost" size="sm" className="h-7 text-xs mr-1" onClick={() => openEdit(rc)}><Pencil className="h-3 w-3" /></Button>}
                                       {((canManage && ms !== 'disputed') || canDispute) && <Button variant="ghost" size="sm" className="h-7 text-xs text-red-500" onClick={() => handleVoidReceipt(rc)}><Trash2 className="h-3 w-3" /></Button>}
                                     </TableCell>
                                   </TableRow>
@@ -959,12 +1098,84 @@ export default function ReceivablesPage() {
         </DialogContent>
       </Dialog>
 
+      {/* 编辑回款流水 */}
+      <Dialog open={!!editReceipt} onOpenChange={(open) => { if (!open) setEditReceipt(null) }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>编辑回款流水</DialogTitle></DialogHeader>
+          {editReceipt && (() => {
+            const locked = (allocatedByReceipt.get(editReceipt.id) || 0) > 0.005  // 已匹配 → 金额锁定
+            return (
+              <div className="space-y-4 py-2">
+                <p className="text-sm text-muted-foreground">客户 <span className="font-medium text-foreground">{editReceipt.customer_name || '—'}</span></p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5"><Label>到账日期</Label><Input type="date" value={editForm.date} onChange={e => setEditForm(f => ({ ...f, date: e.target.value }))} /></div>
+                  <div className="space-y-1.5"><Label>收款银行</Label><Input value={editForm.bank} onChange={e => setEditForm(f => ({ ...f, bank: e.target.value }))} placeholder="如：工行 / 中行..." /></div>
+                </div>
+                <div className="space-y-1.5"><Label>流水号 / 水单号</Label><Input value={editForm.ref} onChange={e => setEditForm(f => ({ ...f, ref: e.target.value }))} placeholder="银行流水号 / 回单号" /></div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="space-y-1.5"><Label>金额(原币)</Label><Input type="number" step="0.01" min={0.01} value={editForm.amount} disabled={locked} onChange={e => setEditForm(f => ({ ...f, amount: e.target.value }))} /></div>
+                  <div className="space-y-1.5"><Label>币种</Label>
+                    <Select value={editForm.currency} disabled={locked} onValueChange={v => setEditForm(f => ({ ...f, currency: v || 'CNY', rate: v === 'CNY' ? '1' : f.rate }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>{['CNY', 'USD', 'EUR', 'JPY', 'HKD', 'GBP'].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5"><Label>汇率</Label><Input type="number" step="0.0001" min={0.0001} value={editForm.rate} disabled={locked || editForm.currency === 'CNY'} onChange={e => setEditForm(f => ({ ...f, rate: e.target.value }))} /></div>
+                </div>
+                {!locked && editForm.amount && <p className="text-xs text-muted-foreground">折人民币 ≈ ¥{(Number(editForm.amount) * (editForm.currency === 'CNY' ? 1 : (Number(editForm.rate) || 0))).toLocaleString()}</p>}
+                {locked && <p className="text-xs text-amber-600">该回款已匹配订单，金额/币种/汇率已锁定。如需改金额，请先「撤销匹配」后再编辑，或用「汇率修正」作废重建。</p>}
+                <div className="space-y-1.5"><Label>备注</Label><Textarea value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))} rows={2} /></div>
+              </div>
+            )
+          })()}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditReceipt(null)}>取消</Button>
+            <Button onClick={handleEditReceipt} disabled={editSaving}>{editSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : '保存'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* ── 登记回款 Dialog（写入流水层）── */}
-      <Dialog open={regOpen} onOpenChange={setRegOpen}>
+      <Dialog open={regOpen} onOpenChange={o => { setRegOpen(o); if (!o) resetRegForm() }}>
         <DialogContent>
           <DialogHeader><DialogTitle>登记回款（银行收款流水）</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
-            <div className="space-y-1.5"><Label>客户 *</Label><Input list="ar-cust-options" value={regForm.customer} onChange={e => setRegForm(f => ({ ...f, customer: e.target.value }))} placeholder="客户名称（与订单客户一致便于自动匹配）" /><datalist id="ar-cust-options">{customers.map(c => <option key={c.customer} value={c.customer} />)}</datalist></div>
+            <div className="space-y-1.5">
+              <Label>订单号搜索 *</Label>
+              <div className="relative">
+                <Input
+                  value={regOrderQuery}
+                  autoComplete="off"
+                  placeholder="输入内部订单号 / 财务单号 / 客户PO / 客户名"
+                  onChange={e => { setRegOrderQuery(e.target.value); setRegOrderId(''); setRegForm(f => ({ ...f, customer: '' })); setRegOrderOpen(true) }}
+                  onFocus={() => setRegOrderOpen(true)}
+                  onBlur={() => setTimeout(() => setRegOrderOpen(false), 150)}
+                />
+                {regOrderOpen && regOrderMatches.length > 0 && (
+                  <div className="absolute z-50 mt-1 w-full max-h-56 overflow-y-auto rounded-md border bg-popover shadow-md">
+                    {regOrderMatches.map(o => (
+                      <button type="button" key={o.id} onMouseDown={e => e.preventDefault()} onClick={() => pickRegOrder(o)}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-muted flex flex-col gap-0.5 border-b border-border/40 last:border-0">
+                        <span className="font-medium">{o.internalNo || o.orderNo} <span className="text-muted-foreground font-normal">· {o.customer}</span></span>
+                        <span className="text-[11px] text-muted-foreground">{o.currency} 合同{o.amount.toLocaleString()} · 未收¥{o.balanceCny.toLocaleString()}{o.customerPO ? ' · PO ' + o.customerPO : ''}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {regOrderOpen && !regOrderId && regOrderQuery.trim() && regOrderMatches.length === 0 && (
+                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-md">
+                    <button type="button" onMouseDown={e => e.preventDefault()}
+                      onClick={() => { setRegForm(f => ({ ...f, customer: regOrderQuery.trim() })); setRegOrderId(''); setRegOrderOpen(false) }}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-muted">
+                      无匹配订单 · 以客户名「<b>{regOrderQuery.trim()}</b>」登记（暂不匹配订单）
+                    </button>
+                  </div>
+                )}
+              </div>
+              {regForm.customer
+                ? <p className="text-[11px] text-green-600">已选客户：<b>{regForm.customer}</b>{regOrderId ? '（登记后按未收余额自动匹配到该订单）' : '（未关联订单，登记后进「未匹配回款」）'}</p>
+                : <p className="text-[11px] text-muted-foreground">搜索并选择订单后自动带出客户；找不到订单可选「以客户名登记」。</p>}
+            </div>
             <div className="grid grid-cols-3 gap-3">
               <div className="space-y-1.5 col-span-1"><Label>金额 *</Label><Input type="number" step="0.01" value={regForm.amount} onChange={e => setRegForm(f => ({ ...f, amount: e.target.value }))} /></div>
               <div className="space-y-1.5"><Label>币种</Label>
@@ -985,12 +1196,27 @@ export default function ReceivablesPage() {
               </div>
             </div>
             <div className="space-y-1.5"><Label>收款银行/账户</Label><Input list="ar-bank-options" value={regForm.bank} onChange={e => setRegForm(f => ({ ...f, bank: e.target.value }))} /></div>
-            <div className="space-y-1.5"><Label>银行流水号/凭证号</Label><Input value={regForm.ref} onChange={e => setRegForm(f => ({ ...f, ref: e.target.value }))} placeholder="同号+同客户+同金额+同日期不可重复录入" /></div>
+            <div className="space-y-1.5">
+              <Label>水单照片</Label>
+              {regForm.attachmentUrl ? (
+                <div className="flex items-center gap-2 text-sm rounded-md border px-3 py-2">
+                  <button type="button" className="text-primary underline inline-flex items-center gap-1 min-w-0" onClick={() => openAttachment(regForm.attachmentUrl)}>
+                    <ImageIcon className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{attachmentName(regForm.attachmentUrl)}</span>
+                  </button>
+                  <Button type="button" variant="ghost" size="sm" className="h-6 text-xs text-red-500 ml-auto shrink-0" onClick={() => setRegForm(f => ({ ...f, attachmentUrl: '' }))}>移除</Button>
+                </div>
+              ) : (
+                <label className={`flex items-center justify-center gap-2 h-20 border-2 border-dashed rounded-md text-sm text-muted-foreground ${regUploading ? 'opacity-60' : 'cursor-pointer hover:bg-muted/40'}`}>
+                  {regUploading ? <><Loader2 className="h-4 w-4 animate-spin" />上传中…</> : <><Upload className="h-4 w-4" />点击上传水单照片（银行回单/付款截图）</>}
+                  <input type="file" accept="image/*,application/pdf" className="hidden" disabled={regUploading} onChange={handleRegUpload} />
+                </label>
+              )}
+            </div>
             <div className="space-y-1.5"><Label>备注</Label><Textarea rows={2} value={regForm.notes} onChange={e => setRegForm(f => ({ ...f, notes: e.target.value }))} /></div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRegOpen(false)}>取消</Button>
-            <Button onClick={handleRegister} disabled={regSaving}>{regSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}登记</Button>
+            <Button variant="outline" onClick={() => { setRegOpen(false); resetRegForm() }}>取消</Button>
+            <Button onClick={handleRegister} disabled={regSaving || regUploading}>{regSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}登记</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1011,7 +1237,7 @@ export default function ReceivablesPage() {
                 <div className="space-y-1.5">
                   <Label>匹配到订单 *</Label>
                   <Select value={matchOrderId} onValueChange={v => setMatchOrderId(v || '')}>
-                    <SelectTrigger><SelectValue placeholder={candidates.length ? '选择该客户未结清订单' : '该客户暂无未结清订单'} /></SelectTrigger>
+                    <SelectTrigger><SelectValue placeholder={candidates.length ? '选择该客户未结清订单' : '该客户暂无未结清订单'}>{(() => { const s = candidates.find(o => o.id === matchOrderId); return s ? `${s.internalNo || s.orderNo}（未收¥${s.balanceCny.toLocaleString()}${s.customerPO ? ' · PO ' + s.customerPO : ''}）` : undefined })()}</SelectValue></SelectTrigger>
                     <SelectContent>
                       {candidates.map(o => <SelectItem key={o.id} value={o.id}>{o.internalNo || o.orderNo}（未收¥{o.balanceCny.toLocaleString()}{o.customerPO ? ' · PO ' + o.customerPO : ''}）</SelectItem>)}
                     </SelectContent>

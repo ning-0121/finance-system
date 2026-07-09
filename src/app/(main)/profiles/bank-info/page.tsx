@@ -13,23 +13,26 @@ import { Loader2, Plus, Pencil, Search, Landmark } from 'lucide-react'
 import { toast } from 'sonner'
 import { getCustomers, upsertCustomer } from '@/lib/supabase/queries'
 import { getSuppliers, upsertSupplier } from '@/lib/supabase/queries-v2'
+import { getJournalAccounts, upsertAccount, ACCOUNT_TYPE_LABEL, type JournalAccount } from '@/lib/supabase/bank-journal'
 import type { Customer, Supplier } from '@/lib/types'
 
 export default function BankInfoPage() {
-  const [tab, setTab] = useState<'customer' | 'supplier'>('customer')
+  const [tab, setTab] = useState<'customer' | 'supplier' | 'internal'>('customer')
   const [customers, setCustomers] = useState<Customer[]>([])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [internals, setInternals] = useState<JournalAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [saving, setSaving] = useState(false)
 
   const [custForm, setCustForm] = useState<Partial<Customer> | null>(null)
   const [suppForm, setSuppForm] = useState<Partial<Supplier> | null>(null)
+  const [intForm, setIntForm] = useState<Partial<JournalAccount> | null>(null)
 
   async function reload() {
     setLoading(true)
-    const [cs, ss] = await Promise.all([getCustomers(), getSuppliers()])
-    setCustomers(cs); setSuppliers(ss); setLoading(false)
+    const [cs, ss, is] = await Promise.all([getCustomers(), getSuppliers(), getJournalAccounts()])
+    setCustomers(cs); setSuppliers(ss); setInternals(is); setLoading(false)
   }
   useEffect(() => { reload() }, [])
 
@@ -41,6 +44,10 @@ export default function BankInfoPage() {
     const q = search.trim().toLowerCase()
     return suppliers.filter(s => !q || (s.name || '').toLowerCase().includes(q) || (s.account_no || '').toLowerCase().includes(q))
   }, [suppliers, search])
+  const filteredInternals = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return internals.filter(a => !q || (a.account_name || '').toLowerCase().includes(q) || (a.account_number || '').toLowerCase().includes(q) || (a.bank_name || '').toLowerCase().includes(q))
+  }, [internals, search])
 
   async function saveCustomer() {
     if (!custForm?.company?.trim()) { toast.error('请填写客户公司名'); return }
@@ -58,6 +65,14 @@ export default function BankInfoPage() {
     if (error) { toast.error(`保存失败：${error}`); return }
     toast.success('已保存'); setSuppForm(null); reload()
   }
+  async function saveInternal() {
+    if (!intForm?.account_name?.trim()) { toast.error('请填写账户名称'); return }
+    setSaving(true)
+    const { error } = await upsertAccount(intForm as Partial<JournalAccount> & { account_name: string })
+    setSaving(false)
+    if (error) { toast.error(`保存失败：${error}`); return }
+    toast.success('已保存'); setIntForm(null); reload()
+  }
 
   const hasBank = (o: { account_no?: string | null; bank_name?: string | null }) => !!(o.account_no || o.bank_name)
 
@@ -66,17 +81,20 @@ export default function BankInfoPage() {
       <Header title="收款信息维护" subtitle="维护客户 / 供应商的银行收款信息（户名 · 账号 · 开户行）· 录付款/收款时自动带出" />
       <div className="flex-1 p-4 md:p-6 space-y-4 overflow-y-auto">
         <div className="flex items-center justify-between gap-2">
-          <Tabs value={tab} onValueChange={v => setTab(v as 'customer' | 'supplier')}>
+          <Tabs value={tab} onValueChange={v => setTab(v as 'customer' | 'supplier' | 'internal')}>
             <TabsList>
               <TabsTrigger value="customer">客户（{customers.length}）</TabsTrigger>
               <TabsTrigger value="supplier">供应商（{suppliers.length}）</TabsTrigger>
+              <TabsTrigger value="internal">公司内部账号（{internals.length}）</TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="flex items-center gap-2">
             <div className="relative max-w-xs"><Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" /><Input placeholder="搜索名称/账号..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} /></div>
             {tab === 'customer'
               ? <Button size="sm" onClick={() => setCustForm({ currency: 'USD' })}><Plus className="h-4 w-4 mr-1" />新建客户</Button>
-              : <Button size="sm" onClick={() => setSuppForm({})}><Plus className="h-4 w-4 mr-1" />新建供应商</Button>}
+              : tab === 'supplier'
+              ? <Button size="sm" onClick={() => setSuppForm({})}><Plus className="h-4 w-4 mr-1" />新建供应商</Button>
+              : <Button size="sm" onClick={() => setIntForm({ currency: 'CNY', account_type: 'bank' })}><Plus className="h-4 w-4 mr-1" />新建内部账号</Button>}
           </div>
         </div>
 
@@ -112,7 +130,7 @@ export default function BankInfoPage() {
                   ))}
                 </TableBody>
               </Table>
-            ) : (
+            ) : tab === 'supplier' ? (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -134,6 +152,30 @@ export default function BankInfoPage() {
                       <TableCell className="text-sm">{s.bank_name || '—'}</TableCell>
                       <TableCell className="text-sm">{s.contact || s.phone || '—'}</TableCell>
                       <TableCell className="text-center"><Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setSuppForm({ ...s })}><Pencil className="h-3.5 w-3.5 mr-1" />编辑</Button></TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>账户名称</TableHead>
+                    <TableHead>账号</TableHead>
+                    <TableHead>币种</TableHead>
+                    <TableHead>开户行</TableHead>
+                    <TableHead className="text-center">操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredInternals.length === 0 && <TableRow><TableCell colSpan={5} className="text-center py-16 text-muted-foreground">无内部账号</TableCell></TableRow>}
+                  {filteredInternals.map(a => (
+                    <TableRow key={a.id} className={a.is_active ? '' : 'opacity-50'}>
+                      <TableCell className="font-medium">{a.account_name}{a.account_type ? <span className="ml-1.5 text-xs text-muted-foreground">{ACCOUNT_TYPE_LABEL[a.account_type] || ''}</span> : null}{a.is_active ? '' : <span className="ml-1.5 text-xs text-muted-foreground">（已停用）</span>}</TableCell>
+                      <TableCell className="text-sm font-mono">{a.account_number || '—'}</TableCell>
+                      <TableCell className="text-sm">{a.currency}</TableCell>
+                      <TableCell className="text-sm">{a.bank_name || '—'}</TableCell>
+                      <TableCell className="text-center"><Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setIntForm({ ...a })}><Pencil className="h-3.5 w-3.5 mr-1" />编辑</Button></TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -206,6 +248,37 @@ export default function BankInfoPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setSuppForm(null)}>取消</Button>
             <Button onClick={saveSupplier} disabled={saving}>{saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 公司内部账号编辑 */}
+      <Dialog open={!!intForm} onOpenChange={o => { if (!o) setIntForm(null) }}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>{intForm?.id ? '编辑公司内部账号' : '新建公司内部账号'}</DialogTitle></DialogHeader>
+          {intForm && (
+            <div className="space-y-3 py-2">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1"><Label>账户名称 *</Label><Input value={intForm.account_name || ''} onChange={e => setIntForm({ ...intForm, account_name: e.target.value })} placeholder="如：招商银行-基本户" /></div>
+                <div className="space-y-1"><Label>类型</Label>
+                  <select className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm" value={intForm.account_type || 'bank'} onChange={e => setIntForm({ ...intForm, account_type: e.target.value as JournalAccount['account_type'] })}>
+                    {Object.entries(ACCOUNT_TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1"><Label>账号</Label><Input value={intForm.account_number || ''} onChange={e => setIntForm({ ...intForm, account_number: e.target.value })} /></div>
+                <div className="space-y-1"><Label>币种</Label><Input value={intForm.currency || ''} onChange={e => setIntForm({ ...intForm, currency: e.target.value })} placeholder="CNY" /></div>
+              </div>
+              <div className="space-y-1"><Label>开户行</Label><Input value={intForm.bank_name || ''} onChange={e => setIntForm({ ...intForm, bank_name: e.target.value })} placeholder="如：招商银行义乌分行" /></div>
+              {intForm.id && (
+                <label className="flex items-center gap-2 text-sm pt-1"><input type="checkbox" checked={intForm.is_active ?? true} onChange={e => setIntForm({ ...intForm, is_active: e.target.checked })} />启用（取消勾选=停用，不再出现在选择列表）</label>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIntForm(null)}>取消</Button>
+            <Button onClick={saveInternal} disabled={saving}>{saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}保存</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

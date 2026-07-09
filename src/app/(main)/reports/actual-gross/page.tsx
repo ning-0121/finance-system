@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -40,6 +41,7 @@ type Row = {
   payable_cny: number
   gross_cny: number
   margin_pct: number
+  isDraft: boolean       // 未审草稿(导入/同步历史单):默认隐藏,开关显示,仅可见(2026-07-09)
 }
 
 function payableToCny(amount: number, currency: string, orderRate?: number): number {
@@ -60,6 +62,7 @@ export default function ActualGrossReportPage() {
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<Row[]>([])
   const [search, setSearch] = useState('')
+  const [showDrafts, setShowDrafts] = useState(false)   // 含未审草稿(默认关)
   const [exportingId, setExportingId] = useState<string | null>(null)
   const [viewingId, setViewingId] = useState<string | null>(null)
   const [viewBundle, setViewBundle] = useState<SettlementBundle | null>(null)
@@ -208,7 +211,8 @@ export default function ActualGrossReportPage() {
       setLoading(true)
       try {
         const orders = await getBudgetOrders()
-        const approved = orders.filter(o => o.status === 'approved' || o.status === 'closed')
+        // 2026-07-09:纳入 draft 且有收入的(未审草稿/导入历史单),标 isDraft;默认隐藏,开关显示,不进正式口径
+        const approved = orders.filter(o => o.status === 'approved' || o.status === 'closed' || (o.status === 'draft' && (Number(o.total_revenue) || 0) > 0))
 
         const supabase = createClient()
         const approvedIds = approved.map(o => o.id)
@@ -286,6 +290,7 @@ export default function ActualGrossReportPage() {
             payable_cny: Math.round(payCny * 100) / 100,
             gross_cny: Math.round(gross * 100) / 100,
             margin_pct: Math.round(margin * 100) / 100,
+            isDraft: o.status === 'draft',
           }
         })
 
@@ -300,11 +305,13 @@ export default function ActualGrossReportPage() {
     load()
   }, [])
 
+  const draftRowCount = useMemo(() => rows.filter(r => r.isDraft).length, [rows])
   const filtered = useMemo(() => {
-    if (!search.trim()) return rows
+    const base = showDrafts ? rows : rows.filter(r => !r.isDraft)   // 默认只显示已审;开关含未审草稿
+    if (!search.trim()) return base
     const q = search.toLowerCase()
-    return rows.filter(r => r.order_no.toLowerCase().includes(q) || r.customer.toLowerCase().includes(q) || r.internalNo.toLowerCase().includes(q))
-  }, [rows, search])
+    return base.filter(r => r.order_no.toLowerCase().includes(q) || r.customer.toLowerCase().includes(q) || r.internalNo.toLowerCase().includes(q))
+  }, [rows, search, showDrafts])
 
   const exportCsv = () => {
     const headers = ['内部订单号', '订单号', '客户', '币种', '汇率', '合同额(原币)', '合同额(¥)', '实际收款(原币)', '实际收款(¥)', '实际收款日', '费用归集(¥)', '应付登记(¥)', '实际毛利(¥)', '毛利率%']
@@ -378,6 +385,12 @@ export default function ActualGrossReportPage() {
               onChange={e => setSearch(e.target.value)}
             />
           </div>
+          {draftRowCount > 0 && (
+            <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none" title="未审草稿=导入/同步的历史单,默认不显示;仅可见、未经审批,可能含审计发现的重复/脏数据">
+              <input type="checkbox" checked={showDrafts} onChange={e => setShowDrafts(e.target.checked)} className="accent-amber-600" />
+              <span className="text-muted-foreground">含未审草稿(<b className="text-amber-700">{draftRowCount}</b>)</span>
+            </label>
+          )}
           <Button variant="outline" size="sm" onClick={exportCsv}>
             <Download className="h-4 w-4 mr-1" />导出 CSV
           </Button>
@@ -415,6 +428,7 @@ export default function ActualGrossReportPage() {
                     <TableCell className="text-sm font-medium">{r.internalNo || '—'}</TableCell>
                     <TableCell>
                       <Link href={`/orders/${r.id}`} className="text-primary hover:underline text-sm">{r.order_no}</Link>
+                      {r.isDraft && <Badge variant="secondary" className="ml-1 bg-amber-100 text-amber-700 text-[10px]">未审</Badge>}
                     </TableCell>
                     <TableCell className="text-sm">{r.customer}</TableCell>
                     <TableCell className="text-sm">{r.currency}</TableCell>

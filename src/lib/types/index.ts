@@ -307,6 +307,7 @@ export interface ReceivablePayment {
   source_document_id: string | null
   matched_status: 'unmatched' | 'partially_matched' | 'matched' | 'disputed'
   dispute_reason?: string | null
+  attachment_url?: string | null   // 水单/银行回单照片（finance-attachments 存储路径）
   notes: string | null
   created_by?: string | null
   created_at: string
