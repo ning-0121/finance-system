@@ -506,8 +506,11 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
   const fabric = r2(Number(bt.fabric_amount) || 0)
   const accessory = r2(Number(bt.accessory_amount) || 0)
   const processing = r2(Number(bt.cmt_amount) || 0)   // 加工费 → processing 桶
-  const actualAccessory = r2(Number(at.accessory_amount) || 0)   // 实际辅料总价(采购填的单价×数量)
-  if (fabric + accessory + processing + actualAccessory <= 0) return { action: 'ignored', reason: 'order.budget_updated 预算/实际均为 0,跳过' }
+  // 采购填价(采购核料按真实物料填的单价×数量)——财务看 原辅料 预算(报价) vs 采购价。2026-07-09 扩到面料/加工。
+  const actualAccessory = r2(Number(at.accessory_amount) || 0)
+  const actualFabric = r2(Number(at.fabric_amount) || 0)
+  const actualProcessing = r2(Number(at.cmt_amount) || 0)   // 加工费采购填价
+  if (fabric + accessory + processing + actualAccessory + actualFabric + actualProcessing <= 0) return { action: 'ignored', reason: 'order.budget_updated 预算/实际均为 0,跳过' }
 
   // 1. 定位 budget_order:优先 qimo_order_id(结构化),退回 synced_orders.order_no → budget_order_id
   let budgetOrderId: string | null = null
@@ -589,8 +592,11 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
     _rate: data.exchange_rate != null ? Number(data.exchange_rate) : (currency === 'CNY' ? 1 : null),
     _source: 'qimo_procurement_budget',
     _budget_updated_at: new Date().toISOString(),
-    // 实际辅料总价(采购填的单价×数量;2026-07-08 用户拍板 A)——财务看 辅料 预算vs实际
+    // 采购填价(采购核料按真实物料填的单价×数量)——财务看 原辅料 预算(报价) vs 采购价。
+    // 2026-07-08 辅料先行,2026-07-09 扩到面料/加工(节拍器 actual_totals 需带 fabric_amount/cmt_amount)。
     _actual_accessory: actualAccessory || null,
+    _actual_fabric: actualFabric || null,
+    _actual_processing: actualProcessing || null,
   }
   // 保留已有 items 的收入行(如 SKU 款号行),只替换首行的 _cost_breakdown 载体
   const existingItems = Array.isArray((bo as { items?: unknown })?.items) ? ((bo as { items?: unknown[] }).items as unknown[]) : []

@@ -57,23 +57,8 @@ export default function PurchaseApprovalsPage() {
 
   useEffect(() => { loadPending() }, [loadPending])
 
-  // 选中某采购单 → 载明细行 + 预算对照
-  useEffect(() => {
-    if (!sel) { setLines([]); setBudget(null); return }
-    setExpandedMat(null); setHistory({})
-    ;(async () => {
-      setLinesLoading(true)
-      setLines(await getPoLines(sel.id))
-      setLinesLoading(false)
-    })()
-    ;(async () => {
-      setBudgetLoading(true)
-      setBudget(await loadBudgetLines(sel))
-      setBudgetLoading(false)
-    })()
-  }, [selId]) // eslint-disable-line react-hooks/exhaustive-deps
-
   // order_refs(QM号) → synced_orders.budget_order_id → budget_orders._cost_breakdown.lines
+  // 注:声明必须在下方 useEffect 之前 —— 否则 useEffect 闭包在声明前引用它(TDZ),react-hooks/immutability 报错。
   const loadBudgetLines = async (po: PendingPO): Promise<BLine[]> => {
     try {
       const nrefs = normalizeOrderRefs(po.order_refs)
@@ -94,6 +79,22 @@ export default function PurchaseApprovalsPage() {
       return flat
     } catch { return [] }
   }
+
+  // 选中某采购单 → 载明细行 + 预算对照
+  useEffect(() => {
+    if (!sel) { setLines([]); setBudget(null); return }
+    setExpandedMat(null); setHistory({})
+    ;(async () => {
+      setLinesLoading(true)
+      setLines(await getPoLines(sel.id))
+      setLinesLoading(false)
+    })()
+    ;(async () => {
+      setBudgetLoading(true)
+      setBudget(await loadBudgetLines(sel))
+      setBudgetLoading(false)
+    })()
+  }, [selId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleMat = async (l: PoLine) => {
     if (expandedMat === l.id) { setExpandedMat(null); return }

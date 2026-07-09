@@ -577,13 +577,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 { key: 'container', label: '装柜费' },
                 { key: 'logistics', label: '物流费' },
               ]
-              // 实际辅料总价(采购在节拍器核料按每个辅料填的单价×数量;2026-07-08)。PO 应付尚未归集时先用它当实际。
-              const actualAccessory = Number(cbTop._actual_accessory) || 0
+              // 采购填价(采购在节拍器核料按真实物料填的单价×数量)——财务看 原辅料「预算(报价) vs 采购价」。
+              // 2026-07-08 辅料先行,2026-07-09 扩到面料/加工。PO 应付尚未归集时先用采购填价当"采购价";已归集则用实际归集。
+              const actualBuy: Record<string, number> = {
+                fabric: Number(cbTop._actual_fabric) || 0,
+                accessory: Number(cbTop._actual_accessory) || 0,
+                processing: Number(cbTop._actual_processing) || 0,
+              }
               const rows = cats.map(c => {
                 const budget = Number(cbTop[c.key]) || 0
                 let actual = (costDetail[c.key] || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
                 let fromProc = false
-                if (c.key === 'accessory' && actual === 0 && actualAccessory > 0) { actual = actualAccessory; fromProc = true }
+                if (actual === 0 && (actualBuy[c.key] || 0) > 0) { actual = actualBuy[c.key]; fromProc = true }
                 return { label: fromProc ? `${c.label}（采购填价）` : c.label, budget, actual, diff: actual - budget }
               })
               const extras = (cbTop.extras as unknown as { name: string; amount: number }[] | undefined) || []
@@ -611,9 +616,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                         <thead>
                           <tr className="text-muted-foreground border-b">
                             <th className="text-left font-medium py-1.5">成本类目</th>
-                            <th className="text-right font-medium py-1.5">预算 (CNY)</th>
-                            {hasActual && <th className="text-right font-medium py-1.5">实际归集</th>}
-                            {hasActual && <th className="text-right font-medium py-1.5">差异</th>}
+                            <th className="text-right font-medium py-1.5">预算(报价) CNY</th>
+                            {hasActual && <th className="text-right font-medium py-1.5">采购价/实际</th>}
+                            {hasActual && <th className="text-right font-medium py-1.5">差额</th>}
                           </tr>
                         </thead>
                         <tbody>
@@ -636,7 +641,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                         </tfoot>
                       </table>
                     </div>
-                    {!hasActual && <p className="text-[11px] text-muted-foreground mt-2">尚无实际归集(采购/费用录入),差异待采购明细回传后自动比对。</p>}
+                    {hasActual
+                      ? <p className="text-[11px] text-muted-foreground mt-2">预算(报价)=业务报价/核料估算;采购价=采购核料填价或已归集采购(标「采购填价」者为采购核料填,未标为实际归集)。差额&gt;0=采购超预算(红),&lt;0=省(绿)。货代/装柜/物流为财务补充,无采购价对照。</p>
+                      : <p className="text-[11px] text-muted-foreground mt-2">尚无采购价/实际归集,待采购核料填价或采购明细回传后自动显示「预算(报价) vs 采购价」对比。</p>}
                   </CardContent>
                 </Card>
               )
