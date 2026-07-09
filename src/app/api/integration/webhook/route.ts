@@ -527,12 +527,16 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
   // (源头=业务采购核料),财务不自造数;只建 draft(不审批/不入账),与 autoCreateBudgetDraft 同一系统同步口径(created_by=null)。
   if (!budgetOrderId) {
     const { data: so } = await supabase.from('synced_orders')
-      .select('id, order_no, customer_name, currency, total_amount, unit_price, quantity, budget_order_id')
+      .select('id, order_no, customer_name, currency, total_amount, unit_price, quantity, budget_order_id, lifecycle_status')
       .eq(qimoOrderId ? 'id' : 'order_no', qimoOrderId || orderNo).maybeSingle()
     if (!so) return { action: 'ignored', reason: `预算已收到,但订单未同步到财务(order=${orderNo})——待订单同步后重推` }
     if (so.budget_order_id) {
       budgetOrderId = so.budget_order_id as string   // 竞态:order.created/activated 已建单 → 直接用
     } else {
+      // 死单(已取消/删除/完成/归档)不自动建预算单 —— 死单进财务预算不干净;正常业务不会给死单改预算,此为防御。
+      const DEAD = ['cancelled', 'deleted', 'completed', 'archived', '已取消', '已删除', '已完成', '已归档']
+      if (DEAD.includes(String(so.lifecycle_status || '')))
+        return { action: 'ignored', reason: `预算已收到,但订单为「${so.lifecycle_status}」(死单),不自动建预算单(order=${orderNo})` }
       const cleanName = String(so.customer_name || '').trim()
       if (!cleanName) return { action: 'ignored', reason: `预算已收到,但订单无客户名、无法建预算单(order=${orderNo})` }
       const { data: cust, error: custErr } = await supabase.rpc('get_or_create_customer' as never, {
