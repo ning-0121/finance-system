@@ -71,12 +71,25 @@ function toPairs(obj: unknown): [string, string][] {
     .map(([k, v]) => [KEY_LABEL[k] || k, fmtVal(k, v)] as [string, string])
 }
 
+// cost_items.cost_type → 决算桶(与 cost-buckets 一致)
+const CT2BUCKET: Record<string, string> = {
+  fabric: '面料', procurement: '面料', accessory: '辅料', processing: '加工费', commission: '加工费',
+  freight: '货代费', forwarder: '货代费', container: '装柜费', customs: '装柜费', logistics: '物流费',
+}
+const BUDGET_KEYS: [string, string][] = [['fabric', '面料'], ['accessory', '辅料'], ['processing', '加工费'], ['forwarder', '货代费'], ['container', '装柜费'], ['logistics', '物流费']]
+// 审批环节 → 该环节最该看的决算桶(高亮)。加工费确认→加工费,收款→无,出运→货代/装柜…
+const STEP_FOCUS: Record<string, string> = { processing_fee_confirmed: '加工费', finance_shipment_approval: '货代费', price_confirmed: '面料' }
+interface OrderSnap { boNo: string | null; internalNo: string | null; qty: number; qtyUnit: string; rows: { label: string; budget: number; actual: number }[] }
+const cny = (n: number) => `¥${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+
 export function IntegrationApprovals({ userId, userName }: { userId: string; userName: string }) {
   const [rows, setRows] = useState<PendingApproval[]>([])
   const [loading, setLoading] = useState(true)
   const [sel, setSel] = useState<PendingApproval | null>(null)   // 打开详情+审批的行
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState<'approved' | 'rejected' | null>(null)
+  const [snap, setSnap] = useState<OrderSnap | null>(null)       // 该订单快照 + 预算vs实际决算表
+  const [snapLoading, setSnapLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -89,6 +102,47 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // 打开某审批 → 拉该 QM 订单的快照(内部单号/款号/数量)+ 预算 vs 实际 决算表,财务凭此判(尤其加工费确认)
+  useEffect(() => {
+    if (!sel?.order_no) { setSnap(null); return }
+    let alive = true
+    ;(async () => {
+      setSnapLoading(true)
+      try {
+        const sb = createClient()
+        const { data: so } = await sb.from('synced_orders')
+          .select('style_no, quantity, quantity_unit, budget_order_id').eq('order_no', sel.order_no).limit(1).maybeSingle()
+        const s = so as { style_no?: string; quantity?: number; quantity_unit?: string; budget_order_id?: string } | null
+        if (!s?.budget_order_id) {
+          if (alive) setSnap({ boNo: null, internalNo: s?.style_no ?? null, qty: Number(s?.quantity) || 0, qtyUnit: s?.quantity_unit || '', rows: [] })
+          return
+        }
+        const [{ data: bo }, { data: ci }] = await Promise.all([
+          sb.from('budget_orders').select('order_no, items').eq('id', s.budget_order_id).maybeSingle(),
+          sb.from('cost_items').select('cost_type, amount, currency, exchange_rate').eq('budget_order_id', s.budget_order_id).is('deleted_at', null),
+        ])
+        const cb = ((bo as { items?: Record<string, unknown>[] } | null)?.items?.[0]?._cost_breakdown) as Record<string, number> | undefined
+        const actualByBucket: Record<string, number> = {}
+        for (const r of (ci as { cost_type?: string; amount?: number; currency?: string; exchange_rate?: number }[] | null) || []) {
+          const b = CT2BUCKET[r.cost_type || ''] || '物流费'
+          const rate = r.currency === 'CNY' ? 1 : (Number(r.exchange_rate) || 1)
+          actualByBucket[b] = (actualByBucket[b] || 0) + (Number(r.amount) || 0) * rate
+        }
+        // 采购填价兜底(PO 未归集时):_actual_fabric/_actual_accessory/_actual_processing
+        const fill: Record<string, number> = { '面料': Number(cb?._actual_fabric) || 0, '辅料': Number(cb?._actual_accessory) || 0, '加工费': Number(cb?._actual_processing) || 0 }
+        const rows = BUDGET_KEYS.map(([k, label]) => {
+          const budget = Number(cb?.[k]) || 0
+          let actual = actualByBucket[label] || 0
+          if (actual === 0 && (fill[label] || 0) > 0) actual = fill[label]
+          return { label, budget, actual }
+        }).filter(r => r.budget > 0 || r.actual > 0)
+        if (alive) setSnap({ boNo: (bo as { order_no?: string } | null)?.order_no ?? null, internalNo: s.style_no ?? null, qty: Number(s.quantity) || 0, qtyUnit: s.quantity_unit || '', rows })
+      } catch { if (alive) setSnap(null) }
+      finally { if (alive) setSnapLoading(false) }
+    })()
+    return () => { alive = false }
+  }, [sel])
 
   const open = (r: PendingApproval) => { setSel(r); setNote('') }
 
@@ -196,7 +250,53 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
                   <div className="flex justify-between gap-2"><span className="text-muted-foreground">客户</span><span>{sel.customer_name || '—'}</span></div>
                   <div className="flex justify-between gap-2"><span className="text-muted-foreground">申请人</span><span>{sel.requested_by_name || '节拍器'}</span></div>
                   <div className="flex justify-between gap-2"><span className="text-muted-foreground">提交时间</span><span>{fmtDate(sel.source_created_at || sel.created_at)}</span></div>
+                  {snap?.internalNo && <div className="flex justify-between gap-2"><span className="text-muted-foreground">内部单号/款号</span><span className="font-medium">{snap.internalNo}</span></div>}
+                  {snap && snap.qty > 0 && <div className="flex justify-between gap-2"><span className="text-muted-foreground">数量</span><span>{snap.qty.toLocaleString()} {snap.qtyUnit}</span></div>}
+                  {snap?.boNo && <div className="flex justify-between gap-2"><span className="text-muted-foreground">财务预算单</span><span className="font-mono text-xs">{snap.boNo}</span></div>}
                 </div>
+
+                {/* 订单决算表:预算 vs 实际(费用归集/采购填价)——财务凭此判,尤其加工费确认 */}
+                {snapLoading ? (
+                  <div className="rounded-lg border p-3 text-xs text-muted-foreground flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" />加载订单决算…</div>
+                ) : snap && snap.rows.length > 0 ? (
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs font-semibold text-muted-foreground mb-2">订单决算 · 预算 vs 实际</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead><tr className="text-muted-foreground border-b">
+                          <th className="text-left font-medium py-1">成本类目</th>
+                          <th className="text-right font-medium py-1">预算</th>
+                          <th className="text-right font-medium py-1">实际</th>
+                          <th className="text-right font-medium py-1">差额</th>
+                        </tr></thead>
+                        <tbody>
+                          {snap.rows.map(r => {
+                            const focus = STEP_FOCUS[(sel.detail as Record<string, unknown> | null)?.step_key as string] === r.label
+                            const diff = r.actual - r.budget
+                            return (
+                              <tr key={r.label} className={`border-b border-muted/40 ${focus ? 'bg-amber-50 font-semibold' : ''}`}>
+                                <td className="py-1">{r.label}{focus ? ' ◀ 本次' : ''}</td>
+                                <td className="py-1 text-right">{cny(r.budget)}</td>
+                                <td className="py-1 text-right text-amber-700">{r.actual ? cny(r.actual) : '—'}</td>
+                                <td className={`py-1 text-right ${r.actual ? (diff > 0 ? 'text-red-600' : 'text-green-600') : 'text-muted-foreground/50'}`}>{r.actual ? `${diff > 0 ? '+' : ''}${cny(diff)}` : '—'}</td>
+                              </tr>
+                            )
+                          })}
+                          <tr className="font-semibold border-t-2">
+                            <td className="py-1.5">合计</td>
+                            <td className="py-1.5 text-right">{cny(snap.rows.reduce((s, r) => s + r.budget, 0))}</td>
+                            <td className="py-1.5 text-right text-amber-700">{cny(snap.rows.reduce((s, r) => s + r.actual, 0))}</td>
+                            <td className="py-1.5 text-right">{cny(snap.rows.reduce((s, r) => s + (r.actual - r.budget), 0))}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1.5">实际=费用归集(采购/发票已录)或采购填价;差额&gt;0=超预算(红)。加工费确认可看「加工费」行预算vs实际是否吻合。</p>
+                  </div>
+                ) : snap && !snap.boNo ? (
+                  <div className="rounded-lg border p-3 text-xs text-amber-700 bg-amber-50">该 QM 订单尚未同步到财务预算单,暂无预算/决算可对照(内部单号 {snap.internalNo || '—'})。</div>
+                ) : null}
+
                 {/* 审批详情 */}
                 <div className="rounded-lg bg-muted/50 p-3 text-sm">
                   <p className="text-xs font-semibold text-muted-foreground mb-1.5">审批详情</p>

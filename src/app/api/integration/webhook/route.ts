@@ -811,11 +811,14 @@ async function handleOrderReversal(order: SyncedOrder, event: string) {
     }
   } catch (e) { warnings.push(`采购单级联处理异常: ${e instanceof Error ? e.message : e}`) }
 
-  // 3. 撤未决审批（pending_approvals 无状态转换约束,可直接置 cancelled）
+  // 3. 撤未决审批。⚠️ pending_approvals.status CHECK 不含 'cancelled'(会 23514 静默失败→审批撤不掉、积压堆积);
+  //    合法终态用 'expired'(2026-07-09 实测)。留因可追溯。
   try {
-    const { data: cancelled } = await supabase.from('pending_approvals')
-      .update({ status: 'cancelled' }).eq('order_no', order.order_no).eq('status', 'pending').select('id')
-    if (cancelled && cancelled.length) actions.push(`撤销 ${cancelled.length} 条未决审批`)
+    const { data: expired, error: exErr } = await supabase.from('pending_approvals')
+      .update({ status: 'expired', decided_at: now, decider_name: '系统', decision_note: `订单${event === 'order.deleted' ? '删除' : '取消'}自动撤销未决审批(节拍器同步)` })
+      .eq('order_no', order.order_no).eq('status', 'pending').select('id')
+    if (exErr) warnings.push(`撤审批失败: ${exErr.message}`)
+    else if (expired && expired.length) actions.push(`撤销 ${expired.length} 条未决审批`)
   } catch (e) { warnings.push(`撤审批失败: ${e instanceof Error ? e.message : e}`) }
 
   // 4. 需人工处理 → 记审计日志(失败不阻断)
