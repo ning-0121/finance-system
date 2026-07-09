@@ -29,7 +29,7 @@ import {
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
 import { FinanceWorkflowGuide } from '@/components/orders/FinanceWorkflowGuide'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
-import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
+import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBudgetOrderStatus, createApprovalLog, correctOrderRate } from '@/lib/supabase/queries'
 import { generateOrderSettlement } from '@/lib/supabase/queries-v2'
 import { validateBudgetEdit } from '@/lib/engines/validation-engine'
 import { runOrderSubmitGate, type GateResult } from '@/lib/engines/submit-gate-engine'
@@ -51,6 +51,7 @@ import {
   Receipt,
   LineChart,
   Download,
+  Pencil,
 } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
@@ -186,6 +187,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [gateResult, setGateResult] = useState<GateResult | null>(null)
   const [gateLoading, setGateLoading] = useState(false)
   const [comment, setComment] = useState('')
+  // 汇率修正(结汇汇率可改;联动重算利润/毛利,留审计痕)
+  const [rateDlg, setRateDlg] = useState(false)
+  const [newRate, setNewRate] = useState('')
+  const [rateReason, setRateReason] = useState('')
+  const [rateSaving, setRateSaving] = useState(false)
 
   // 编辑模式 — 外贸服装成本细分
   const [editMode, setEditMode] = useState(false)
@@ -462,6 +468,21 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     actual: v.actual,
     variance: v.variance,
   })) || []
+
+  // 谁能改汇率:财务角色(与 rate 修正迁移一致 finance_staff+)
+  const canEditRate = !!user && ['admin', 'finance_manager', 'finance_staff'].includes((user as { role?: string }).role || '')
+  const saveRate = async () => {
+    if (!order) return
+    const r = Number(newRate)
+    if (!(r > 0)) { toast.error('请输入正确的汇率'); return }
+    setRateSaving(true)
+    const res = await correctOrderRate(order.id, r, rateReason.trim())
+    setRateSaving(false)
+    if (res.error) { toast.error(res.error); return }
+    setOrder({ ...order, exchange_rate: r, estimated_profit: res.estimated_profit ?? order.estimated_profit, estimated_margin: res.estimated_margin ?? order.estimated_margin })
+    setRateDlg(false); setRateReason('')
+    toast.success('汇率已修正', { description: `新汇率 ${r} · 利润/毛利已重算` })
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -818,7 +839,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           <span className="font-medium">{isCnyDirect ? '¥' : '$'} {order.total_revenue.toLocaleString()}</span>
                         </div>
                         {!isCnyDirect && (
-                          <div className="flex justify-between"><span className="text-muted-foreground">汇率 {rate} 结汇</span><span className="font-medium text-primary">¥ {revenueCny.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-muted-foreground flex items-center gap-1">
+                              汇率 {rate} 结汇
+                              {canEditRate && (
+                                <button className="text-primary/70 hover:text-primary" title="修改结汇汇率(联动重算利润/毛利)"
+                                  onClick={() => { setNewRate(String(order.exchange_rate || '')); setRateReason(''); setRateDlg(true) }}>
+                                  <Pencil className="h-3 w-3 inline" />
+                                </button>
+                              )}
+                            </span>
+                            <span className="font-medium text-primary">¥ {revenueCny.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                          </div>
                         )}
                         {isCnyDirect && (
                           <div className="flex justify-between"><span className="text-muted-foreground">收款方式</span><span className="font-medium text-green-600">人民币直收</span></div>
@@ -1335,6 +1367,35 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 <XCircle className="h-4 w-4 mr-1" />确认驳回
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 汇率修正弹窗:改结汇汇率 → 联动重算 收入折¥/利润/毛利,notes 留痕 */}
+      <Dialog open={rateDlg} onOpenChange={o => !o && !rateSaving && setRateDlg(false)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>修改结汇汇率 · {order.order_no}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              当前 {order.currency} 合同额 {order.total_revenue.toLocaleString()}，原汇率 {order.exchange_rate || '—'}。改后收入折人民币、预计利润、毛利率会按新汇率自动重算(成本不变),并在订单备注留修正痕迹。
+            </p>
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold text-amber-600">新结汇汇率</Label>
+              <Input type="number" step="0.0001" value={newRate} onChange={e => setNewRate(e.target.value)} className="border-amber-300" placeholder="如 6.77" />
+              {Number(newRate) > 0 && (
+                <p className="text-[11px] text-muted-foreground">折人民币 ¥{(order.total_revenue * Number(newRate)).toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+              )}
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">修正原因(建议填,写入审计)</Label>
+              <Textarea rows={2} value={rateReason} onChange={e => setRateReason(e.target.value)} placeholder="如:实际结汇汇率 6.77,非预算 6.9" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRateDlg(false)} disabled={rateSaving}>取消</Button>
+            <Button onClick={saveRate} disabled={rateSaving || !(Number(newRate) > 0)}>
+              {rateSaving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}保存并重算
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

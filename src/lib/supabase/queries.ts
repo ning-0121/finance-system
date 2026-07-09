@@ -769,3 +769,42 @@ export async function correctOrderRevenue(
     return { error: e instanceof Error ? e.message : 'Unknown error' }
   }
 }
+
+// 修正订单结汇汇率(budget_orders.exchange_rate):联动重算 收入折CNY→预计利润→毛利率,留审计痕。
+// 只改汇率不改成本(total_cost 恒 CNY);人民币直收单无需汇率。返回重算后的值供前端本地刷新。
+export async function correctOrderRate(
+  id: string,
+  newRate: number,
+  reason: string,
+): Promise<{ error: string | null; estimated_profit?: number; estimated_margin?: number }> {
+  if (!isSupabaseConfigured()) return { error: '当前为演示模式或未连接数据库，无法保存' }
+  if (!(newRate > 0)) return { error: '汇率必须大于 0' }
+  try {
+    const supabase = createClient()
+    const { data: row } = await supabase
+      .from('budget_orders')
+      .select('notes, total_revenue, total_cost, currency, exchange_rate')
+      .eq('id', id).maybeSingle()
+    if (!row) return { error: '订单不存在' }
+    if ((row.currency as string) === 'CNY') return { error: '人民币直收订单无需汇率' }
+    const oldRate = Number(row.exchange_rate) || 0
+    const revenueCny = (Number(row.total_revenue) || 0) * newRate
+    const totalCost = Number(row.total_cost) || 0
+    const profitCny = Math.round((revenueCny - totalCost) * 100) / 100
+    const margin = revenueCny > 0 ? Math.round((profitCny / revenueCny) * 1000) / 10 : 0
+    const today = new Date().toISOString().substring(0, 10)
+    const note = `[汇率修正 ${today}] ${oldRate} → ${newRate}，原因: ${reason || '(未填)'}`
+    const merged = (row.notes as string) ? `${row.notes}\n${note}` : note
+    const { error } = await supabase.from('budget_orders').update({
+      exchange_rate: newRate,
+      estimated_profit: profitCny,
+      estimated_margin: margin,
+      notes: merged,
+      updated_at: new Date().toISOString(),
+    }).eq('id', id)
+    if (error) return { error: error.message }
+    return { error: null, estimated_profit: profitCny, estimated_margin: margin }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Unknown error' }
+  }
+}
