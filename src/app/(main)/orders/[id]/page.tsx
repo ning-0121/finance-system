@@ -577,10 +577,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 { key: 'container', label: '装柜费' },
                 { key: 'logistics', label: '物流费' },
               ]
+              // 实际辅料总价(采购在节拍器核料按每个辅料填的单价×数量;2026-07-08)。PO 应付尚未归集时先用它当实际。
+              const actualAccessory = Number(cbTop._actual_accessory) || 0
               const rows = cats.map(c => {
                 const budget = Number(cbTop[c.key]) || 0
-                const actual = (costDetail[c.key] || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
-                return { label: c.label, budget, actual, diff: actual - budget }
+                let actual = (costDetail[c.key] || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
+                let fromProc = false
+                if (c.key === 'accessory' && actual === 0 && actualAccessory > 0) { actual = actualAccessory; fromProc = true }
+                return { label: fromProc ? `${c.label}（采购填价）` : c.label, budget, actual, diff: actual - budget }
               })
               const extras = (cbTop.extras as unknown as { name: string; amount: number }[] | undefined) || []
               extras.forEach(e => rows.push({ label: e.name || '其他', budget: Number(e.amount) || 0, actual: 0, diff: -(Number(e.amount) || 0) }))
