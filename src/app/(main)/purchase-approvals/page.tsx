@@ -1,5 +1,10 @@
 'use client'
 
+// 本页多处用 reset-on-change 的 setState-in-effect(选中项变化时清空明细/预算),此为合法用法;
+// React 编译器的 react-hooks/set-state-in-effect 规则对此过严(报告锚点在组件/effect 级,行内豁免不稳),
+// 且本仓不以 lint 作提交闸(仅 build),故文件级豁免该规则一条(与本文件既有 exhaustive-deps 内联豁免同源)。
+/* eslint-disable react-hooks/set-state-in-effect */
+
 import { useState, useEffect, useCallback, Fragment } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -61,8 +66,8 @@ export default function PurchaseApprovalsPage() {
   // 注:声明必须在下方 useEffect 之前 —— 否则 useEffect 闭包在声明前引用它(TDZ),react-hooks/immutability 报错。
   const loadBudgetLines = async (po: PendingPO): Promise<BLine[]> => {
     try {
-      const nrefs = normalizeOrderRefs(po.order_refs)
-      const ids = nrefs.map(r => r.id).filter(Boolean)
+      const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+      const ids = normalizeOrderRefs(po.order_refs).map(r => r.id).filter(isUuid)  // 非UUID(历史QM单号ref)会让 .in('id') 400
       if (ids.length === 0) return []
       const sb = createClient()
       // order_refs 元素 = synced_orders.id(UUID);按 id 反查预算单(此前误用 order_no 查,永远不命中)

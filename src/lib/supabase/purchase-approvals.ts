@@ -61,7 +61,10 @@ export async function getPendingPurchaseApprovals(): Promise<PendingPO[]> {
     if (!pos.length) return pos
     // order_refs → 内部单号/QM号/是否已删。用于 #2 按内部单号分组 + #1 过滤已删订单的采购单。
     // 2026-07-09:内部单号优先取 order_refs 富对象自带(节拍器新事件),退回 synced_orders(旧库存字符串数组)。
-    const refs = [...new Set(pos.flatMap(p => normalizeOrderRefs(p.order_refs).map(r => r.id)))]
+    // 只用 UUID 形态的 id 去查 synced_orders.id —— 历史 order_refs 可能混入 QM 单号(非 UUID),
+    // 直接 .in('id', [...]) 会 22P02 400 → 外层 catch 吞成 []→整个审批队列凭空消失(验证 2026-07-09 实测发现)。
+    const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+    const refs = [...new Set(pos.flatMap(p => normalizeOrderRefs(p.order_refs).map(r => r.id)))].filter(isUuid)
     const orderMap: Record<string, { qm: string | null; internal: string | null; deleted: boolean }> = {}
     if (refs.length) {
       const { data: so } = await sb.from('synced_orders')
