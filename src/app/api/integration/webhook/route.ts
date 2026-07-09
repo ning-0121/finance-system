@@ -465,11 +465,13 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
   if (!qimoOrderId && !orderNo) return { action: 'ignored', reason: 'order.budget_updated 缺 qimo_order_id/order_no' }
 
   const bt = (data.budget_totals as Record<string, unknown>) || {}
+  const at = (data.actual_totals as Record<string, unknown>) || {}
   const r2 = (n: number) => Math.round(n * 100) / 100
   const fabric = r2(Number(bt.fabric_amount) || 0)
   const accessory = r2(Number(bt.accessory_amount) || 0)
   const processing = r2(Number(bt.cmt_amount) || 0)   // 加工费 → processing 桶
-  if (fabric + accessory + processing <= 0) return { action: 'ignored', reason: 'order.budget_updated 预算为 0,跳过(等业务填了再推)' }
+  const actualAccessory = r2(Number(at.accessory_amount) || 0)   // 实际辅料总价(采购填的单价×数量)
+  if (fabric + accessory + processing + actualAccessory <= 0) return { action: 'ignored', reason: 'order.budget_updated 预算/实际均为 0,跳过' }
 
   // 1. 定位 budget_order:优先 qimo_order_id(结构化),退回 synced_orders.order_no → budget_order_id
   let budgetOrderId: string | null = null
@@ -504,6 +506,8 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
     _rate: data.exchange_rate != null ? Number(data.exchange_rate) : (currency === 'CNY' ? 1 : null),
     _source: 'qimo_procurement_budget',
     _budget_updated_at: new Date().toISOString(),
+    // 实际辅料总价(采购填的单价×数量;2026-07-08 用户拍板 A)——财务看 辅料 预算vs实际
+    _actual_accessory: actualAccessory || null,
   }
   // 保留已有 items 的收入行(如 SKU 款号行),只替换首行的 _cost_breakdown 载体
   const existingItems = Array.isArray((bo as { items?: unknown })?.items) ? ((bo as { items?: unknown[] }).items as unknown[]) : []
@@ -512,7 +516,7 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
     : [{ _cost_breakdown: cb }]
   const { error } = await supabase.from('budget_orders').update({ items }).eq('id', budgetOrderId)
   if (error) throw new Error(`采购核料预算填充失败: ${error.message}`)
-  return { action: 'done', reason: `采购核料预算已填 order=${orderNo || qimoOrderId} · 面料 ${fabric} / 加工 ${processing} / 辅料 ${accessory}` }
+  return { action: 'done', reason: `采购核料预算已填 order=${orderNo || qimoOrderId} · 面料 ${fabric} / 加工 ${processing} / 辅料预算 ${accessory} / 辅料实际 ${actualAccessory}` }
 }
 
 async function handleSupplierUpsert(data: Record<string, unknown>) {
