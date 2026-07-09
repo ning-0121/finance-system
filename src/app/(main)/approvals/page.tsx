@@ -16,6 +16,7 @@ import {
 import { CheckCircle, XCircle, AlertTriangle, Loader2, Clock, Eye } from 'lucide-react'
 import { toast } from 'sonner'
 import { getBudgetOrders, updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
+import { createClient } from '@/lib/supabase/client'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canApprove, canViewApprovalQueue, requiresExtraConfirmation } from '@/lib/auth/permissions'
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
@@ -31,16 +32,33 @@ export default function ApprovalsPage() {
   const [comment, setComment] = useState('')
   const [highValueConfirmed, setHighValueConfirmed] = useState(false)
   const [processing, setProcessing] = useState(false)
+  const [internalMap, setInternalMap] = useState<Record<string, string>>({})  // budget_order_id → 内部订单号
 
   useEffect(() => {
     async function load() {
       setLoading(true)
       const all = await getBudgetOrders()
-      setOrders(all.filter(o => o.status === 'pending_review'))
+      const pending = all.filter(o => o.status === 'pending_review')
+      setOrders(pending)
+      // 内部订单号:synced_orders.style_no(按 budget_order_id 关联),方便财务按内部号查
+      if (pending.length) {
+        const sb = createClient()
+        const { data: so } = await sb.from('synced_orders')
+          .select('budget_order_id, style_no').in('budget_order_id', pending.map(o => o.id))
+        const m: Record<string, string> = {}
+        for (const s of (so as { budget_order_id?: string; style_no?: string }[] | null) || []) {
+          if (s.budget_order_id && s.style_no) m[s.budget_order_id] = s.style_no
+        }
+        setInternalMap(m)
+      }
       setLoading(false)
     }
     load()
   }, [])
+
+  // 内部订单号:优先 synced_orders.style_no,兜底从 notes 解析"内部单号: XXX"
+  const internalNo = (o: BudgetOrder) =>
+    internalMap[o.id] || String((o as { notes?: string }).notes || '').match(/内部单号[:：]\s*(\S+)/)?.[1] || '-'
 
   // 财务全角色可【查看】审批队列(否则财务员看不到订单/集成审批通知);预算单审批动作仍限财务总监。
   if (!user || !canViewApprovalQueue(user)) {
@@ -160,6 +178,7 @@ export default function ApprovalsPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>订单号</TableHead>
+                    <TableHead>内部订单号</TableHead>
                     <TableHead>客户</TableHead>
                     <TableHead className="text-right">总收入</TableHead>
                     <TableHead className="text-right">预计利润</TableHead>
@@ -185,6 +204,7 @@ export default function ApprovalsPage() {
                             )}
                           </div>
                         </TableCell>
+                        <TableCell className="font-mono text-xs">{internalNo(order)}</TableCell>
                         <TableCell>{order.customer?.company || '-'}</TableCell>
                         <TableCell className="text-right font-medium">{order.currency} {order.total_revenue.toLocaleString()}</TableCell>
                         <TableCell className={`text-right font-semibold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
