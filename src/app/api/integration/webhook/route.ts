@@ -673,21 +673,34 @@ async function handleOrderReversal(order: SyncedOrder, event: string) {
     } catch { /* ignore */ }
   }
 
-  // 2.6 已同步的采购单应付(审计P1):节拍器 order.deleted 带 po_nos(该订单关联的采购单号)。
-  // fin_purchase_orders 不挂 budget_order_id,上面 budgetId 分支覆盖不到 → 订单删了采购应付成幽灵单。
-  // 保守口径:存在则标记待人工红冲,绝不自动改账。
+  // 2.6 已同步的采购单:订单删/取消 → 级联处理关联采购单(匹配 po_nos ∪ order_refs 含本订单 id)。
+  //   未决(pending/pending_approval)→ 自动 soft-delete 撤销(订单都没了,财务没得审;移出采购审批队列);
+  //   已批/已付(approved/paid)→ 仅警告需人工红冲,绝不自动动已入账/已出款。
+  // (fin_purchase_orders 不挂 budget_order_id,靠 order_refs 里的 synced_orders.id 关联。)
   try {
     const poNos = Array.isArray((order as unknown as { po_nos?: unknown[] }).po_nos)
       ? ((order as unknown as { po_nos?: unknown[] }).po_nos as unknown[]).map(String).map(s => s.trim()).filter(Boolean)
       : []
-    if (poNos.length) {
-      const { data: fpos } = await supabase.from('fin_purchase_orders')
-        .select('po_no').in('po_no', poNos).is('deleted_at', null)
-      if (fpos && fpos.length) {
-        warnings.push(`存在 ${fpos.length} 张已同步采购单(${fpos.map(f => (f as { po_no?: string }).po_no).join('、')}),订单已${event === 'order.deleted' ? '删除' : '取消'},其采购应付需人工红冲——未自动改`)
-      }
+    const orConds: string[] = [`order_refs.cs.{${order.id}}`]
+    if (poNos.length) orConds.push(`po_no.in.(${poNos.map(s => `"${s}"`).join(',')})`)
+    const { data: fpos } = await supabase.from('fin_purchase_orders')
+      .select('id, po_no, fin_status').or(orConds.join(',')).is('deleted_at', null)
+    const list = (fpos as { id: string; po_no?: string; fin_status?: string }[] | null) || []
+    const undecided = list.filter(p => p.fin_status === 'pending' || p.fin_status === 'pending_approval')
+    const decided = list.filter(p => p.fin_status === 'approved' || p.fin_status === 'paid')
+    if (undecided.length) {
+      // soft-delete 即移出采购审批队列(getPendingPurchaseApprovals 过滤 deleted_at is null);
+      // 不动 fin_status(CHECK 约束无 'cancelled';且语义上是"订单没了作废",非财务驳回),用 approval_note 留因。
+      const { error } = await supabase.from('fin_purchase_orders')
+        .update({ deleted_at: now, approval_note: `订单${event === 'order.deleted' ? '删除' : '取消'}自动撤销(节拍器同步)`, updated_at: now })
+        .in('id', undecided.map(p => p.id))
+      if (error) warnings.push(`采购单撤销失败,需人工: ${error.message}`)
+      else actions.push(`撤销 ${undecided.length} 张未决采购审批(${undecided.map(p => p.po_no).join('、')})`)
     }
-  } catch { /* ignore */ }
+    if (decided.length) {
+      warnings.push(`存在 ${decided.length} 张已批/已付采购单(${decided.map(p => p.po_no).join('、')}),订单已${event === 'order.deleted' ? '删除' : '取消'},其采购应付需人工红冲——未自动改`)
+    }
+  } catch (e) { warnings.push(`采购单级联处理异常: ${e instanceof Error ? e.message : e}`) }
 
   // 3. 撤未决审批（pending_approvals 无状态转换约束,可直接置 cancelled）
   try {

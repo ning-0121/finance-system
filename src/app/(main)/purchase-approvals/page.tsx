@@ -42,6 +42,7 @@ export default function PurchaseApprovalsPage() {
   const [decideDlg, setDecideDlg] = useState<'approved' | 'rejected' | null>(null)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})  // #2 按内部单号分组的折叠态(默认展开)
 
   const sel = pos.find(p => p.id === selId) || null
 
@@ -139,16 +140,53 @@ export default function PurchaseApprovalsPage() {
                   暂无待审批采购单
                   <p className="text-[11px] mt-1">节拍器下单、单张 ≥¥{PURCHASE_APPROVAL_THRESHOLD_CNY.toLocaleString()} 时会推到这里。</p>
                 </div>
-              ) : pos.map(p => (
-                <button key={p.id} onClick={() => setSelId(p.id)}
-                  className={`w-full text-left rounded-lg border p-3 transition ${selId === p.id ? 'border-primary bg-primary/5' : 'border-transparent hover:bg-muted/50'}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-sm">{p.supplier_name || '未带供应商'}</span>
-                    <span className="font-semibold text-sm tabular-nums">{p.currency} {money(p.total_amount)}</span>
-                  </div>
-                  <div className="mt-1 text-xs text-muted-foreground">{p.po_no} · 交期 {fmtDate(p.delivery_date)}</div>
-                </button>
-              ))}
+              ) : (() => {
+                // #2 按内部订单号分组:一个订单号下集中展示它的各张采购单
+                const groups = new Map<string, PendingPO[]>()
+                for (const p of pos) {
+                  const key = p.internal_order_no || p.qm_order_no || '未关联订单'
+                  if (!groups.has(key)) groups.set(key, [])
+                  groups.get(key)!.push(p)
+                }
+                return [...groups.entries()].map(([key, items]) => {
+                  const total = items.reduce((s, p) => s + (Number(p.total_amount) || 0), 0)
+                  const cur = items[0]?.currency || 'RMB'
+                  const qm = items.find(p => p.qm_order_no)?.qm_order_no
+                  const open = collapsed[key] !== true
+                  return (
+                    <div key={key} className="rounded-lg border overflow-hidden">
+                      <button onClick={() => setCollapsed(c => ({ ...c, [key]: open }))}
+                        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left bg-muted/30 hover:bg-muted/50 transition">
+                        <div className="min-w-0">
+                          <div className="font-semibold text-sm flex items-center gap-1">
+                            {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+                            <span className="truncate">订单 {key}</span>
+                          </div>
+                          {qm && qm !== key && <div className="text-[11px] text-muted-foreground ml-[18px]">{qm}</div>}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-xs font-semibold tabular-nums">{cur} {money(total)}</div>
+                          <div className="text-[11px] text-muted-foreground">{items.length} 张采购单</div>
+                        </div>
+                      </button>
+                      {open && (
+                        <div className="p-1.5 space-y-1">
+                          {items.map(p => (
+                            <button key={p.id} onClick={() => setSelId(p.id)}
+                              className={`w-full text-left rounded-md border p-2.5 transition ${selId === p.id ? 'border-primary bg-primary/5' : 'border-transparent hover:bg-muted/50'}`}>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-sm">{p.supplier_name || <span className="text-amber-600">未带供应商</span>}</span>
+                                <span className="font-semibold text-sm tabular-nums">{p.currency} {money(p.total_amount)}</span>
+                              </div>
+                              <div className="mt-0.5 text-xs text-muted-foreground">{p.po_no} · 交期 {fmtDate(p.delivery_date)}</div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })
+              })()}
             </CardContent>
           </Card>
 

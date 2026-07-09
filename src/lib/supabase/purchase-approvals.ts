@@ -15,6 +15,9 @@ export interface PendingPO {
   payment_terms: string | null
   order_refs: unknown
   requires_approval: boolean | null
+  internal_order_no?: string | null   // 内部/工厂单号(order_refs → synced_orders.style_no),#2 分组键
+  qm_order_no?: string | null         // 节拍器订单号 QM-xxx
+  order_deleted?: boolean             // 关联订单是否已删除/取消(全删则过滤出队列)
 }
 
 export interface PoLine {
@@ -53,7 +56,35 @@ export async function getPendingPurchaseApprovals(): Promise<PendingPO[]> {
         .select('id, purchase_order_id, po_no, supplier_id, supplier_name, total_amount, currency, delivery_date, placed_at, payment_terms, order_refs, requires_approval')
         .eq('fin_status', 'pending_approval').is('deleted_at', null)
         .order('placed_at', { ascending: true, nullsFirst: true }).order('id', { ascending: true }).range(from, to))
-    return data || []
+    const pos = data || []
+    if (!pos.length) return pos
+    // order_refs(=synced_orders.id)→ 内部单号/QM号/是否已删。用于 #2 按内部单号分组 + #1 过滤已删订单的采购单。
+    const refs = [...new Set(pos.flatMap(p => Array.isArray(p.order_refs) ? (p.order_refs as unknown[]).map(String) : []))]
+    const orderMap: Record<string, { qm: string | null; internal: string | null; deleted: boolean }> = {}
+    if (refs.length) {
+      const { data: so } = await sb.from('synced_orders')
+        .select('id, order_no, style_no, lifecycle_status').in('id', refs)
+      for (const s of (so as Record<string, unknown>[] | null) || []) {
+        const life = String(s.lifecycle_status || '')
+        orderMap[String(s.id)] = {
+          qm: (s.order_no as string) || null,
+          internal: (s.style_no as string) || null,
+          deleted: ['deleted', 'cancelled', '已取消', '已删除'].includes(life),
+        }
+      }
+    }
+    const enriched = pos.map(p => {
+      const rs = Array.isArray(p.order_refs) ? (p.order_refs as unknown[]).map(String) : []
+      const infos = rs.map(r => orderMap[r]).filter(Boolean)
+      return {
+        ...p,
+        internal_order_no: infos.map(i => i.internal).find(Boolean) || null,
+        qm_order_no: infos.map(i => i.qm).find(Boolean) || null,
+        // 仅当所有关联订单都已删/取消才算废单(部分关联仍在则保留,避免误藏)
+        order_deleted: infos.length > 0 && infos.every(i => i.deleted),
+      }
+    })
+    return enriched.filter(p => !p.order_deleted)   // #1:关联订单已删的采购单不再占审批队列
   } catch { return [] }
 }
 
