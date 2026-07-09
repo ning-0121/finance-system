@@ -1,0 +1,49 @@
+name: 财务库每日备份
+
+# L2 异地转储:每天全库 pg_dump → 加密 → 企业微信备份群 + GitHub 制品(90天)。
+# 配置 3 个 Secrets 后自动生效;未配置时脚本跳过、不报错。也可手动触发 workflow_dispatch。
+
+on:
+  schedule:
+    - cron: '0 18 * * *'      # 每天 UTC 18:00 = 北京时间 02:00
+  workflow_dispatch: {}
+
+concurrency:
+  group: finance-backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 pg_dump(17)+ 工具
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl jq openssl lsb-release ca-certificates gnupg
+          # Supabase 为 PG15/17,客户端需 ≥ 服务端,故装 pg17 client(PGDG 源)
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+
+      - name: 备份(dump→加密→投递)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_ENC_KEY: ${{ secrets.BACKUP_ENC_KEY }}
+          WECOM_ROBOT_KEY: ${{ secrets.WECOM_ROBOT_KEY }}
+        run: bash scripts/backup/db-backup.sh
+
+      - name: 留存加密制品(第二副本·90天)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finance-db-backup
+          path: '*.sql.gz.enc'
+          retention-days: 90
+          if-no-files-found: ignore

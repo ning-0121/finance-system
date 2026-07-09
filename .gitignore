@@ -40,3 +40,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 src/.next/
+
+# 本地备份快照(勿入仓)
+backups/
+*.sql.gz
+*.sql.gz.enc
+restore.sql

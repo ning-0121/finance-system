@@ -1,5 +1,9 @@
 'use client'
 
+// 本页 useEffect(() => { load() }, [load]) 为挂载后拉数据的合法用法;React 编译器 react-hooks/set-state-in-effect
+// 规则对此过严,本仓不以 lint 作提交闸(仅 build)→ 文件级豁免该规则一条(与既有 exhaustive-deps 内联豁免同源)。
+/* eslint-disable react-hooks/set-state-in-effect */
+
 // ============================================================
 // 采购单工作台 —— 订单系统 purchase_order.placed 推来的采购单，财务在此
 // 收到(系统内、非企微)、核对预算、一键登记为费用或忽略。
