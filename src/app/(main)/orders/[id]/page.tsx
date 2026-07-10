@@ -98,8 +98,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         // 加载synced_order关联信息
         const { createClient } = await import('@/lib/supabase/client')
         const supabase = createClient()
-        const { data: synced } = await supabase.from('synced_orders').select('order_no, style_no, quantity, quantity_unit').eq('budget_order_id', id).limit(1)
-        if (synced?.length) {
+        // synced_orders 可能有多条(如 510 / 510B revision);按 created_at 稳定取最早一条展示表头,
+        // 并收集全部 synced id 供附件精确匹配。
+        const { data: syncedRows } = await supabase.from('synced_orders').select('id, order_no, style_no, quantity, quantity_unit').eq('budget_order_id', id).order('created_at', { ascending: true })
+        const synced = syncedRows || []
+        if (synced.length) {
           setSyncedInfo({ orderNo: synced[0].order_no as string, internalNo: synced[0].style_no as string || '', quantity: synced[0].quantity as number || 0, quantityUnit: synced[0].quantity_unit as string || '件' })
         }
 
@@ -141,17 +144,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           setCostDetail(map)
         }
 
-        // 加载关联附件
-        const { data: docs } = await supabase.from('uploaded_documents').select('id, file_name, file_type, file_url, created_at').ilike('matched_order', `%${id}%`).order('created_at', { ascending: false }).limit(20)
-        // 也从notes里的QM号查
-        const qmNo = synced?.[0]?.order_no
-        if (qmNo) {
-          const { data: docs2 } = await supabase.from('uploaded_documents').select('id, file_name, file_type, file_url, created_at').or(`file_name.ilike.%${synced[0].style_no}%,file_name.ilike.%${qmNo}%`).order('created_at', { ascending: false }).limit(20)
-          const allDocs = [...(docs || []), ...(docs2 || [])]
-          const unique = Array.from(new Map(allDocs.map(d => [d.id, d])).values())
+        // 加载关联附件:严格按 matched_order_id 精确匹配(= 本预算单 id 或其 synced_orders id)。
+        // 不再用文件名模糊匹配 —— 旧逻辑 file_name.ilike.%510% 会误命中「510B」等文件造成跨单串档,
+        // 且旧代码查的 'matched_order' 列名根本不存在(查询报错后退化为模糊匹配,把 510B 的附件塞进 510)。
+        const orderKeys = [id, ...synced.map(s => s.id as string)]
+        const { data: docs } = await supabase.from('uploaded_documents')
+          .select('id, file_name, file_type, file_url, created_at')
+          .in('matched_order_id', orderKeys)
+          .order('created_at', { ascending: false })
+          .limit(50)
+        if (docs?.length) {
+          const unique = Array.from(new Map(docs.map(d => [d.id, d])).values())
           setAttachments(unique as typeof attachments)
-        } else if (docs) {
-          setAttachments(docs as typeof attachments)
         }
 
         // 这些查询可能失败（表为空等），不阻塞页面加载
