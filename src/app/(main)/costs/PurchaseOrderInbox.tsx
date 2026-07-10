@@ -30,6 +30,7 @@ export interface PoForRegister {
   budget_order_id: string | null   // 由 order_refs 解析到的本系统订单
 }
 
+interface PoReceipt { ordered: number; received: number; anyReceived: boolean; receivedAmount: number }
 interface PoRow extends PoForRegister {
   delivery_date: string | null
   status: string | null
@@ -37,6 +38,7 @@ interface PoRow extends PoForRegister {
   order_refs: unknown
   fin_status: string
   orderLabel: string
+  rcv: PoReceipt | null   // 收货实收 vs 订购(止血:提示按实收付款)
 }
 
 // 预算明细行（来自 budget_orders.items[0]._cost_breakdown.lines[bucket]）
@@ -49,6 +51,16 @@ const norm = (x?: string | null) => (x || '').replace(/[（(].*?[)）]|\s/g, '')
 const supMatch = (a?: string | null, b?: string | null) => {
   const na = norm(a), nb = norm(b)
   return !!na && !!nb && na === nb
+}
+// 收货实收 vs 订购的付款提示(止血):有到货且短装→红(建议按实收付款);超收→黄;齐→绿;未到货→不提示
+function receiptWarn(rcv: PoReceipt | null, currency: string): { tone: 'red' | 'amber' | 'green'; text: string } | null {
+  if (!rcv || !rcv.anyReceived || rcv.ordered <= 0) return null
+  if (rcv.received < rcv.ordered * 0.999) return { tone: 'red', text: `⚠ 实收 ${r2(rcv.received)}/${r2(rcv.ordered)} 短装 · 建议按实收 ${currency} ${money(r2(rcv.receivedAmount))} 付款` }
+  if (rcv.received > rcv.ordered * 1.001) return { tone: 'amber', text: `超收 ${r2(rcv.received)}/${r2(rcv.ordered)} · 核对后付款` }
+  return { tone: 'green', text: `实收=订购 ${r2(rcv.received)}` }
+}
+const WARN_CLS: Record<'red' | 'amber' | 'green', string> = {
+  red: 'text-red-600', amber: 'text-amber-600', green: 'text-emerald-600',
 }
 
 export function PurchaseOrderInbox({ syncedOrderMap, onRegister, onChanged }: {
@@ -76,7 +88,7 @@ export function PurchaseOrderInbox({ syncedOrderMap, onRegister, onChanged }: {
       const qm = label.split(' - ')[0].split(' | ').pop()?.trim()  // label 形如 "款号 | QM号 - 客户"
       if (qm) qmToBoId.set(qm, boId)
     }
-    setRows((data || []).map(p => {
+    const baseRows: PoRow[] = (data || []).map(p => {
       const nrefs = normalizeOrderRefs(p.order_refs)
       let boId: string | null = null
       for (const r of nrefs) { const hit = qmToBoId.get(String(r.order_no || r.id).trim()); if (hit) { boId = hit; break } }
@@ -87,8 +99,23 @@ export function PurchaseOrderInbox({ syncedOrderMap, onRegister, onChanged }: {
         placed_at: (p.placed_at as string) || null, order_refs: p.order_refs,
         budget_order_id: boId, fin_status: (p.fin_status as string) || 'pending',
         orderLabel: boId ? (syncedOrderMap[boId] || '') : (nrefs.map(r => r.internal_order_no || r.order_no || r.id).join(', ') || ''),
+        rcv: null,
       }
-    }))
+    })
+    // 止血(审计 #3):拉每张单的收货实收 vs 订购,提示财务按实收付款、别盲按下单额(收货实收永不回冲应付前的可见性兜底)
+    const rcvByPo = new Map<string, PoReceipt>()
+    const poIds = baseRows.map(r => r.id)
+    if (poIds.length) {
+      const { data: lns } = await sb.from('fin_po_lines').select('fin_po_id, ordered_qty, received_qty, unit_price').in('fin_po_id', poIds)
+      for (const l of (lns || [])) {
+        const k = l.fin_po_id as string
+        const g = rcvByPo.get(k) || { ordered: 0, received: 0, anyReceived: false, receivedAmount: 0 }
+        g.ordered += Number(l.ordered_qty) || 0
+        if (l.received_qty != null) { g.anyReceived = true; g.received += Number(l.received_qty) || 0; g.receivedAmount += (Number(l.received_qty) || 0) * (Number(l.unit_price) || 0) }
+        rcvByPo.set(k, g)
+      }
+    }
+    setRows(baseRows.map(r => ({ ...r, rcv: rcvByPo.get(r.id) || null })))
     setLoading(false)
   }, [syncedOrderMap])
 
@@ -224,7 +251,10 @@ export function PurchaseOrderInbox({ syncedOrderMap, onRegister, onChanged }: {
                       <TableCell className="text-muted-foreground">{expandedId === p.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</TableCell>
                       <TableCell className="font-medium text-sm">{p.po_no}</TableCell>
                       <TableCell className="text-sm">{p.supplier_name || <span className="text-amber-600">未带供应商名</span>}</TableCell>
-                      <TableCell className="text-right text-sm tabular-nums">{p.currency} {money(p.total_amount)}</TableCell>
+                      <TableCell className="text-right text-sm tabular-nums">
+                        <div>{p.currency} {money(p.total_amount)}</div>
+                        {(() => { const w = receiptWarn(p.rcv, p.currency); return w ? <div className={`text-[10px] font-medium ${WARN_CLS[w.tone]}`}>{w.text}</div> : null })()}
+                      </TableCell>
                       <TableCell className="text-sm text-primary">{p.orderLabel || <span className="text-muted-foreground">未关联</span>}</TableCell>
                       <TableCell className="text-sm">{p.delivery_date ? String(p.delivery_date).slice(0, 10) : '-'}</TableCell>
                       <TableCell>
