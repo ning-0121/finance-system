@@ -105,6 +105,14 @@ export async function retryFinanceOutbox(): Promise<{ due: number; sent: number;
       if (status === 'dead') dead++
     }
   }
+  // 死信告警(修 P3 2026-07-09):回传耗尽转 dead 后此前只计数、无告警 → 审批回写永久失败无人知。
+  // 推企微群,提醒人工处理。fire-and-forget,不阻断。
+  if (dead > 0) {
+    try {
+      const { sendGroupText } = await import('@/lib/wecom/robot')
+      await sendGroupText(`⛔ 财务→节拍器回传有 ${dead} 条重试耗尽转 dead、不再自动重投(审批批复可能没写回节拍器)。请查 fin_outbound_outbox status='dead' 人工重推。`)
+    } catch (e) { console.error('[retryFinanceOutbox] dead 告警失败:', e instanceof Error ? e.message : e) }
+  }
   return { due: rows.length, sent, dead }
 }
 
