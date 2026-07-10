@@ -70,17 +70,25 @@ export default function PaymentsPage() {
   const [newPayeeBank, setNewPayeeBank] = useState('')   // 开户行
   const [newAttachment, setNewAttachment] = useState('')
   const [uploadingAtt, setUploadingAtt] = useState(false)
+  const [attError, setAttError] = useState('')  // 附件上传失败提示:醒目、持久,绝不静默(否则会误存空附件)
   const [editingId, setEditingId] = useState<string | null>(null)  // null=新增；非空=编辑该条
   const [channelFilter, setChannelFilter] = useState('all')        // 付款方式筛选
   const selectedSupplier = suppliers.find(s => s.id === newSupplierId) || null
 
   const handleAttUpload = async (file: File | undefined) => {
     if (!file) return
+    setAttError('')
     setUploadingAtt(true)
     const { path, error } = await uploadAttachment(file, 'payments')
     setUploadingAtt(false)
-    if (error) { toast.error(error); return }
-    setNewAttachment(path || '')
+    // 上传失败(如会话过期→存储 RLS 拒绝)必须显性报错并停下:不能让"看似选了文件、实则没传上"的记录静默保存
+    if (error || !path) {
+      const msg = error || '上传失败,请重试'
+      setAttError(msg)
+      toast.error(`附件上传失败:${msg}`)
+      return
+    }
+    setNewAttachment(path)
     toast.success('附件已上传')
   }
 
@@ -100,6 +108,10 @@ export default function PaymentsPage() {
   const handleCreatePayable = async () => {
     if (!newSupplier.trim()) { toast.error('请输入供应商名称'); return }
     if (!newAmount || Number(newAmount) <= 0) { toast.error('请输入有效金额'); return }
+    // 附件仍在上传时保存会漏存 attachment_url(竞态:上传未完成 newAttachment 还是空)→ 拦住,让附件先落地
+    if (uploadingAtt) { toast.error('附件正在上传，请稍候再保存'); return }
+    // 附件上传失败却未处理时,别把"没附件"的记录静默存进去 → 逼用户重试或明确点「不加附件」
+    if (attError) { toast.error('附件上传失败，请点『重试』重新上传，或点『不加附件继续』后再保存'); return }
 
     // 防错校验
     const warnings = validatePayment({
@@ -182,7 +194,7 @@ export default function PaymentsPage() {
   function resetForm() {
     setEditingId(null); setNewSupplierId(''); setNewSupplier(''); setNewDesc(''); setNewAmount('')
     setNewOrderId(''); setNewDueDate(''); setNewChannel(''); setNewPayeeName(''); setNewPayeeAccount('')
-    setNewPayeeBank(''); setNewAttachment(''); setNewBillNo('')
+    setNewPayeeBank(''); setNewAttachment(''); setNewBillNo(''); setAttError(''); setUploadingAtt(false)
   }
 
   function openCreate() { resetForm(); setShowCreate(true) }
@@ -202,6 +214,7 @@ export default function PaymentsPage() {
     setNewPayeeAccount(r.payee_account || '')
     setNewPayeeBank(r.payee_bank || '')
     setNewAttachment(r.attachment_url || '')
+    setAttError(''); setUploadingAtt(false)
     setShowCreate(true)
   }
 
@@ -621,13 +634,20 @@ export default function PaymentsPage() {
                 <Input type="file" disabled={uploadingAtt} onChange={e => handleAttUpload(e.target.files?.[0])} className="text-xs" />
               )}
               {uploadingAtt && <p className="text-[11px] text-muted-foreground">上传中…</p>}
+              {attError && !uploadingAtt && (
+                <div className="rounded-md border border-red-300 bg-red-50 px-2.5 py-2 text-[12px] text-red-700 space-y-1">
+                  <p>⚠️ 附件上传失败:{attError}</p>
+                  <p className="text-red-600/80">此付款尚未附加文件。请重新选择文件重试;若确不需附件,可点「不加附件继续」。</p>
+                  <button type="button" className="underline" onClick={() => setAttError('')}>不加附件继续</button>
+                </div>
+              )}
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setShowCreate(false); resetForm() }}>取消</Button>
-            <Button onClick={handleCreatePayable} disabled={processing}>
-              {processing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
-              {editingId ? '保存修改' : '创建付款申请'}
+            <Button onClick={handleCreatePayable} disabled={processing || uploadingAtt}>
+              {(processing || uploadingAtt) ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
+              {uploadingAtt ? '附件上传中…' : (editingId ? '保存修改' : '创建付款申请')}
             </Button>
           </DialogFooter>
         </DialogContent>
