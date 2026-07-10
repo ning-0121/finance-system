@@ -228,6 +228,11 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'order.budget_updated':
       return handleOrderBudgetUpdated(payload.data as Record<string, unknown>)
 
+    // 出货发票金额 → 应收(2026-07-10):节拍器出运完成推累计 CI 金额。draft 预算 → 以 CI 更新
+    // total_revenue(应收);已确认 → 只存快照 + 记 integration_logs 告警,绝不自动改账。
+    case 'shipping_invoice.issued':
+      return handleShippingInvoiceIssued(payload.data as Record<string, unknown>)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
@@ -610,6 +615,82 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
   const { error } = await supabase.from('budget_orders').update({ items }).eq('id', budgetOrderId)
   if (error) throw new Error(`采购核料预算填充失败: ${error.message}`)
   return { action: 'done', reason: `采购核料预算已填 order=${orderNo || qimoOrderId} · 面料 ${fabric} / 加工 ${processing} / 辅料预算 ${accessory} / 辅料实际 ${actualAccessory}` }
+}
+
+// --- 出货发票金额 → 应收(2026-07-10)---
+// 节拍器出运完成推累计 CI 金额(整单口径,已含各批)。语义(用户拍板):
+//   budget_order = draft 未确认 → 以 CI 金额更新 total_revenue(应收),shipping_invoice.booked=true;
+//   已确认(approved/rejected/closed 等)→ 只存 shipping_invoice 快照 + 记 integration_logs 告警,绝不自动改账。
+// 契约:data = { qimo_order_id, order_no, internal_order_no?, currency, invoice_amount,
+//   invoice_qty?, deposit_raw?(PI 定金原文), scopes:[{scope,amount,qty}], source:'qimo_shipping_ci' }
+async function handleShippingInvoiceIssued(data: Record<string, unknown>) {
+  const supabase = createServiceClient()
+  const qimoOrderId = (data.qimo_order_id as string) || ''
+  const orderNo = (data.order_no as string) || ''
+  if (!qimoOrderId && !orderNo) return { action: 'ignored', reason: 'shipping_invoice.issued 缺 qimo_order_id/order_no' }
+
+  const r2 = (n: unknown) => { const x = Number(n); return Number.isFinite(x) ? Math.round(x * 100) / 100 : 0 }
+  const invoiceAmount = r2(data.invoice_amount)
+  if (invoiceAmount <= 0) return { action: 'ignored', reason: 'shipping_invoice.issued 金额≤0,跳过' }
+  const currency = (data.currency as string) || 'USD'
+
+  // 定位 budget_order:优先 qimo_order_id(结构化),退回 synced_orders.order_no → budget_order_id
+  let budgetOrderId: string | null = null
+  if (qimoOrderId) {
+    const { data: bo } = await supabase.from('budget_orders').select('id').eq('qimo_order_id', qimoOrderId).is('deleted_at', null).maybeSingle()
+    budgetOrderId = bo?.id ?? null
+  }
+  if (!budgetOrderId && orderNo) {
+    const { data: so } = await supabase.from('synced_orders').select('budget_order_id').eq('order_no', orderNo).not('budget_order_id', 'is', null).maybeSingle()
+    budgetOrderId = (so?.budget_order_id as string) ?? null
+  }
+  if (!budgetOrderId) {
+    // CI 是出运下游,预算单本应先于出运存在。未建 → 不自动建(避免死单/脏数据),记告警待人工。
+    await supabase.from('integration_logs').insert({
+      event_type: 'shipping_invoice.no_budget', direction: 'inbound',
+      request_id: `ci-nobudget-${qimoOrderId || orderNo}-${Date.now()}`, source: 'order-metronome', status: 'warning',
+      payload_summary: `出货 CI=${invoiceAmount} ${currency} 已收到,但订单 ${orderNo || qimoOrderId} 尚未建预算单,应收未入账,请财务确认`,
+    })
+    return { action: 'ok', reason: `CI 已收到但订单未建预算单(order=${orderNo || qimoOrderId}),已记告警待人工` }
+  }
+
+  const { data: bo } = await supabase.from('budget_orders').select('status, total_revenue').eq('id', budgetOrderId).maybeSingle()
+  const prev = Number(bo?.total_revenue) || 0
+  const snapshotBase = {
+    invoice_amount: invoiceAmount,
+    currency,
+    deposit_raw: (data.deposit_raw as string) ?? null,
+    invoice_qty: data.invoice_qty != null ? Number(data.invoice_qty) : null,
+    scopes: Array.isArray(data.scopes) ? data.scopes : [],
+    received_at: new Date().toISOString(),
+    source: 'qimo_shipping_ci',
+    prev_total_revenue: prev,
+  }
+
+  if (bo && bo.status === 'draft') {
+    const { error } = await supabase.from('budget_orders').update({
+      total_revenue: invoiceAmount,
+      currency,
+      shipping_invoice: { ...snapshotBase, booked: true },
+    }).eq('id', budgetOrderId)
+    if (error) throw new Error(`应收(total_revenue)更新失败: ${error.message}`)
+    return { action: 'done', reason: `draft 应收以 CI 更新 order=${orderNo || qimoOrderId} ${prev}→${invoiceAmount} ${currency}` }
+  }
+
+  // 已确认(非 draft)→ 只存快照 + 差异告警,绝不改账
+  const { error } = await supabase.from('budget_orders').update({
+    shipping_invoice: { ...snapshotBase, booked: false },
+  }).eq('id', budgetOrderId)
+  if (error) throw new Error(`出货 CI 快照写入失败: ${error.message}`)
+  const diff = Math.round((invoiceAmount - prev) * 100) / 100
+  if (Math.abs(diff) > 0.01) {
+    await supabase.from('integration_logs').insert({
+      event_type: 'shipping_invoice.diff', direction: 'inbound',
+      request_id: `ci-diff-${budgetOrderId}-${Date.now()}`, source: 'order-metronome', status: 'warning',
+      payload_summary: `订单 ${orderNo || qimoOrderId} 出货 CI=${invoiceAmount} ${currency} ≠ 已确认应收=${prev}(预算单 ${bo?.status}),差 ${diff},请财务确认是否人工调整——未自动改账`,
+    })
+  }
+  return { action: 'ok', reason: `预算单非 draft(${bo?.status}),CI=${invoiceAmount} 只存快照未改账${Math.abs(diff) > 0.01 ? `(差 ${diff} 已告警)` : ''}` }
 }
 
 async function handleSupplierUpsert(data: Record<string, unknown>) {
