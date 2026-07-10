@@ -12,7 +12,6 @@ export type WebhookEventType =
   | 'order.deleted'           // 订单删除（→ 保守冲销:作废草稿预算+撤审批,已过账标待人工）
   | 'milestone.updated'       // 里程碑状态更新
   | 'price_approval.requested' // 价格审批请求
-  | 'delay.requested'         // 延期审批请求
   | 'cancel.requested'        // 取消订单审批请求(财务批准后节拍器才取消,回传 approval_type:'cancel')
   | 'milestone.requested'     // 里程碑财务确认请求(财务确认加工费/核准出运/收款,回传 approval_type:'milestone')
   | 'file.uploaded'           // 文件上传同步
@@ -105,27 +104,12 @@ export interface PriceDiff {
   diff_pct?: number
 }
 
-// --- 延期审批请求 ---
-export interface DelayApprovalRequest {
-  id: string                 // delay_requests.id
-  order_id: string
-  order_no: string
-  milestone_name: string
-  requested_by: string
-  requester_name: string
-  reason_type: string
-  reason_detail: string
-  reason_category: string
-  proposed_new_date: string | null
-  current_due_date: string | null
-  requires_customer_approval: boolean
-  created_at: string
-}
+// (DelayApprovalRequest 已移除 2026-07-09:节拍器改期只走内部审批、从不推 delay.requested)
 
 // --- 审批决定（财务系统 -> 节拍器） ---
 export interface ApprovalDecision {
-  approval_id: string        // price/delay/cancel=审批ID；purchase=采购单 purchase_order_id
-  approval_type: 'price' | 'delay' | 'cancel' | 'purchase'
+  approval_id: string        // price/cancel=审批ID；purchase=采购单 purchase_order_id
+  approval_type: 'price' | 'cancel' | 'purchase'
   decision: 'approved' | 'rejected'
   decided_by: string         // 财务系统用户ID
   decider_name: string       // 财务系统用户名

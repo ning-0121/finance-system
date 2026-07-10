@@ -11,7 +11,7 @@ import {
   isRequestProcessed,
   markRequestProcessed,
 } from '@/lib/integration/security'
-import type { WebhookPayload, SyncedOrder, PriceApprovalRequest, DelayApprovalRequest } from '@/lib/integration/types'
+import type { WebhookPayload, SyncedOrder, PriceApprovalRequest } from '@/lib/integration/types'
 import { createServiceClient } from '@/lib/supabase/service'
 import { poRequiresApproval } from '@/lib/integration/purchase-approval'
 
@@ -181,8 +181,7 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'price_approval.requested':
       return handlePriceApprovalRequest(payload.data as unknown as PriceApprovalRequest)
 
-    case 'delay.requested':
-      return handleDelayApprovalRequest(payload.data as unknown as DelayApprovalRequest)
+    // (delay.requested 已移除 2026-07-09:节拍器改期只走内部审批、从不推财务,幽灵能力删除)
 
     // 取消订单/里程碑 财务审批(接通:节拍器发起 → 财务审批队列 → 批/驳回传 approval_type:'cancel'/'milestone')
     case 'cancel.requested':
@@ -942,36 +941,7 @@ async function handlePriceApprovalRequest(req: PriceApprovalRequest) {
   return { action: 'approval_queued', type: 'price', order_no: req.order_no }
 }
 
-// --- 延期审批请求 ---
-async function handleDelayApprovalRequest(req: DelayApprovalRequest) {
-  const supabase = createServiceClient()
-
-  const { error } = await supabase
-    .from('pending_approvals')
-    .upsert({
-      id: req.id,
-      approval_type: 'delay',
-      order_no: req.order_no,
-      customer_name: null,
-      requested_by_name: req.requester_name,
-      summary: `${req.milestone_name}: ${req.reason_type}`,
-      detail: {
-        milestone_name: req.milestone_name,
-        reason_type: req.reason_type,
-        reason_detail: req.reason_detail,
-        reason_category: req.reason_category,
-        proposed_new_date: req.proposed_new_date,
-        current_due_date: req.current_due_date,
-        requires_customer_approval: req.requires_customer_approval,
-      },
-      status: 'pending',
-      source_created_at: req.created_at,
-      synced_at: new Date().toISOString(),
-    }, { onConflict: 'id' })
-
-  if (error) throw new Error(`Delay approval sync failed: ${error.message}`)
-  return { action: 'approval_queued', type: 'delay', order_no: req.order_no }
-}
+// (handleDelayApprovalRequest 已移除 2026-07-09:节拍器改期只走内部审批、从不推 delay.requested,幽灵能力删除)
 
 // --- 取消订单 / 里程碑 财务审批请求(通用)---
 // 节拍器发起,财务在审批队列批/驳 → 现有 approve 路由透传 approval_type 回传节拍器 finance-callback。
