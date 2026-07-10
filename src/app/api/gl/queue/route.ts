@@ -10,9 +10,13 @@ const VALID_EVENTS: BusinessEvent[] = ['order_approved', 'settlement_confirmed',
 export async function POST(request: NextRequest) {
   const auth = await requireAuth()
   if (!auth.authenticated) return auth.error!
+  // P0-1 止血静默丢弃:enqueueAndProcess 在写队列行【之前】抛异常时,原来仅返回 200+body,
+  // 调用方只 .catch() 网络错、抓不到 200 body → GL 凭证不生成却无痕。hoist 业务键,catch 里落诊断日志。
+  let evt = '', st = '', sid = ''
   try {
     const body = await request.json()
     const { businessEvent, sourceType, sourceId, bankCode, bankName } = body || {}
+    evt = String(businessEvent || ''); st = String(sourceType || ''); sid = String(sourceId || '')
     if (!VALID_EVENTS.includes(businessEvent)) {
       return NextResponse.json({ error: `无效 businessEvent: ${businessEvent}` }, { status: 400 })
     }
@@ -25,8 +29,18 @@ export async function POST(request: NextRequest) {
     // 入队/处理失败都返回 200：业务已成功，GL 异常已落异常中心，不阻塞业务
     return NextResponse.json({ success: true, queueId, result })
   } catch (error) {
-    // 兜底：即便这里异常，也不应影响已完成的业务操作
-    return NextResponse.json({ success: false, error: error instanceof Error ? error.message : 'GL入队失败' }, { status: 200 })
+    // 兜底：即便这里异常，也不应影响已完成的业务操作;但异常必须留痕(此前静默吞掉)
+    const msg = error instanceof Error ? error.message : 'GL入队失败'
+    try {
+      const supabase = await createClient()
+      await supabase.from('save_diagnostic_logs').insert({
+        action: 'gl_enqueue', table_name: 'gl_posting_queue', record_id: sid || null,
+        source_page: 'api/gl/queue', status: 'error',
+        error_detail: `GL入队异常(${evt || '?'}/${st || '?'}/${sid || '?'}),凭证未生成,请到GL复核/异常中心处理: ${msg}`,
+        actor_id: auth.userId ?? null,
+      })
+    } catch (e) { console.error('[gl/queue] 诊断落库失败:', e) }
+    return NextResponse.json({ success: false, error: msg }, { status: 200 })
   }
 }
 

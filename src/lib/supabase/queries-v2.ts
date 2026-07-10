@@ -4,6 +4,7 @@
 
 import { createClient } from './client'
 import { fetchAll } from './fetch-all'
+import { safeRate } from '@/lib/accounting/utils'
 import type {
   SubDocument, SubDocumentType, SubDocItem,
   ActualInvoice, ShippingDocument, InventoryReturn,
@@ -409,9 +410,10 @@ export async function generateOrderSettlement(budgetOrderId: string): Promise<{ 
 
     // 决算单全部以人民币口径计算（与展示层「实际利润 (CNY)」一致）
     const r2 = (n: number) => Math.round(n * 100) / 100
+    // P0-3:决算折汇统一走 safeRate(缺汇率→告警+按7),不再按 1:1 → 否则美金单 final_profit 系统性虚高/虚低
     const toCny = (amount: number | null | undefined, currency?: string | null, rate?: number | null) =>
-      (Number(amount) || 0) * ((currency || 'CNY') === 'CNY' ? 1 : (Number(rate) || 1))
-    const orderRate = budget?.currency === 'CNY' ? 1 : (Number(budget?.exchange_rate) || 1)
+      (Number(amount) || 0) * safeRate(rate ?? null, currency ?? 'CNY', '决算折汇')
+    const orderRate = safeRate(budget?.exchange_rate as number, budget?.currency as string, '决算-订单汇率')
 
     // 计算（用 ?? 而非 ||：实际为 0 是真实决算值，不能回退到预算）
     const subSettlements: SubSettlement[] = (subDocs || []).map(d => {

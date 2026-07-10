@@ -223,8 +223,8 @@ export default function ActualGrossReportPage() {
               .not('budget_order_id', 'is', null).is('deleted_at', null)
               .neq('cost_type', 'tax_point')   // 票点不计毛利成本(留作退税核算)
               .order('id', { ascending: true }).range(from, to)),
-          fetchAll<{ budget_order_id: string; amount: number; currency: string }>((from, to) =>
-            supabase.from('payable_records').select('budget_order_id, amount, currency')
+          fetchAll<{ budget_order_id: string; amount: number; currency: string; exchange_rate: number | null }>((from, to) =>
+            supabase.from('payable_records').select('budget_order_id, amount, currency, exchange_rate')
               .not('budget_order_id', 'is', null).neq('payment_status', 'cancelled')
               .order('id', { ascending: true }).range(from, to)),
           // 已收权威口径=回款流水分配合计（与应收页/核算单弹窗同源），避免主表用 ar_received_amount 各算各的
@@ -259,7 +259,9 @@ export default function ActualGrossReportPage() {
         const payableByOrder = new Map<string, number>()
         payables?.forEach(r => {
           const id = r.budget_order_id
-          const cny = payableToCny(Number(r.amount) || 0, r.currency || 'CNY', orderRateMap.get(id))
+          // P0-3b:优先用 payable_records 自带权威汇率(触发器/回填已填);缺则退回所属订单汇率(payableToCny 内再兜底 7.2)
+          const rate = r.exchange_rate != null ? Number(r.exchange_rate) : orderRateMap.get(id)
+          const cny = payableToCny(Number(r.amount) || 0, r.currency || 'CNY', rate)
           payableByOrder.set(id, (payableByOrder.get(id) || 0) + cny)
         })
 

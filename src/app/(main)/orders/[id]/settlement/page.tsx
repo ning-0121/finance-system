@@ -201,16 +201,27 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
     setGenerating(false)
   }
 
-  const handleConfirmSettlement = async () => {
+  const handleConfirmSettlement = async (acknowledge = false) => {
     if (!settlement) return
     setConfirming(true)
     try {
       const res = await fetch(`/api/orders/${id}/settlement`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(acknowledge ? { acknowledgeDivergence: true } : {}),
       })
       const d = await res.json()
-      if (!res.ok) throw new Error(d.error)
+      if (!res.ok) {
+        // P1 对账闸/实际性守卫拦下(带 gate 字段):询问财务经理是否带差强制确认(会留痕)
+        if (d.gate && !acknowledge) {
+          setConfirming(false)
+          if (window.confirm(`${d.error}\n\n确定要带差强制确认吗?系统会记录确认人与差额备查。`)) {
+            return handleConfirmSettlement(true)
+          }
+          return
+        }
+        throw new Error(d.error)
+      }
       const data = await getOrderSettlement(id)
       setSettlement(data)
       toast.success(d.message || '决算已确认，应付记录已生成')
@@ -320,7 +331,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
               <Button
                 size="sm"
                 className="bg-green-600 hover:bg-green-700 text-white"
-                onClick={handleConfirmSettlement}
+                onClick={() => handleConfirmSettlement()}
                 disabled={confirming}
               >
                 {confirming ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}

@@ -64,6 +64,30 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: insertError?.message || 'Insert failed' }, { status: 500 })
     }
 
+    // ========== Step 2.5: 存原件到私有桶(F3 修 2026-07-11)==========
+    // 此前只存 AI 抽取字段、从不 upload 文件、不写 file_url → "传了看不到原件"。
+    // 键名沿用 storage.ts 的 base64url 约定(中文名 b64- 标记),供 attachmentName() 解码还原。best-effort,不阻断。
+    let fileUrl: string | null = null
+    try {
+      const dot = fileName.lastIndexOf('.')
+      const base = dot > 0 ? fileName.slice(0, dot) : fileName
+      const extPart = dot > 0 ? fileName.slice(dot).replace(/[^\w.]/g, '') : ''
+      let safeName: string
+      if (/^[\w.\- ()+']+$/.test(base)) {
+        safeName = `${base}${extPart}`
+      } else {
+        const bytes = new TextEncoder().encode(base)
+        let bin = ''
+        for (const b of bytes) bin += String.fromCharCode(b)
+        safeName = `b64-${Buffer.from(bin, 'binary').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}${extPart}`
+      }
+      const rand = (globalThis.crypto?.randomUUID?.() ?? String(Date.now())).slice(0, 8)
+      const path = `documents/${rand}_${safeName}`
+      const { error: upErr } = await supabase.storage.from('finance-attachments').upload(path, file, { upsert: false, contentType: file.type || undefined })
+      if (upErr) console.error('[documents/upload] 原件存储失败(不阻断):', upErr.message)
+      else fileUrl = path
+    } catch (e) { console.error('[documents/upload] 原件存储异常(不阻断):', e) }
+
     // ========== Step 3: 加载模板记忆 ==========
     let templateHint: string | undefined
     // 从文件名猜测entity名（常见模式：供应商名_发票_日期.xlsx）
@@ -129,8 +153,22 @@ export async function POST(request: Request) {
         if (data?.length) matches.push({ type: 'supplier', confidence: 80, confidence_level: 'high', matched_id: data[0].id, matched_name: data[0].supplier_name, detail: `匹配供应商: ${data[0].supplier_name}` })
       }
       if (poNumber) {
-        const { data } = await supabase.from('budget_orders').select('id, order_no').or(`order_no.ilike.%${poNumber}%`).limit(1)
-        if (data?.length) matches.push({ type: 'order', confidence: 90, confidence_level: 'high', matched_id: data[0].id, matched_name: data[0].order_no, detail: `匹配订单: ${data[0].order_no}` })
+        // F1 修(2026-07-11):不再 order_no.ilike.%X%(510 会串 510B、BO 号会串子号→附件挂错单)。
+        // 改精确匹配,依次试:BO 财务单号 → synced_orders 客户PO号/绮陌单号/内部单号 → budget_order_id。
+        // 全用 .eq 精确;命中不了就不匹配(宁缺毋滥,不挂错单)。
+        let om: { id: string; order_no: string } | null = null
+        const { data: byBo } = await supabase.from('budget_orders').select('id, order_no').eq('order_no', poNumber).limit(1)
+        if (byBo?.length) om = byBo[0]
+        if (!om) {
+          for (const col of ['po_number', 'order_no', 'style_no'] as const) {
+            const { data: so } = await supabase.from('synced_orders').select('budget_order_id').eq(col, poNumber).not('budget_order_id', 'is', null).limit(1)
+            if (so?.length && so[0].budget_order_id) {
+              const { data: bo2 } = await supabase.from('budget_orders').select('id, order_no').eq('id', so[0].budget_order_id as string).limit(1)
+              if (bo2?.length) { om = bo2[0]; break }
+            }
+          }
+        }
+        if (om) matches.push({ type: 'order', confidence: 95, confidence_level: 'high', matched_id: om.id, matched_name: om.order_no, detail: `匹配订单: ${om.order_no}` })
       }
       if (invoiceNo) {
         const { data } = await supabase.from('actual_invoices').select('id, invoice_no').eq('invoice_no', invoiceNo).limit(1)
@@ -166,6 +204,7 @@ export async function POST(request: Request) {
       matched_customer: matches.find(m => m.type === 'customer')?.matched_name || null,
       matched_supplier: matches.find(m => m.type === 'supplier')?.matched_name || null,
       matched_order_id: matches.find(m => m.type === 'order')?.matched_id || null,
+      file_url: fileUrl,   // F3:原件存储路径,展示时按需生成签名 URL
       template_id: templateHint ? 'template_used' : null,
     }).eq('id', doc.id)
     if (updateErr) console.error('文档更新失败:', updateErr.message)

@@ -99,6 +99,8 @@ export default function SupplierProfilesPage() {
 
   const handleSave = async () => {
     if (!form.name?.trim()) { toast.error('请填写供应商名称'); return }
+    // F4(2026-07-11):附件上传中禁止保存,否则 attachment_url 还没写入就建档 → 供应商档丢附件(与 payments/receivables 同守卫)
+    if (uploadingAtt) { toast.error('附件上传中,请稍候再保存'); return }
     setSaving(true)
     const { error } = await upsertSupplier(form as Partial<Supplier> & { name: string })
     setSaving(false)
@@ -281,7 +283,7 @@ export default function SupplierProfilesPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}{form.id ? '保存' : '建档'}</Button>
+            <Button onClick={handleSave} disabled={saving || uploadingAtt}>{saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}{uploadingAtt ? '附件上传中…' : (form.id ? '保存' : '建档')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

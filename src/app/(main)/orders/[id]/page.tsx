@@ -85,8 +85,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [activeTab, setActiveTab] = useState('budget')
   const [syncedInfo, setSyncedInfo] = useState<{ orderNo: string; internalNo: string; quantity: number; quantityUnit: string } | null>(null)
   const [attachments, setAttachments] = useState<{ id: string; file_name: string; file_type: string; file_url: string | null; created_at: string }[]>([])
+  // F2:绮陌(节拍器)侧附件——按需从节拍器签名端点拉取(含即时签名 URL),不落库
+  const [qimoAtts, setQimoAtts] = useState<{ id: string; file_name: string; file_type: string | null; mime_type: string | null; file_size: number | null; url: string | null; created_at: string }[]>([])
   // 费用归集（cost_items）实际明细：预算未录明细时回退展示公斤数/单价，供核对
   const [costDetail, setCostDetail] = useState<Record<string, { name: string; qty: number; unit: string; unit_price: number; amount: number }[]>>({})
+  // B-1:实际发票(actual_invoices)——用于「费用归集(算利润) vs 实际发票(算应付)」两条实际流对账
+  const [actualInvoices, setActualInvoices] = useState<Array<Record<string, unknown>>>([])
 
   useEffect(() => {
     async function load() {
@@ -104,6 +108,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         const synced = syncedRows || []
         if (synced.length) {
           setSyncedInfo({ orderNo: synced[0].order_no as string, internalNo: synced[0].style_no as string || '', quantity: synced[0].quantity as number || 0, quantityUnit: synced[0].quantity_unit as string || '件' })
+          // F2:按需拉取绮陌侧该订单附件(节拍器签名端点→即时签名 URL)。best-effort,失败不影响页面。
+          const qmNo = synced[0].order_no as string
+          if (qmNo) {
+            fetch(`/api/integration/metronome-attachments?orderNo=${encodeURIComponent(qmNo)}`)
+              .then(r => r.json()).then(d => setQimoAtts(Array.isArray(d.data) ? d.data : []))
+              .catch(() => { /* 绮陌附件拉取失败静默 */ })
+          }
         }
 
         // 加载费用归集明细（含公斤数/单价）→ 预算未录明细时按类别回退展示，供财务核对
@@ -169,6 +180,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         ])
         setSettlement(settlementData)
         setOrderSettlementState(orderSettlement as OrderSettlement | null)
+        setActualInvoices((invoices as Array<Record<string, unknown>>) || [])
         setLogs(logsData as ApprovalLog[])
         setWorkflowCtx({
           hasSubDocs: (subDocs as unknown[])?.length > 0,
@@ -430,6 +442,23 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     if (statusError) {
       toast.error(`操作失败: ${statusError}`)
       return
+    }
+
+    // 反向即时链接(2026-07-11):预算审批通过 → 回传绮陌「财务已确认预算」,让业务/生产看到定稿信号
+    //（此前财务确认后绮陌全黑盒)。keepalive 关页仍发;到路由即入 outbox。
+    if (action === 'approve') {
+      try {
+        void fetch('/api/integration/finance-progress', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+          body: JSON.stringify({
+            event: 'budget.confirmed',
+            qimo_order_id: (order as unknown as { qimo_order_id?: string }).qimo_order_id ?? null,
+            order_no: syncedInfo?.orderNo || order.order_no,
+            amount: order.total_revenue, currency: order.currency,
+            note: `财务已确认预算(毛利率 ${order.estimated_margin}%)`,
+          }),
+        }).catch(() => {})
+      } catch { /* 回传不阻断审批 */ }
     }
 
     // 2. 持久化审批记录（检查落库结果，失败明确提示——此前静默失败致审计链为空）
@@ -978,8 +1007,33 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       <p className={`text-3xl font-bold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
                         ¥ {order.estimated_profit.toLocaleString()}
                       </p>
+                      <p className="text-[10px] text-muted-foreground mt-1">= 合同收入 − 预算成本</p>
                     </div>
                   )}
+
+                  {/* A(2026-07-10):未确认决算、但已归集实际成本 → 显示「按已归集实际」利润口径，
+                      让财务不必先生成决算单就能看清实际利润 vs 预算。数据源=费用归集 cost_items(与决算同源)。*/}
+                  {!(orderSettlement && (orderSettlement.status === 'confirmed' || orderSettlement.status === 'locked')) && (() => {
+                    const totalActualCost = Object.values(costDetail).flat().reduce((s, l) => s + (Number(l.amount) || 0), 0)
+                    if (totalActualCost <= 0) return null
+                    const revenueCny = order.currency === 'CNY' ? order.total_revenue : order.total_revenue * (order.exchange_rate || 1)
+                    const actualProfit = revenueCny - totalActualCost
+                    const actualMargin = revenueCny > 0 ? (actualProfit / revenueCny) * 100 : 0
+                    const diff = actualProfit - order.estimated_profit
+                    return (
+                      <div className="text-center p-3 rounded-lg bg-amber-50 border border-amber-200">
+                        <p className="text-xs text-amber-700 mb-1">按已归集实际（未决算）</p>
+                        <p className={`text-2xl font-bold ${actualProfit < 0 ? 'text-red-600' : 'text-amber-700'}`}>
+                          ¥ {actualProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </p>
+                        <p className="text-[11px] text-amber-700/80 mt-1">
+                          实际归集 ¥{totalActualCost.toLocaleString()} · 毛利率 {actualMargin.toFixed(1)}%
+                          {Math.abs(diff) >= 1 && <> · vs 预算 {diff > 0 ? '+' : ''}¥{diff.toLocaleString(undefined, { maximumFractionDigits: 2 })}</>}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">以已归集的实际成本估算，实际成本未齐时会偏高；以决算确认为准</p>
+                      </div>
+                    )
+                  })()}
 
                   {/* 合同金额 + 毛利率 */}
                   <div className="grid grid-cols-2 gap-3">
@@ -1040,6 +1094,45 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   )}
                 </CardContent>
               </Card>
+
+              {/* B-1(2026-07-10):成本对账 —— 费用归集(算利润) vs 实际发票(算应付)两条实际流是否对齐。
+                  只读比对/警示,不动账(符合数据治理铁律)。费用归集→决算利润;实际发票→决算确认生成应付,两者应对齐。*/}
+              {(() => {
+                const costLines = Object.values(costDetail).flat()
+                const costItemsTotal = costLines.reduce((s, l) => s + (Number(l.amount) || 0), 0)
+                const orderRate = order.currency === 'CNY' ? 1 : (order.exchange_rate || 1)
+                const invRows = (actualInvoices || []).filter(i => !i.deleted_at && i.status !== 'rejected')
+                const invoiceTotal = invRows.reduce((s, i) => {
+                  const cur = String(i.currency || 'CNY')
+                  const rate = cur === 'CNY' ? 1 : (Number(i.exchange_rate) || orderRate || 1)
+                  return s + (Number(i.total_amount) || 0) * rate
+                }, 0)
+                if (costItemsTotal <= 0 && invoiceTotal <= 0) return null
+                const diff = Math.round((costItemsTotal - invoiceTotal) * 100) / 100
+                const tol = Math.max(1000, costItemsTotal * 0.01)
+                const diverge = Math.abs(diff) > tol
+                return (
+                  <Card className="mt-4">
+                    <CardHeader className="pb-3"><CardTitle className="text-sm">成本对账 · 费用归集 vs 实际发票</CardTitle></CardHeader>
+                    <CardContent className="space-y-2 text-sm">
+                      <div className="flex justify-between"><span className="text-muted-foreground">费用归集（算利润）</span><span className="font-medium">¥ {costItemsTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })} · {costLines.length} 笔</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground">实际发票（算应付）</span><span className="font-medium">¥ {invoiceTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })} · {invRows.length} 张</span></div>
+                      <Separator />
+                      {diverge ? (
+                        <div className="flex items-start gap-2 p-2 rounded-lg bg-amber-50 text-amber-700 text-xs" role="alert">
+                          <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" aria-hidden="true" />
+                          <span>两条实际流差 ¥{Math.abs(diff).toLocaleString(undefined, { maximumFractionDigits: 2 })}：利润按「费用归集」口径算，但{invoiceTotal > costItemsTotal ? '实际发票更多，可能有费用未归集' : '发票支撑不足，可能有发票未上传/未匹配'}。决算确认会按「实际发票」生成应付——请先核对，避免利润与应付背离。</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 p-2 rounded-lg bg-green-50 text-green-700 text-xs">
+                          <span>✓ 两条流基本一致（差 ¥{Math.abs(diff).toLocaleString(undefined, { maximumFractionDigits: 2 })}，容差内）</span>
+                        </div>
+                      )}
+                      <p className="text-[10px] text-muted-foreground">费用归集(cost_items) → 决算利润；实际发票(actual_invoices) → 决算确认生成应付。两者应对齐。</p>
+                    </CardContent>
+                  </Card>
+                )
+              })()}
             </div>
 
             {/* 快捷操作入口（approved + closed 都展示，方便已完结订单回看） */}
@@ -1147,6 +1240,33 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 )}
               </CardContent>
             </Card>
+
+            {/* F2:绮陌附件——业务在绮陌上传的 PO/发票/装箱单等,财务按需拉取查看(即时签名 URL) */}
+            {qimoAtts.length > 0 && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm">绮陌附件 <span className="text-[10px] text-muted-foreground font-normal">(业务在绮陌上传,{qimoAtts.length} 个)</span></CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    {qimoAtts.map(a => (
+                      <div key={a.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate">{a.file_name}</p>
+                            <p className="text-[10px] text-muted-foreground">{a.created_at ? new Date(a.created_at).toLocaleDateString('zh-CN') : ''}{a.file_type ? ` · ${a.file_type}` : ''}</p>
+                          </div>
+                        </div>
+                        {a.url
+                          ? <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => window.open(a.url as string, '_blank', 'noopener')}>查看</Button>
+                          : <span className="text-[10px] text-muted-foreground">无法访问</span>}
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           {/* Settlement Tab */}

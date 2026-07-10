@@ -6,7 +6,6 @@ import { Bell, Search, MessageSquare, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
-import { demoAlerts } from '@/lib/demo-data'
 
 interface HeaderProps {
   title?: string
@@ -20,6 +19,15 @@ interface SearchResult {
   href: string
 }
 
+// P0-2:通知铃真实数据(替换 demoAlerts 假数据)。来自 /api/finance-alerts 聚合。
+interface FinanceAlert {
+  id: string
+  severity: 'critical' | 'warning' | 'info'
+  title: string
+  message: string
+  href: string
+}
+
 export function Header({ title, subtitle }: HeaderProps) {
   const router = useRouter()
   const [searchQuery, setSearchQuery] = useState('')
@@ -28,7 +36,22 @@ export function Header({ title, subtitle }: HeaderProps) {
   const [showResults, setShowResults] = useState(false)
   const [showAlerts, setShowAlerts] = useState(false)
   const searchRef = useRef<HTMLDivElement>(null)
-  const unreadAlerts = demoAlerts.filter(a => !a.is_read)
+  const [alerts, setAlerts] = useState<FinanceAlert[]>([])
+
+  // 拉取真实待处理/异常;每 60s 刷新(与 Sidebar 审批轮询同频)
+  useEffect(() => {
+    let alive = true
+    const load = async () => {
+      try {
+        const res = await fetch('/api/finance-alerts')
+        const data = await res.json()
+        if (alive) setAlerts(Array.isArray(data.alerts) ? data.alerts : [])
+      } catch { /* 静默:铃铛拉取失败不影响页面 */ }
+    }
+    load()
+    const t = setInterval(load, 60_000)
+    return () => { alive = false; clearInterval(t) }
+  }, [])
 
   // 防抖搜索
   useEffect(() => {
@@ -122,16 +145,24 @@ export function Header({ title, subtitle }: HeaderProps) {
         <div className="relative">
           <Button variant="outline" size="icon" className="h-9 w-9 relative" onClick={() => setShowAlerts(!showAlerts)}>
             <Bell className="h-4 w-4" />
-            {unreadAlerts.length > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[10px] text-white">{unreadAlerts.length}</span>
+            {alerts.length > 0 && (
+              <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[10px] text-white">{alerts.length > 9 ? '9+' : alerts.length}</span>
             )}
           </Button>
           {showAlerts && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setShowAlerts(false)} />
-              <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-lg border shadow-lg z-50 py-1">
-                {demoAlerts.slice(0, 5).map((alert) => (
-                  <div key={alert.id} className="flex flex-col items-start gap-1 py-3 px-4 hover:bg-muted cursor-pointer">
+              <div className="absolute right-0 top-full mt-2 w-96 bg-white rounded-lg border shadow-lg z-50 py-1 max-h-[420px] overflow-y-auto">
+                <div className="px-4 py-2 border-b text-xs font-medium text-muted-foreground">财务待处理 / 异常 ({alerts.length})</div>
+                {alerts.length === 0 && (
+                  <div className="py-8 px-4 text-center text-sm text-muted-foreground">暂无待处理事项</div>
+                )}
+                {alerts.map((alert) => (
+                  <button
+                    key={alert.id}
+                    className="flex flex-col items-start gap-1 py-3 px-4 hover:bg-muted cursor-pointer w-full text-left transition-colors"
+                    onClick={() => { router.push(alert.href); setShowAlerts(false) }}
+                  >
                     <div className="flex items-center gap-2">
                       <Badge variant={alert.severity === 'critical' ? 'destructive' : alert.severity === 'warning' ? 'secondary' : 'outline'} className="text-[10px]">
                         {alert.severity === 'critical' ? '严重' : alert.severity === 'warning' ? '警告' : '提示'}
@@ -139,7 +170,7 @@ export function Header({ title, subtitle }: HeaderProps) {
                       <span className="text-sm font-medium">{alert.title}</span>
                     </div>
                     <p className="text-xs text-muted-foreground line-clamp-2">{alert.message}</p>
-                  </div>
+                  </button>
                 ))}
               </div>
             </>

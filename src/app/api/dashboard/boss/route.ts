@@ -8,6 +8,7 @@ import { createClient } from '@/lib/supabase/server'
 import { getMonthlyClosingPanel } from '@/lib/engines/closing-engine'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { bizToday } from '@/lib/biz-date'
+import { safeRate } from '@/lib/accounting/utils'
 
 export const dynamic = 'force-dynamic'
 
@@ -45,17 +46,21 @@ export async function GET() {
     const in7 = new Date(new Date(today).getTime() + 7 * 86400000).toISOString().slice(0, 10)
     const [{ data: duePay }, { data: rateOrders }] = await Promise.all([
       fetchAll<Record<string, unknown>>((from, to) => supabase.from('payable_records')
-        .select('supplier_name, amount, currency, due_date, budget_order_id')
+        .select('supplier_name, amount, currency, exchange_rate, due_date, budget_order_id')
         .in('payment_status', ['unpaid', 'pending_approval', 'approved']).not('due_date', 'is', null)
         .lte('due_date', in7).order('due_date').order('id', { ascending: true }).range(from, to)),
       fetchAll<Record<string, unknown>>((from, to) => supabase.from('budget_orders')
         .select('id, currency, exchange_rate').is('deleted_at', null).order('id', { ascending: true }).range(from, to)),
     ])
     const ordRate = new Map<string, number>()
-    ;(rateOrders || []).forEach(o => ordRate.set(o.id as string, (o.currency as string) === 'CNY' ? 1 : (Number(o.exchange_rate) || 0)))
+    // P0-3:缺汇率不再按 0(会把美金应付显示为 ¥0、漏掉真实到期款)。统一走 safeRate(缺则告警+按7)。
+    ;(rateOrders || []).forEach(o => ordRate.set(o.id as string, safeRate(Number(o.exchange_rate), o.currency as string, '本周必付-订单汇率')))
     const weekPayables = (duePay || []).map(p => {
       const cur = (p.currency as string) || 'CNY'
-      const rate = cur === 'CNY' ? 1 : (ordRate.get(p.budget_order_id as string) || 0)
+      // P0-3b:优先用 payable_records 自带的权威汇率(触发器/回填已填);缺则退回订单汇率,再退 safeRate
+      const rate = p.exchange_rate != null
+        ? Number(p.exchange_rate)
+        : (ordRate.get(p.budget_order_id as string) ?? safeRate(null, cur, '本周必付'))
       return { supplier: p.supplier_name as string, amount: r2((Number(p.amount) || 0) * rate), due: p.due_date as string }
     })
     const weekPayCny = r2(weekPayables.reduce((s, p) => s + p.amount, 0))

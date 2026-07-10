@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server'
 import { requireAuth, requireRole } from '@/lib/auth/api-guard'
 import { notifyFinanceProgress, type FinanceProgressEvent } from '@/lib/integration/client'
 
-const ALLOWED: FinanceProgressEvent[] = ['collection.received', 'payment.completed', 'settlement.closed']
+const ALLOWED: FinanceProgressEvent[] = ['collection.received', 'payment.completed', 'settlement.closed', 'budget.confirmed']
 
 export async function POST(request: Request) {
   const auth = await requireAuth()

@@ -133,7 +133,8 @@ export async function checkAPConsistency(): Promise<CheckResult> {
   if (!costs?.length && !pays?.length) return { type: 'ap_consistency', status: 'passed', details: { message: '无应付/付款记录' } }
 
   const totalAP = sumAmounts((costs || []).map(c => {
-    const rate = ((c.currency as string) || 'CNY') === 'CNY' ? 1 : (Number(c.exchange_rate) || 1)
+    // P0-3:与 AR 检查同口径,缺汇率走 safeRate(→7),不再用 ||1 → 否则同单 AR 按7、AP按1 自相矛盾,误报"多付"卡关账
+    const rate = safeRate(c.exchange_rate as number, c.currency as string, 'reconciliation AP cost_item')
     return mulAmount(c.amount as number, rate)
   }))
   const paidAP = sumAmounts((pays || []).map(p => Number(p.amount) || 0))

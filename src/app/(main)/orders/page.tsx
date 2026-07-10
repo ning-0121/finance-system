@@ -29,6 +29,16 @@ export default function OrdersPage() {
   const [syncedMap, setSyncedMap] = useState<Record<string, { qmNo: string; internalNo: string; lifecycle?: string; customer?: string; qty?: number; unit?: string }>>({})
   const [syncing, setSyncing] = useState(false)
 
+  // 「新到订单」收件箱:业务上传 PO 建单后已同步到财务、但尚未建预算单的活订单。
+  // 老问题修复 —— webhook 对无金额订单会静默跳过、不建预算 → 财务列表(只显示有预算单的)看不到。
+  // 这里把这些「财务收不到」的 PO 亮出来给财务审单价/件数/总额,并一键建预算(移出收件箱)。
+  const [intakeOrders, setIntakeOrders] = useState<Array<{
+    id: string; order_no: string; style_no?: string; po_number?: string; customer_name?: string
+    quantity?: number; quantity_unit?: string; unit_price?: number; total_amount?: number
+    currency?: string; lifecycle_status?: string; synced_at?: string
+  }>>([])
+  const [creatingBudget, setCreatingBudget] = useState<string | null>(null)
+
   // F3: 已确认决算的实际利润 / 实际毛利率（按 budget_order_id 索引）
   const [settlementMap, setSettlementMap] = useState<Record<string, { final_profit: number; final_margin: number; status: string }>>({})
 
@@ -58,6 +68,29 @@ export default function OrdersPage() {
         })
         setSyncedMap(map)
       }
+
+      // 「新到订单」收件箱:已同步但还没建预算单、且非死单的订单(业务刚上传、财务还没审的 PO)
+      const DEAD = ['cancelled', 'deleted', 'completed', 'archived', '已取消', '已删除', '已完成', '已归档']
+      const { data: intake } = await supabase.from('synced_orders')
+        .select('id, order_no, style_no, po_number, customer_name, quantity, quantity_unit, unit_price, total_amount, currency, lifecycle_status, synced_at')
+        .is('budget_order_id', null)
+        .order('synced_at', { ascending: false })
+      setIntakeOrders(((intake as Array<Record<string, unknown>>) || [])
+        .filter((o) => !DEAD.includes(String(o.lifecycle_status || '')))
+        .map((o) => ({
+          id: o.id as string,
+          order_no: (o.order_no as string) || '',
+          style_no: (o.style_no as string) || '',
+          po_number: (o.po_number as string) || '',
+          customer_name: (o.customer_name as string) || '',
+          quantity: Number(o.quantity) || 0,
+          quantity_unit: (o.quantity_unit as string) || '件',
+          unit_price: o.unit_price != null ? Number(o.unit_price) : undefined,
+          total_amount: o.total_amount != null ? Number(o.total_amount) : undefined,
+          currency: (o.currency as string) || '',
+          lifecycle_status: (o.lifecycle_status as string) || '',
+          synced_at: (o.synced_at as string) || '',
+        })))
 
       // F3: 加载所有已生成的 order_settlements，建立 budget_order_id → 实际数据 映射
       // 这样订单完结后能看到实际利润而不是预估
@@ -105,6 +138,28 @@ export default function OrdersPage() {
       toast.error('同步请求失败')
     }
     setSyncing(false)
+  }
+
+  // 「新到订单」→ 一键建预算单(财务审完 PO 后)。建成后移出收件箱、进入正常订单列表。
+  const handleCreateBudget = async (syncedOrderId: string, orderNo: string) => {
+    setCreatingBudget(syncedOrderId)
+    try {
+      const res = await fetch('/api/integration/create-budget', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ syncedOrderId }),
+      })
+      const result = await res.json()
+      if (!res.ok || result.error) {
+        toast.error(`建预算单失败: ${result.error || res.status}`)
+      } else {
+        toast.success(`已为 ${orderNo} 建预算单草稿`)
+        await loadOrders()
+      }
+    } catch {
+      toast.error('建预算单请求失败')
+    }
+    setCreatingBudget(null)
   }
 
   // F3: 取一笔订单的"有效"利润 / 毛利率（已确认决算 → 用实际，否则用预估）
@@ -208,6 +263,9 @@ export default function OrdersPage() {
 
         <Tabs value={statusFilter} onValueChange={setStatusFilter}>
           <TabsList className="flex-wrap">
+            <TabsTrigger value="intake" className="data-[state=active]:bg-amber-100 data-[state=active]:text-amber-800">
+              🆕 新到订单 ({intakeOrders.length})
+            </TabsTrigger>
             <TabsTrigger value="all">全部 ({statusCounts.all})</TabsTrigger>
             <TabsTrigger value="draft">草稿 ({statusCounts.draft})</TabsTrigger>
             <TabsTrigger value="pending_review">待审批 ({statusCounts.pending_review})</TabsTrigger>
@@ -222,6 +280,63 @@ export default function OrdersPage() {
               <div className="flex items-center justify-center py-20">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                 <span className="ml-2 text-muted-foreground">加载中...</span>
+              </div>
+            ) : statusFilter === 'intake' ? (
+              <div>
+                <div className="px-4 py-3 text-xs text-amber-800 bg-amber-50 border-b border-amber-100">
+                  业务上传的 PO 建单后已同步到财务、但尚未建预算单。请核对 <b>单价 / 件数 / 总额</b> 无误后「建预算单」——建单后进入正常订单核算流程。（金额为空的是业务还没定价，可先建单占位、待补价）
+                </div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>节拍器单号</TableHead>
+                      <TableHead>客户 PO 号</TableHead>
+                      <TableHead>客户</TableHead>
+                      <TableHead className="text-right">件数</TableHead>
+                      <TableHead className="text-right">单价</TableHead>
+                      <TableHead className="text-right">总额</TableHead>
+                      <TableHead>订单进度</TableHead>
+                      <TableHead>同步时间</TableHead>
+                      <TableHead className="text-right">操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {intakeOrders.map((o) => {
+                      const cur = o.currency === 'CNY' ? '¥' : o.currency === 'USD' ? '$' : (o.currency || '')
+                      const computedTotal = o.total_amount ?? (o.unit_price != null ? o.unit_price * (o.quantity || 0) : undefined)
+                      const noAmount = computedTotal == null || computedTotal === 0
+                      return (
+                        <TableRow key={o.id} className="hover:bg-muted/50">
+                          <TableCell className="font-medium">{o.order_no || '-'}</TableCell>
+                          <TableCell className="font-mono text-sm">{o.po_number || '-'}</TableCell>
+                          <TableCell className="text-sm">{o.customer_name || '-'}</TableCell>
+                          <TableCell className="text-right">{(o.quantity || 0).toLocaleString()}{o.quantity_unit || ''}</TableCell>
+                          <TableCell className="text-right">{o.unit_price != null ? `${cur} ${o.unit_price.toLocaleString()}` : <span className="text-amber-600">待定价</span>}</TableCell>
+                          <TableCell className="text-right font-medium">{computedTotal != null ? `${cur} ${computedTotal.toLocaleString()}` : <span className="text-amber-600">待定价</span>}</TableCell>
+                          <TableCell>
+                            {o.lifecycle_status && <Badge variant="outline" className="text-[10px]">{o.lifecycle_status}</Badge>}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{o.synced_at ? new Date(o.synced_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'}</TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              size="sm"
+                              variant={noAmount ? 'outline' : 'default'}
+                              disabled={creatingBudget === o.id}
+                              onClick={() => handleCreateBudget(o.id, o.order_no)}
+                            >
+                              {creatingBudget === o.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : '建预算单'}
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                    {intakeOrders.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">没有待处理的新到订单 —— 业务上传的 PO 都已建预算</TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
               </div>
             ) : (
               <Table>

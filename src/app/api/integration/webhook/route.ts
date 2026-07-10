@@ -413,11 +413,17 @@ async function handleQuotationFrozen(data: Record<string, unknown>) {
   if (qimoOrderId) await supabase.from('synced_orders').update(snapPatch).eq('id', qimoOrderId)
   else if (orderNo) await supabase.from('synced_orders').update(snapPatch).eq('order_no', orderNo)
 
-  if (!budgetOrderId) return { action: 'ok', reason: `报价已存(synced_orders)，但该订单尚未建预算单(order=${orderNo})` }
+  if (!budgetOrderId) {
+    await logFinancialDrop('quotation.frozen', orderNo || qimoOrderId, `报价已收到但订单尚未建预算单,报价成本结构未入预算(order=${orderNo || qimoOrderId}),待人工建预算单后采纳`)
+    return { action: 'ok', reason: `报价已存(synced_orders)，但该订单尚未建预算单(order=${orderNo})` }
+  }
 
   // 3. 只填 draft 预算，不覆盖已审批/已锁（报价存 synced_orders 待人工采纳）
   const { data: bo } = await supabase.from('budget_orders').select('status, total_revenue').eq('id', budgetOrderId).maybeSingle()
-  if (bo && bo.status !== 'draft') return { action: 'ok', reason: `预算单非 draft(${bo?.status})，不自动覆盖，报价已存待人工采纳` }
+  if (bo && bo.status !== 'draft') {
+    await logFinancialDrop('quotation.frozen', orderNo || qimoOrderId, `预算单非 draft(${bo?.status}),报价成本结构未自动覆盖、未入账,待人工采纳(order=${orderNo || qimoOrderId})`)
+    return { action: 'ok', reason: `预算单非 draft(${bo?.status})，不自动覆盖，报价已存待人工采纳` }
+  }
 
   const r2 = (n: number) => Math.round(n * 100) / 100
   const BUCKETS = ['fabric', 'accessory', 'processing', 'forwarder', 'container', 'logistics']
@@ -581,7 +587,10 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
 
   // 2. 只填 draft 预算,不覆盖已审批/锁定(与 quotation.frozen 同一保守口径)
   const { data: bo } = await supabase.from('budget_orders').select('status, total_revenue, items').eq('id', budgetOrderId).maybeSingle()
-  if (bo && bo.status !== 'draft') return { action: 'ok', reason: `预算单非 draft(${bo?.status}),不自动覆盖` }
+  if (bo && bo.status !== 'draft') {
+    await logFinancialDrop('order.budget_updated', orderNo || qimoOrderId, `采购核料预算/采购填价已收到,但预算单非 draft(${bo?.status})未自动覆盖、新数据未入账(order=${orderNo || qimoOrderId}),请财务核对是否需人工更新预算`)
+    return { action: 'ok', reason: `预算单非 draft(${bo?.status}),不自动覆盖` }
+  }
 
   // 3. 绝对总额 → _cost_breakdown 三桶(桶标量=该桶明细之和,维持不变量)
   const mkLine = (name: string, amount: number) => amount > 0 ? [{ name, qty: 0, unit: '', unit_price: 0, amount }] : []
@@ -667,9 +676,13 @@ async function handleShippingInvoiceIssued(data: Record<string, unknown>) {
   }
 
   if (bo && bo.status === 'draft') {
+    // P0-3:CI 把币种改成外币时,必须同步汇率。否则订单原 exchange_rate 停留在旧值(如 CNY 的 1),
+    // 下游 safeRate 会把这个 stale=1 当有效 → 美金收入按 ×1 少算几十万。CI 带汇率则用,否则置 null(→ safeRate 兜底按7+告警)。
+    const ciRate = currency === 'CNY' ? 1 : (data.exchange_rate != null ? Number(data.exchange_rate) : null)
     const { error } = await supabase.from('budget_orders').update({
       total_revenue: invoiceAmount,
       currency,
+      exchange_rate: ciRate,
       shipping_invoice: { ...snapshotBase, booked: true },
     }).eq('id', budgetOrderId)
     if (error) throw new Error(`应收(total_revenue)更新失败: ${error.message}`)
@@ -1178,5 +1191,24 @@ async function logIntegrationEvent(
     })
   } catch (e) {
     console.error('[Webhook] Failed to log event:', e)
+  }
+}
+
+// P0-1(2026-07-10 止血静默丢弃):财务事件被丢弃/跳过(action:'ok' 但数据未入账)时,
+// 必留一条可查的告警痕迹(status='warning'),杜绝「悄悄扔了还不告诉你」。落 integration_logs,
+// 供异常中心/通知铃(P0-2)浮现。key 用订单号等业务键,便于人工定位。
+async function logFinancialDrop(eventType: string, key: string, summary: string) {
+  try {
+    const supabase = createServiceClient()
+    await supabase.from('integration_logs').insert({
+      event_type: eventType,
+      direction: 'inbound',
+      request_id: `drop-${eventType}-${key || 'na'}-${Date.now()}`,
+      source: 'order-metronome',
+      status: 'warning',
+      payload_summary: summary.slice(0, 500),
+    })
+  } catch (e) {
+    console.error('[Webhook] Failed to log financial drop:', e)
   }
 }

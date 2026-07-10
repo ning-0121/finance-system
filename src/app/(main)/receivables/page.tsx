@@ -417,6 +417,8 @@ export default function ReceivablesPage() {
           const { data: so } = await sb.from('synced_orders').select('id').eq('budget_order_id', row.id).maybeSingle()
           void fetch('/api/integration/finance-progress', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
+            // E-2(2026-07-11):keepalive 让请求在关页/跳转后仍发出,不再"点完就走→进度回传丢"。到路由即入 outbox 保证送达。
+            keepalive: true,
             body: JSON.stringify({ event: 'collection.received', qimo_order_id: (so as { id?: string } | null)?.id || null, order_no: row.orderNo || null, amount: amountOriginal, currency: row.currency, note: `客户回款到账 ¥${amountCny.toLocaleString()}` }),
           }).catch(() => {})
         } catch { /* 进度回传不阻断收款 */ }

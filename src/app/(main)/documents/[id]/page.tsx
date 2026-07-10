@@ -14,6 +14,7 @@ import { PreExecutionReview } from '@/components/documents/PreExecutionReview'
 import { toast } from 'sonner'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { openAttachment } from '@/lib/supabase/storage'
 import {
   DOC_CATEGORY_LABELS, FIELD_TEMPLATES, ACTION_TYPE_LABELS,
   type UploadedDocument, type DocumentAction, type DocCategory,
@@ -160,6 +161,11 @@ export default function DocumentConfirmPage({ params }: { params: Promise<{ id: 
         <div className="flex items-center justify-between">
           <Link href="/documents"><Button variant="ghost" size="sm"><ArrowLeft className="h-4 w-4 mr-1" />返回文档中心</Button></Link>
           <div className="flex gap-2">
+            {doc.file_url && (
+              <Button variant="outline" size="sm" onClick={() => openAttachment(doc.file_url)}>
+                <Eye className="h-4 w-4 mr-1" />查看原件
+              </Button>
+            )}
             <Button variant="destructive" size="sm" onClick={handleReject}><XCircle className="h-4 w-4 mr-1" />拒绝</Button>
             <Button size="sm" variant="outline" onClick={handlePreview} disabled={previewLoading || saving}>
               {previewLoading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Eye className="h-4 w-4 mr-1" />}

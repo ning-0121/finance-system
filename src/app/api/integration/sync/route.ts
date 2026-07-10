@@ -173,7 +173,21 @@ export async function POST(request: Request) {
       // 会话取自路由开头的 sessionUser。
       const createdBy = sessionUser?.user?.id ?? null
 
-      if (!customerId) continue
+      // P0-1 止血静默丢弃:无客户名/客户匹配失败 → 建不了预算单。此前直接 continue、无任何痕迹
+      //（与 no_amount_skipped 同类静默丢弃)。改为:标记 synced_orders、计入返回 failures、并留一条
+      // integration_logs 告警,让财务看得到「这单没进预算,原因=客户」而非凭空消失。
+      if (!customerId) {
+        createFailures.push({ order_no: o.order_no, error: `客户匹配失败或无客户名(customer=${o.customer_name || '空'})` })
+        try {
+          await finance.from('synced_orders').update({ budget_sync_status: 'customer_unmatched' }).eq('id', o.id)
+          await finance.from('integration_logs').insert({
+            event_type: 'sync.customer_unmatched', direction: 'inbound',
+            request_id: `sync-nocust-${o.id}-${Date.now()}`, source: 'finance-sync', status: 'warning',
+            payload_summary: `订单 ${o.order_no} 客户「${o.customer_name || '空'}」匹配失败,未建预算单,财务收不到该单,请人工核对客户`,
+          })
+        } catch (e) { console.error('[sync] 记录 customer_unmatched 失败:', e) }
+        continue
+      }
 
       const totalAmount = Number(o.total_amount) || (Number(o.unit_price || 0) * Number(o.quantity || 0))
 

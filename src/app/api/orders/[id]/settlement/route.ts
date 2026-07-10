@@ -15,13 +15,7 @@ import { requireAuth, requireRole } from '@/lib/auth/api-guard'
 import { notifyPaymentReminder } from '@/lib/wecom/notifications'
 import { enqueueAndProcess } from '@/lib/accounting/gl-queue'
 import { notifyFinanceProgress } from '@/lib/integration/client'
-
-const INVOICE_TYPE_TO_COST_CATEGORY: Record<string, string> = {
-  purchase_order: 'raw_material', supplier_invoice: 'raw_material',
-  factory_contract: 'factory', factory_statement: 'factory',
-  freight_bill: 'freight', commission_bill: 'commission',
-  tax_invoice: 'tax', other_invoice: 'other',
-}
+import { safeRate } from '@/lib/accounting/utils'
 
 export async function POST(
   request: NextRequest,
@@ -64,43 +58,80 @@ export async function POST(
       .eq('id', budgetOrderId)
       .single()
     const orderNo = order?.order_no || null
-    // 审计P1:预算单按 CNY 记(estimated_total 为 CNY)。外币发票要折 CNY 再比,否则 USD8000 vs ¥50000
-    // 直接比 → 恒不超、漏标超支。折算汇率用订单汇率(近似换汇汇率;仅用于 over_budget 提示)。
-    const orderRate = Number((order as { exchange_rate?: number } | null)?.exchange_rate) || 0
-
-    const { data: invoices } = await supabase
-      .from('actual_invoices')
-      .select('id, invoice_no, supplier_name, invoice_type, total_amount, currency, due_date, status, sub_document_id')
-      .eq('budget_order_id', budgetOrderId)
-      .is('deleted_at', null)
-      .in('status', ['approved', 'pending'])
 
     const { data: subDocs } = await supabase
       .from('budget_sub_documents')
-      .select('id, estimated_total')
+      .select('id, estimated_total, actual_total')
       .eq('budget_order_id', budgetOrderId)
-    const subDocMap = new Map<string, number>()
-    subDocs?.forEach(d => subDocMap.set(d.id, d.estimated_total || 0))
 
-    const payablesJson = (invoices || []).map(inv => {
-      const budgetAmount = inv.sub_document_id ? (subDocMap.get(inv.sub_document_id) ?? null) : null
-      // 发票折 CNY 后再与 CNY 预算比。外币且无汇率 → 无法可靠折算,不妄标超支(overBudget=false)。
-      const invCny = (!inv.currency || inv.currency === 'CNY')
-        ? inv.total_amount
-        : (orderRate > 0 ? inv.total_amount * orderRate : null)
-      const overBudget = budgetAmount !== null && invCny !== null && invCny > budgetAmount
-      return {
-        invoice_id: inv.id,
-        supplier_name: inv.supplier_name || '未知供应商',
-        description: `${inv.invoice_no || ''} - ${inv.supplier_name || ''}`.trim(),
-        cost_category: INVOICE_TYPE_TO_COST_CATEGORY[inv.invoice_type] || 'other',
-        amount: inv.total_amount,
-        currency: inv.currency,
-        budget_amount: budgetAmount,
-        over_budget: overBudget,
-        due_date: inv.due_date,
+    // ── Option 2(2026-07-10 老板拍板):决算生成应付【从 cost_items 派生】,不再用 actual_invoices ──
+    // 现实(审计实测):本部署成本都归集在 cost_items、发票表基本空;GL 结转成本(贷 2202)本就用 cost_items。
+    // 让应付/付款(借 2202)也来自 cost_items → 2202 一贷一借同源、能对平,且贴合实际在用的数据。
+    // 按【供应商 + 币种】聚合成逐笔应付(一供应商一笔、单币种);invoice_id=null(无发票);
+    // due_date 取该组最晚 delivery_date 作账期近似;金额折 CNY 由 payable_records 触发器/消费端负责。
+    const CT2PAYCAT: Record<string, string> = {
+      fabric: 'raw_material', accessory: 'raw_material', procurement: 'raw_material',
+      processing: 'factory', commission: 'factory',
+      freight: 'freight', forwarder: 'freight', logistics: 'freight',
+      container: 'other', customs: 'other', tax: 'tax', other: 'other',
+    }
+    const { data: costItems } = await supabase.from('cost_items')
+      .select('amount, currency, exchange_rate, supplier, cost_type, delivery_date')
+      .eq('budget_order_id', budgetOrderId).neq('cost_type', 'tax_point').is('deleted_at', null)
+    const payGroups = new Map<string, { supplier: string; currency: string; amount: number; cat: string; due: string | null; n: number }>()
+    for (const c of costItems || []) {
+      const supplier = (c.supplier as string) || '未知供应商'
+      const currency = (c.currency as string) || 'CNY'
+      const key = `${supplier}|||${currency}`
+      const g = payGroups.get(key)
+      const due = (c.delivery_date as string) || null
+      if (g) {
+        g.amount += Number(c.amount) || 0; g.n++
+        if (due && (!g.due || due > g.due)) g.due = due
+      } else {
+        payGroups.set(key, { supplier, currency, amount: Number(c.amount) || 0, cat: CT2PAYCAT[(c.cost_type as string) || 'other'] || 'other', due, n: 1 })
       }
-    })
+    }
+    const payablesJson = [...payGroups.values()].map(g => ({
+      invoice_id: null,                              // 来自费用归集,无发票
+      supplier_name: g.supplier,
+      description: `费用归集派生(${g.n} 项)`,
+      cost_category: g.cat,
+      amount: Math.round(g.amount * 100) / 100,
+      currency: g.currency,
+      budget_amount: null,
+      over_budget: false,
+      due_date: g.due,
+    }))
+
+    // ── 决算实际性守卫(P1-G):无实际成本 / 子核算单未归集 不让确认 ──
+    // (Option 2 后不再需要 cost_items vs actual_invoices 对账闸——应付本身就来自 cost_items、天然一致。)
+    // 财务经理复核后确需带情况确认 → body 传 acknowledgeDivergence:true 显式放行并留痕。
+    const body = await request.json().catch(() => ({} as Record<string, unknown>))
+    const acknowledged = (body as Record<string, unknown>)?.acknowledgeDivergence === true
+    const r2 = (n: number) => Math.round(n * 100) / 100
+    const costCnyTotal = r2((costItems || []).reduce((s, c) =>
+      s + (Number(c.amount) || 0) * safeRate(c.exchange_rate == null ? null : Number(c.exchange_rate), (c.currency as string) || 'CNY', '决算守卫'), 0))
+    const unsettledSub = (subDocs || []).filter(d => d.actual_total == null)
+    const noActual = costCnyTotal <= 0 && (subDocs || []).length === 0
+
+    if (!acknowledged) {
+      if (noActual) {
+        return NextResponse.json({ error: '无任何实际成本归集(费用归集为 0、无子核算单),确认决算会把全部收入当利润。请先归集实际成本,或财务经理复核后带 acknowledgeDivergence 确认。', gate: 'no_actual' }, { status: 409 })
+      }
+      if (unsettledSub.length > 0) {
+        return NextResponse.json({ error: `有 ${unsettledSub.length} 张子核算单未归集实际(actual_total 为空),确认决算会把预算当实际计入成本。请先归集,或复核后带 acknowledgeDivergence 确认。`, gate: 'sub_unsettled' }, { status: 409 })
+      }
+    } else if (noActual || unsettledSub.length > 0) {
+      try {
+        await supabase.from('save_diagnostic_logs').insert({
+          action: 'settlement_confirm_override', table_name: 'order_settlements', record_id: settlement.id,
+          source_page: 'api/orders/settlement', status: 'warning',
+          error_detail: `带情况确认决算(order=${orderNo}):费用归集¥${costCnyTotal};未结子核算单${unsettledSub.length}张;确认人=${auth.userId}`,
+          actor_id: auth.userId ?? null,
+        })
+      } catch (e) { console.error('[settlement] 带情况确认留痕失败:', e) }
+    }
 
     // 3. 单 RPC 调用：决算 confirm + 应付 batch insert 全原子
     const { data: rpcResult, error: rpcErr } = await supabase.rpc(
@@ -139,9 +170,9 @@ export async function POST(
     }
 
     // 4. 企业微信通知（非阻塞、非关键，失败也不影响 confirm 结果）
-    if (invoices?.length) {
-      const earliestDue = invoices
-        .filter(i => i.due_date).map(i => i.due_date as string).sort()[0]
+    if (payablesJson.length) {
+      const earliestDue = payablesJson
+        .filter(pj => pj.due_date).map(pj => pj.due_date as string).sort()[0]
       notifyPaymentReminder({
         supplier: `${orderNo || budgetOrderId} 决算确认`,
         amount: settlement.total_actual || 0,

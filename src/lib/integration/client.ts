@@ -55,7 +55,7 @@ async function enqueueOutbox(event: string, requestId: string, data: Record<stri
 }
 
 // --- 财务进度回传节拍器（审计 P1④：结算/收款/付款完成 → 让节拍器看到资金进度）---
-export type FinanceProgressEvent = 'settlement.closed' | 'collection.received' | 'payment.completed'
+export type FinanceProgressEvent = 'settlement.closed' | 'collection.received' | 'payment.completed' | 'budget.confirmed'
 export async function notifyFinanceProgress(
   event: FinanceProgressEvent,
   data: { qimo_order_id?: string | null; order_no?: string | null; internal_order_no?: string | null; amount?: number; currency?: string; note?: string; at?: string }
@@ -199,6 +199,31 @@ export async function fetchOrderFromMetronome(orderNo: string): Promise<{
 
     const data = await response.json()
     return { success: true, data }
+  } catch (error) {
+    return { success: false, error: `Network error: ${error instanceof Error ? error.message : 'unknown'}` }
+  }
+}
+
+// --- F2(2026-07-11):按需拉取节拍器某订单的附件列表(含即时签名 URL)---
+// 节拍器附件在其私有桶 order-docs,财务另一项目访问不了;这里签名调节拍器端点,拿回逐个 1h 签名 URL。
+// 财务不存过期链接,查看时才拉→总是最新。签名套路同 fetchOrderFromMetronome。
+export interface MetronomeAttachment {
+  id: string; file_name: string; file_type: string | null; mime_type: string | null
+  file_size: number | null; url: string | null; created_at: string
+}
+export async function fetchOrderAttachmentsFromMetronome(orderNo: string): Promise<{
+  success: boolean; data?: MetronomeAttachment[]; error?: string
+}> {
+  if (!ORDER_METRONOME_URL) return { success: false, error: 'ORDER_METRONOME_URL not configured' }
+  try {
+    const timestamp = new Date().toISOString()
+    const signature = generateSignature(`GET:${orderNo}:${timestamp}`, WEBHOOK_SECRET)
+    const response = await fetch(`${ORDER_METRONOME_URL}/api/integration/order-attachments/${encodeURIComponent(orderNo)}`, {
+      headers: { 'x-api-key': API_KEY, 'x-webhook-signature': signature, 'x-timestamp': timestamp, 'x-source': 'finance-system' },
+    })
+    if (!response.ok) return { success: false, error: `HTTP ${response.status}` }
+    const json = await response.json()
+    return { success: true, data: (json?.data as MetronomeAttachment[]) || [] }
   } catch (error) {
     return { success: false, error: `Network error: ${error instanceof Error ? error.message : 'unknown'}` }
   }
