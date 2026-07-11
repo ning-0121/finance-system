@@ -31,6 +31,8 @@ export interface PoLine {
   material_code: string | null
   specification: string | null
   category: string | null
+  color: string | null       // 颜色(同料多色行按色核数量;需迁移 20260711_fin_po_lines_color_size)
+  size: string | null        // 尺码
   ordered_qty: number | null
   ordered_unit: string | null
   unit_price: number | null
@@ -97,13 +99,18 @@ export async function getPendingPurchaseApprovals(): Promise<PendingPO[]> {
 }
 
 export async function getPoLines(finPoId: string): Promise<PoLine[]> {
+  const base = 'id, line_id, order_no, internal_order_no, style_no, material_name, material_code, specification, category, ordered_qty, ordered_unit, unit_price, amount'
+  const sb = createClient()
+  // 先带 color/size 查;迁移 20260711_fin_po_lines_color_size 未跑时列不存在会 400 → 降级不带,明细不能整个消失
   try {
-    const sb = createClient()
-    const { data } = await fetchAll<PoLine>((from, to) =>
-      sb.from('fin_po_lines')
-        .select('id, line_id, order_no, internal_order_no, style_no, material_name, material_code, specification, category, ordered_qty, ordered_unit, unit_price, amount')
-        .eq('fin_po_id', finPoId).range(from, to))
-    return data || []
+    const { data, error } = await fetchAll<PoLine>((from, to) =>
+      sb.from('fin_po_lines').select(`${base}, color, size`).eq('fin_po_id', finPoId).range(from, to))
+    if (!error && data) return data
+  } catch { /* 降级 */ }
+  try {
+    const { data } = await fetchAll<Omit<PoLine, 'color' | 'size'>>((from, to) =>
+      sb.from('fin_po_lines').select(base).eq('fin_po_id', finPoId).range(from, to))
+    return (data || []).map(l => ({ ...l, color: null, size: null }))
   } catch { return [] }
 }
 

@@ -554,6 +554,7 @@ export default function PurchaseApprovalsPage() {
                       <TableHeader><TableRow>
                         <TableHead className="w-8"></TableHead>
                         <TableHead>物料</TableHead>
+                        <TableHead>颜色/码</TableHead>
                         <TableHead>规格</TableHead>
                         <TableHead className="text-right">数量</TableHead>
                         <TableHead className="text-right">单价</TableHead>
@@ -571,6 +572,11 @@ export default function PurchaseApprovalsPage() {
                                   {l.material_name || l.material_code || '—'}
                                   {l.style_no ? <span className="text-xs text-muted-foreground ml-1">/ {l.style_no}</span> : ''}
                                 </TableCell>
+                                <TableCell className="text-xs">
+                                  {(l.color || l.size)
+                                    ? <>{l.color && <Badge variant="secondary" className="text-[10px] mr-1">{l.color}</Badge>}{l.size && <span className="text-muted-foreground">{l.size}</span>}</>
+                                    : <span className="text-muted-foreground">-</span>}
+                                </TableCell>
                                 <TableCell className="text-xs text-muted-foreground">{l.specification || '-'}</TableCell>
                                 <TableCell className="text-right text-sm tabular-nums">{l.ordered_qty != null ? `${money(l.ordered_qty)}${l.ordered_unit || ''}` : '-'}</TableCell>
                                 <TableCell className="text-right text-sm tabular-nums">{l.unit_price != null ? money(l.unit_price) : '-'}</TableCell>
@@ -578,7 +584,7 @@ export default function PurchaseApprovalsPage() {
                               </TableRow>
                               {expanded && (
                                 <TableRow className="bg-muted/20">
-                                  <TableCell colSpan={6} className="px-4 py-3">
+                                  <TableCell colSpan={7} className="px-4 py-3">
                                     <div className="flex items-center gap-2 text-xs font-medium mb-2"><History className="h-3.5 w-3.5" />历史采购价 · {l.material_name || l.material_code}</div>
                                     {h === 'loading' || h === undefined ? (
                                       <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />查询历史采购…</div>
