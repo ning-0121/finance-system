@@ -13,7 +13,6 @@ import {
 } from '@/lib/integration/security'
 import type { WebhookPayload, SyncedOrder, PriceApprovalRequest } from '@/lib/integration/types'
 import { createServiceClient } from '@/lib/supabase/service'
-import { poRequiresApproval } from '@/lib/integration/purchase-approval'
 
 export async function POST(request: Request) {
   // 1. 速率限制
@@ -188,6 +187,9 @@ async function handleWebhookEvent(payload: WebhookPayload) {
       return handleGenericApprovalRequest(payload.data as Record<string, unknown>, 'cancel')
     case 'milestone.requested':
       return handleGenericApprovalRequest(payload.data as Record<string, unknown>, 'milestone')
+    // 出货 财务审批(2026-07-11:节拍器业务申请出货 → 财务队列 → 批/驳回传 approval_type:'shipment')
+    case 'shipment_approval.requested':
+      return handleGenericApprovalRequest(payload.data as Record<string, unknown>, 'shipment')
 
     case 'file.uploaded':
       return handleFileUpload(payload.data as Record<string, unknown>)
@@ -238,24 +240,24 @@ async function handleWebhookEvent(payload: WebhookPayload) {
 }
 
 // --- 采购单下单入账（V1.0 头；V1.1 lines 行数据预留） ---
-// requireApproval=true(来自 purchase_order.approval_requested)：≥¥5000 采购,本单进「待审批」。
-async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestId: string, requireApproval = false) {
+// 老板 2026-07-11:所有采购单一律须财务审批(取消 ¥5000 门槛)。placed / approval_requested
+//   两个事件都把本单落成「待审批」pending_approval;_requireApproval 形参仅留历史签名兼容,不再决定门槛。
+async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestId: string, _requireApproval = false) {
   const supabase = createServiceClient()
   const poKey = String(data.purchase_order_id || data.po_no || '')
   if (!poKey) throw new Error('purchase_order 缺少 purchase_order_id/po_no')
 
   const totalAmount = data.total_amount != null ? Number(data.total_amount) : null
-  // 审批门槛复核(信任节拍器但自身也把关):要求审批且确达阈值 → 待审批
-  const gated = requireApproval && poRequiresApproval(totalAmount)
-  let headExtra: Record<string, unknown> = requireApproval && !gated ? { requires_approval: false } : {}
-  if (gated) {
-    // 审计 P1:若财务已对本单决策(approved/rejected),inbox 失败重投/内容变更重发不得把它
-    // 打回 pending_approval(否则已批已下单的单凭空回到待审、留痕与状态自相矛盾)。仅未决策态才置待审批。
-    const { data: existing } = await supabase.from('fin_purchase_orders')
-      .select('fin_status').eq('purchase_order_id', poKey).maybeSingle()
-    const decided = ['approved', 'rejected'].includes((existing as { fin_status?: string } | null)?.fin_status || '')
-    headExtra = decided ? {} : { fin_status: 'pending_approval', requires_approval: true }
-  }
+  // 审计 P1 幂等:仅「新单 / 仍待处理(pending)」才置待审批;已进入审批或已入账/忽略的
+  //   (pending_approval/approved/rejected/registered/ignored)inbox 重投/重发一律不改状态,
+  //   否则已批已下单的单凭空回到待审、留痕与状态自相矛盾。
+  const { data: existing } = await supabase.from('fin_purchase_orders')
+    .select('fin_status').eq('purchase_order_id', poKey).maybeSingle()
+  const cur = (existing as { fin_status?: string } | null)?.fin_status || null
+  const gated = !cur || cur === 'pending'   // 新单或旧 pending → 送审批
+  const headExtra: Record<string, unknown> = gated
+    ? { fin_status: 'pending_approval', requires_approval: true }
+    : {}
 
   const { data: poRow, error: poErr } = await supabase.from('fin_purchase_orders').upsert({
     purchase_order_id: poKey,
@@ -305,7 +307,46 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
     }
   }
 
-  return { action: gated ? 'po_pending_approval' : 'po_registered', po_no: String(data.po_no || poKey), lines: lineCount }
+  // 契约扩展(2026-07-11):PO 推送可内联附件(PO单据/内部报价单),落 uploaded_documents 并关联本采购单。
+  // attachments: [{ id?, file_name, file_type?, file_size?, file_url, doc_hint?('po'|'internal_quote'), order_id? }]
+  // 附件写入失败不阻断 PO 本体(附件可由 file.uploaded 事件补发),但计入返回供节拍器侧观察。
+  const atts = Array.isArray(data.attachments) ? (data.attachments as Record<string, unknown>[]) : []
+  let attCount = 0
+  let attError: string | null = null
+  for (const a of atts) {
+    if (!a || !a.file_url) continue
+    const docHint = (a.doc_hint as string) || null
+    const row = {
+      file_name: (a.file_name as string) || 'unnamed',
+      file_type: (a.file_type as string) || 'pdf',
+      file_size: a.file_size != null ? Number(a.file_size) : null,
+      file_url: String(a.file_url),
+      status: 'pending',
+      extracted_fields: {},
+      related_purchase_order_id: poKey,
+      related_qimo_order_id: (a.order_id as string) || null,
+      doc_hint: docHint,
+    }
+    // 有节拍器文件 id 用 id 幂等;没有则按(采购单, file_url)去重
+    if (a.id) {
+      const { error: e } = await supabase.from('uploaded_documents').upsert({ id: String(a.id), ...row }, { onConflict: 'id' })
+      if (e) { attError = e.message; continue }
+      attCount++
+    } else {
+      const { data: dup } = await supabase.from('uploaded_documents')
+        .select('id').eq('related_purchase_order_id', poKey).eq('file_url', row.file_url).limit(1)
+      if (dup && dup.length > 0) { attCount++; continue }
+      const { error: e } = await supabase.from('uploaded_documents').insert(row)
+      if (e) { attError = e.message; continue }
+      attCount++
+    }
+  }
+
+  return {
+    action: gated ? 'po_pending_approval' : 'po_updated',
+    po_no: String(data.po_no || poKey), lines: lineCount,
+    ...(atts.length > 0 ? { attachments: attCount, attachment_error: attError } : {}),
+  }
 }
 
 // --- 采购审批撤销(订单删/取消时,节拍器逐张发)---
@@ -959,7 +1000,7 @@ async function handlePriceApprovalRequest(req: PriceApprovalRequest) {
 // --- 取消订单 / 里程碑 财务审批请求(通用)---
 // 节拍器发起,财务在审批队列批/驳 → 现有 approve 路由透传 approval_type 回传节拍器 finance-callback。
 // 载荷通用字段:id(必) / order_no / customer_name / requester_name / summary / detail / created_at。
-async function handleGenericApprovalRequest(data: Record<string, unknown>, type: 'cancel' | 'milestone') {
+async function handleGenericApprovalRequest(data: Record<string, unknown>, type: 'cancel' | 'milestone' | 'shipment') {
   const supabase = createServiceClient()
   const id = String(data.id || data.approval_id || '')
   if (!id) throw new Error(`${type}.requested 缺少 id`)
@@ -972,7 +1013,10 @@ async function handleGenericApprovalRequest(data: Record<string, unknown>, type:
     order_no: (data.order_no as string) || (data.po_no as string) || '(未标注订单)',
     customer_name: (data.customer_name as string) ?? null,
     requested_by_name: (data.requester_name as string) || (data.requested_by_name as string) || '节拍器申请',
-    summary: (data.summary as string) || (type === 'cancel' ? '取消订单待财务审批' : '里程碑待财务确认'),
+    summary: (data.summary as string) || (
+      type === 'cancel' ? '取消订单待财务审批'
+      : type === 'shipment' ? '出货待财务审批'
+      : '里程碑待财务确认'),
     detail: (data.detail as Record<string, unknown>) ?? data,
     expires_at: (data.expires_at as string) ?? null,
     status: 'pending',
@@ -984,9 +1028,16 @@ async function handleGenericApprovalRequest(data: Record<string, unknown>, type:
 }
 
 // --- 文件上传同步 ---
+// 契约扩展(2026-07-11 PO审批附件链):data 可带
+//   purchase_order_id — 该文件属于哪张采购单(fin_purchase_orders.purchase_order_id)
+//   order_id          — 该文件属于哪个节拍器订单(synced_orders.id)
+//   doc_hint          — 节拍器侧已知类型:'po' | 'internal_quote' | 其他
+// 带 doc_hint 的关联附件置 status='pending'(待财务在采购审批页触发识别),其余保持 confirmed。
 async function handleFileUpload(data: Record<string, unknown>) {
   const supabase = createServiceClient()
 
+  const docHint = (data.doc_hint as string) || null
+  const relatedPo = data.purchase_order_id ? String(data.purchase_order_id) : null
   const { error } = await supabase
     .from('uploaded_documents')
     .upsert({
@@ -995,14 +1046,17 @@ async function handleFileUpload(data: Record<string, unknown>) {
       file_type: (data.file_type as string) || 'image',
       file_size: data.file_size as number || null,
       file_url: data.file_url as string || null,
-      status: 'confirmed',
+      status: docHint ? 'pending' : 'confirmed',
       extracted_fields: data.extracted_fields || {},
       matched_customer: (data.matched_customer as string) || null,
+      related_purchase_order_id: relatedPo,
+      related_qimo_order_id: (data.order_id as string) || null,
+      doc_hint: docHint,
       created_at: (data.created_at as string) || new Date().toISOString(),
     }, { onConflict: 'id' })
 
   if (error) throw new Error(`File sync failed: ${error.message}`)
-  return { action: 'file_synced', file_name: data.file_name }
+  return { action: 'file_synced', file_name: data.file_name, related_po: relatedPo, doc_hint: docHint }
 }
 
 // --- 订单同步时自动创建预算单草稿 ---

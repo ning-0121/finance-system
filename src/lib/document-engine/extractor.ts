@@ -146,7 +146,7 @@ export function extractFromExcelHeaders(
   const typeMapping: Record<string, DocCategory> = {
     supplier_invoice: 'supplier_invoice', freight_bill: 'logistics_bill',
     purchase_order: 'purchase_order', commercial_invoice: 'ci',
-    packing_list: 'packing_list', internal_quote: 'pi',
+    packing_list: 'packing_list', internal_quote: 'internal_quote',
     delivery_note: 'factory_delivery', processing_fee: 'supplier_invoice',
     bank_receipt: 'bank_receipt', general_cost: 'supplier_invoice',
   }

@@ -24,6 +24,8 @@ export interface ActionConfig {
 
 // 完整 Action Registry — 每种文件类型的动作配置
 export const ACTION_REGISTRY: Record<DocCategory, ActionConfig[]> = {
+  // 内部报价单:不走通用文档执行器 —— 预算落库走 PO 审批页「生成预算草稿」(财务调价确认,专用接口)
+  internal_quote: [],
   customer_po: [
     { action_type: 'create_order', label: '创建订单草稿', safety_level: 'L2', execution_order: 1, depends_on: [], dependency_type: 'hard', required_fields: ['customer_name', 'total_amount', 'currency'], target_table: 'budget_orders', responsible_role: 'finance_staff', notification: 'finance', creates_todo: true, creates_approval: false, rollback_supported: true },
     { action_type: 'create_budget', label: '创建预算草稿（含报价细项）', safety_level: 'L2', execution_order: 2, depends_on: ['create_order'], dependency_type: 'hard', required_fields: ['total_amount'], target_table: 'budget_orders', responsible_role: 'finance_staff', notification: 'none', creates_todo: false, creates_approval: false, rollback_supported: true },

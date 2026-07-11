@@ -150,6 +150,83 @@ export async function getMaterialPriceHistory(
   } catch { return [] }
 }
 
+// ── PO 附件 + 报价单识别 + 预算草稿(2026-07-11 PO审批预算链) ──────
+
+export interface PoAttachment {
+  id: string
+  file_name: string
+  file_type: string | null
+  file_url: string | null
+  doc_hint: string | null           // 'po' | 'internal_quote' | null
+  status: string
+  related_qimo_order_id: string | null
+  extracted_fields: Record<string, unknown> | null
+}
+
+/** 成本桶(与预算 _cost_breakdown.lines 分组键一致;客户端安全,勿从 quote-extractor 引 —— 那边拖 Anthropic SDK) */
+export const BUCKET_LABELS: Record<string, string> = {
+  fabric: '面料', accessory: '辅料', processing: '加工费', freight: '运费',
+  commission: '佣金', customs: '报关/关税', other: '其他',
+}
+
+export interface QuoteCostLineUI { bucket: string; name: string; supplier?: string | null; qty?: number | null; unit?: string | null; unit_price?: number | null; amount: number }
+export interface QuoteResultUI {
+  success: boolean
+  order_no?: string | null; style_no?: string | null; customer_name?: string | null
+  quantity?: number | null; unit?: string | null
+  sell_price?: number | null; currency?: string | null; total_revenue?: number | null
+  exchange_rate?: number | null
+  cost_lines: QuoteCostLineUI[]
+  cost_total?: number | null
+  raw_text_summary?: string
+}
+
+/** 该采购单关联的附件(节拍器随 PO 推送或 file.uploaded 补发) */
+export async function getPoAttachments(purchaseOrderId: string): Promise<PoAttachment[]> {
+  try {
+    const sb = createClient()
+    const { data } = await sb.from('uploaded_documents')
+      .select('id, file_name, file_type, file_url, doc_hint, status, related_qimo_order_id, extracted_fields')
+      .eq('related_purchase_order_id', purchaseOrderId)
+      .order('created_at', { ascending: true })
+    return (data as PoAttachment[]) || []
+  } catch { return [] }
+}
+
+/** 触发/读取报价单识别(服务端按需调 AI;已识别过直接回缓存) */
+export async function extractQuote(documentId: string, force = false): Promise<{ ok: boolean; quote?: QuoteResultUI; error?: string }> {
+  try {
+    const res = await fetch('/api/purchase-approvals/extract-quote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document_id: documentId, force }),
+    })
+    const json = await res.json()
+    if (!res.ok) return { ok: false, error: json.error || `HTTP ${res.status}` }
+    return { ok: true, quote: json.quote as QuoteResultUI }
+  } catch (e) { return { ok: false, error: e instanceof Error ? e.message : '网络错误' } }
+}
+
+/** 财务调价确认后建预算草稿(真实登录人落库) */
+export async function createBudgetFromQuote(params: {
+  syncedOrderId: string
+  revenue: number; currency: string; exchangeRate: number | null
+  quantity: number | null; unit?: string | null
+  costLines: QuoteCostLineUI[]
+  sourceDocumentId?: string | null
+  purchaseOrderId?: string | null
+  notes?: string
+}): Promise<{ ok: boolean; budgetOrderId?: string; error?: string }> {
+  try {
+    const res = await fetch('/api/purchase-approvals/create-budget-from-quote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    })
+    const json = await res.json()
+    if (!res.ok) return { ok: false, error: json.error || `HTTP ${res.status}` }
+    return { ok: true, budgetOrderId: json.budgetOrderId }
+  } catch (e) { return { ok: false, error: e instanceof Error ? e.message : '网络错误' } }
+}
+
 // 批准/驳回 → 走服务端 API(需回传节拍器、需服务端密钥)
 export async function decidePurchaseApproval(
   purchase_order_id: string, decision: 'approved' | 'rejected', note?: string,

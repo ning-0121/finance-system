@@ -22,6 +22,7 @@ export type DocCategory =
   | 'factory_delivery'     // 工厂送货单
   | 'fabric_order'         // 面料单
   | 'accessory_order'      // 辅料单
+  | 'internal_quote'       // 内部报价单(成本核算/报价,预算草稿的来源)
 
 export const DOC_CATEGORY_LABELS: Record<DocCategory, string> = {
   customer_po: '客户PO', pi: 'PI(形式发票)', ci: 'CI(商业发票)',
@@ -30,6 +31,7 @@ export const DOC_CATEGORY_LABELS: Record<DocCategory, string> = {
   bank_receipt: '银行回单', payment_screenshot: '付款截图', expense_claim: '费用报销单',
   contract: '合同', customer_statement: '客户对账单', supplier_statement: '供应商对账单',
   factory_delivery: '工厂送货单', fabric_order: '面料单', accessory_order: '辅料单',
+  internal_quote: '内部报价单',
 }
 
 export type DocStatus = 'pending' | 'extracting' | 'extracted' | 'confirmed' | 'rejected'
@@ -96,6 +98,16 @@ export const FIELD_TEMPLATES: Record<DocCategory, { field: string; label: string
   factory_delivery: [{ field: 'factory_name', label: '工厂', required: true }, { field: 'items', label: '送货明细', required: false }, { field: 'total_amount', label: '金额', required: false }],
   fabric_order: [{ field: 'supplier_name', label: '供应商', required: true }, { field: 'items', label: '面料明细', required: false }, { field: 'total_amount', label: '金额', required: true }, { field: 'currency', label: '币种', required: true }],
   accessory_order: [{ field: 'supplier_name', label: '供应商', required: true }, { field: 'items', label: '辅料明细', required: false }, { field: 'total_amount', label: '金额', required: true }, { field: 'currency', label: '币种', required: true }],
+  internal_quote: [
+    { field: 'order_no', label: '订单/款号', required: false },
+    { field: 'style_no', label: '款号', required: false },
+    { field: 'quantity', label: '数量', required: true },
+    { field: 'sell_price', label: '售价单价', required: true },
+    { field: 'currency', label: '售价币种', required: true },
+    { field: 'total_revenue', label: '售价总额', required: false },
+    { field: 'cost_lines', label: '成本明细行', required: true },
+    { field: 'exchange_rate', label: '汇率', required: false },
+  ],
 }
 
 // 文档主记录
