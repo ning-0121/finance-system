@@ -40,6 +40,13 @@ const fmt = (n: number, ccy: string) =>
   `${ccy === 'USD' ? '$' : '¥'}${Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const fmtDate = (s: string | null | undefined) => (s ? String(s).slice(0, 10) : '-')
 const today = () => new Date().toISOString().slice(0, 10)
+// 周付款规则(老板 2026-07-11):周五之前都可以审批,周五安排付款 → 新建排款单默认计划放款日=本周五
+// (今天已过周五则取下周五)。用本地时区拼日期,避免 toISOString 的 UTC 偏移在晚间跨天。
+const thisFriday = () => {
+  const d = new Date()
+  d.setDate(d.getDate() + ((5 - d.getDay() + 7) % 7))
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 export default function PaymentBatchesPage() {
   const [batches, setBatches] = useState<PaymentBatch[]>([])
@@ -52,7 +59,7 @@ export default function PaymentBatchesPage() {
   // 建单
   const [createOpen, setCreateOpen] = useState(false)
   const [ccy, setCcy] = useState('CNY')
-  const [payDate, setPayDate] = useState(today())
+  const [payDate, setPayDate] = useState(thisFriday())   // 默认本周五(周付款规则:周五统一放款)
   const [title, setTitle] = useState('')
 
   // 加应付
@@ -216,7 +223,7 @@ export default function PaymentBatchesPage() {
       <div className="flex-1 overflow-auto p-4 md:p-6 space-y-4">
         <div className="flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            每周把要付的应付排进单子，老板一次审批，出纳逐笔放款并录凭证号。同一笔应付不会被重复排、重复付。
+            每周把要付的应付排进单子——<b>周五之前都可以提交/审批，周五统一安排付款</b>；出纳逐笔放款并录凭证号/水单。同一笔应付不会被重复排、重复付。等不到周五的走应付账款页「🔥 紧急付款」。
           </p>
           <Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4 mr-1" />新建排款单</Button>
         </div>
@@ -439,6 +446,12 @@ export default function PaymentBatchesPage() {
                 <div className="flex justify-between"><span className="text-muted-foreground">本次付款</span><span className="font-bold">{fmt(execLine.pay_amount, execLine.currency)}</span></div>
                 <div className="flex justify-between mt-1"><span className="text-muted-foreground">收款</span><span>{execLine.payee_name || '-'}{execLine.payee_account ? ` · ${execLine.payee_account}` : ''}</span></div>
               </div>
+              {/* 周付款规则:周五统一放款。未到计划放款日的常规单给软提醒(不硬拦);紧急单不提示 */}
+              {selected && selected.week_label !== '紧急' && selected.planned_pay_date && today() < selected.planned_pay_date && (
+                <p className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+                  ⏰ 本单计划放款日为 <b>{fmtDate(selected.planned_pay_date)}(周五统一付款)</b>,今天是提前放款——确属紧急再继续,否则请周五再付。
+                </p>
+              )}
               <div className="space-y-2">
                 <Label>付款凭证号 / 单据号（可选）<span className="text-[11px] text-muted-foreground">（银行付款填流水号/回单号——防重复付款最硬的锁；支付宝/微信没有回单号就留空、传下面的水单）</span></Label>
                 <Input placeholder="银行流水号/回单号;同供应商同号拒重复。别填「支付宝」这类通用词,会撞重复锁" value={execRef} onChange={e => setExecRef(e.target.value)} />
