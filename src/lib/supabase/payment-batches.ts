@@ -145,11 +145,12 @@ function friendly(msg: string): string {
 
 export async function createPaymentBatch(p: {
   currency: string; planned_pay_date?: string | null; title?: string | null; notes?: string | null
+  week_label?: string | null   // 传「紧急」= 紧急付款单(单笔即批即付的快速通道)
 }): Promise<RpcResult> {
   return callRpc('create_payment_batch', {
     p_actor: await actorId(), p_currency: p.currency,
     p_planned_pay_date: p.planned_pay_date || null, p_title: p.title || null,
-    p_week_label: null, p_notes: p.notes || null,
+    p_week_label: p.week_label || null, p_notes: p.notes || null,
   })
 }
 

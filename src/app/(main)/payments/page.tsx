@@ -24,6 +24,7 @@ import { validatePayment, type ValidationWarning } from '@/lib/engines/validatio
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import { getPayableRecords, createSupplierPayment } from '@/lib/supabase/queries-v2'
+import { createPaymentBatch, addBatchLine, submitBatch } from '@/lib/supabase/payment-batches'
 import { PayableReconcileLines } from './PayableReconcileLines'
 import type { PayableRecord, PaymentStatus } from '@/lib/types'
 
@@ -53,6 +54,10 @@ export default function PaymentsPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [scheduledIds, setScheduledIds] = useState<Set<string>>(new Set())   // 已排入活动周排款单(planned/held)的应付 id
+  // 紧急付款:等不到周排款的单笔(如定金),一键建「紧急排款单」→ 老板即批 → 出纳即付。规则同周排款,只是不等周期。
+  const [urgentFor, setUrgentFor] = useState<PayableRecord | null>(null)
+  const [urgentAmount, setUrgentAmount] = useState('')
+  const [urgentNote, setUrgentNote] = useState('')
   const [search, setSearch] = useState('')
   const [payDialog, setPayDialog] = useState<PayableRecord | null>(null)
   const [payRef, setPayRef] = useState('')
@@ -327,6 +332,38 @@ export default function PaymentsPage() {
       setHistRows(rows)
     } catch { /* 历史拉取失败不阻断 */ }
     setHistLoading(false)
+  }
+
+  // 紧急付款:建单笔「紧急」排款单并直接提交(待老板审批)。复用周排款全套防重复锁,只是不等周期。
+  const openUrgent = (r: PayableRecord) => {
+    const remaining = Math.round(((r.amount || 0) - (r.paid_amount || 0)) * 100) / 100
+    setUrgentFor(r); setUrgentAmount(String(remaining)); setUrgentNote('')
+  }
+  const doUrgent = async () => {
+    if (!urgentFor) return
+    const amt = Number(urgentAmount)
+    const remaining = Math.round(((urgentFor.amount || 0) - (urgentFor.paid_amount || 0)) * 100) / 100
+    if (!(amt > 0)) { toast.error('金额必须大于 0'); return }
+    if (amt > remaining + 0.005) { toast.error(`超出剩余应付 ¥${remaining}`); return }
+    setProcessing(true)
+    try {
+      const created = await createPaymentBatch({
+        currency: urgentFor.currency || 'CNY',
+        planned_pay_date: new Date().toISOString().slice(0, 10),
+        title: `紧急付款 · ${urgentFor.supplier_name}`,
+        week_label: '紧急',
+        notes: urgentNote.trim() || null,
+      })
+      if (created.error || !created.data?.id) { toast.error(created.error || '建紧急排款单失败'); return }
+      const batchId = created.data.id as string
+      const added = await addBatchLine(batchId, urgentFor.id, amt)
+      if (added.error) { toast.error(`排入失败:${added.error}`); return }
+      const sub = await submitBatch(batchId)
+      if (sub.error) { toast.error(`提交失败:${sub.error}`); return }
+      toast.success('🔥 紧急排款单已提交 —— 请老板到「周排款」审批放款,出纳即可付款')
+      setScheduledIds(prev => new Set([...prev, urgentFor.id]))
+      setUrgentFor(null)
+    } finally { setProcessing(false) }
   }
 
   const handleApprove = async (id: string) => {
@@ -618,6 +655,9 @@ export default function PaymentsPage() {
                           ) : (<>
                             {r.payment_status === 'unpaid' && <Button size="sm" onClick={() => handleApprove(r.id)} disabled={processing}><CheckCircle className="h-3.5 w-3.5 mr-1" />审批</Button>}
                             {r.payment_status === 'approved' && <Button size="sm" onClick={() => { setPayDialog(r); setDupSuspects(null) }} disabled={processing}><DollarSign className="h-3.5 w-3.5 mr-1" />付款</Button>}
+                            {['unpaid', 'pending_approval', 'approved', 'partially_paid'].includes(r.payment_status) && (
+                              <Button size="sm" variant="outline" className="h-7 px-2 text-orange-600 border-orange-200 hover:bg-orange-50" onClick={() => openUrgent(r)} disabled={processing} title="等不到周排款的单笔(如定金):建紧急排款单,老板即批、出纳即付">🔥 紧急</Button>
+                            )}
                             {r.payment_status === 'paid' && <span className="text-xs text-green-600 mr-1">✓ 已付</span>}
                             {r.payment_status !== 'paid' && (
                               <>
@@ -636,6 +676,34 @@ export default function PaymentsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {urgentFor && (
+        <Dialog open={true} onOpenChange={() => setUrgentFor(null)}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>🔥 紧急付款 · {urgentFor.supplier_name}</DialogTitle></DialogHeader>
+            <div className="space-y-4 py-2">
+              <div className="rounded-lg bg-muted/50 p-3 text-sm space-y-1">
+                <div className="flex justify-between"><span className="text-muted-foreground">应付金额</span><span className="font-semibold">{urgentFor.currency} {urgentFor.amount.toLocaleString()}</span></div>
+                {Number(urgentFor.paid_amount) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">已付</span><span>{urgentFor.currency} {Number(urgentFor.paid_amount).toLocaleString()}</span></div>}
+                <div className="flex justify-between"><span className="text-muted-foreground">单据/订单</span><span>{urgentFor.bill_no || urgentFor.order_no || '-'}</span></div>
+              </div>
+              <div className="space-y-2">
+                <Label>本次紧急付款金额</Label>
+                <Input type="number" value={urgentAmount} onChange={e => setUrgentAmount(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>紧急原因（可选，老板审批时看）</Label>
+                <Input placeholder="如:供应商定金,不付不开工" value={urgentNote} onChange={e => setUrgentNote(e.target.value)} />
+              </div>
+              <p className="text-[11px] text-muted-foreground">提交后生成单笔「紧急」排款单:老板到周排款一键审批 → 出纳立即放款(凭证号/水单照旧)。与周排款同一套防重复付款锁,只是不等每周排款周期。</p>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setUrgentFor(null)}>取消</Button>
+              <Button className="bg-orange-600 hover:bg-orange-700" onClick={doUrgent} disabled={processing}>{processing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}提交紧急排款</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {payDialog && (
         <Dialog open={true} onOpenChange={() => setPayDialog(null)}>

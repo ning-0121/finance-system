@@ -237,7 +237,7 @@ export default function PaymentBatchesPage() {
                     <Badge className={STATUS[b.status].color} variant="secondary">{STATUS[b.status].label}</Badge>
                   </div>
                   <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{b.week_label} · {b.currency}</span>
+                    <span>{b.week_label === '紧急' ? <span className="text-orange-600 font-semibold">🔥 紧急</span> : b.week_label} · {b.currency}</span>
                     <span className="font-semibold text-foreground">{fmt(b.total_amount, b.currency)}</span>
                   </div>
                 </button>
@@ -259,7 +259,7 @@ export default function PaymentBatchesPage() {
                       <Badge className={STATUS[selected.status].color} variant="secondary">{STATUS[selected.status].label}</Badge>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {selected.week_label} · 币种 {selected.currency} · 计划放款 {fmtDate(selected.planned_pay_date)}
+                      {selected.week_label === '紧急' ? <span className="text-orange-600 font-semibold">🔥 紧急付款</span> : selected.week_label} · 币种 {selected.currency} · 计划放款 {fmtDate(selected.planned_pay_date)}
                       {selected.title ? ` · ${selected.title}` : ''}
                     </p>
                   </div>
