@@ -234,13 +234,20 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   type EditLine = { name: string; qty: string; unit: string; unitPrice: string; amount: string }
   const [editLines, setEditLines] = useState<Record<string, EditLine[]>>({})
   const [expandedCat, setExpandedCat] = useState<string | null>(null)
+  // 有明细的桶,财务直改总额的覆盖值(差额保存时落「手工调整」行)
+  const [editBucketOverride, setEditBucketOverride] = useState<Record<string, string>>({})
   const emptyLine = (): EditLine => ({ name: '', qty: '', unit: '', unitPrice: '', amount: '' })
+  const r2c = (n: number) => Math.round(n * 100) / 100
   const lineSum = (ls: EditLine[] | undefined) =>
     (ls || []).reduce((s, l) => s + (Number(l.amount) || (Number(l.qty) || 0) * (Number(l.unitPrice) || 0)), 0)
-  // 类别有效金额：有明细行用明细之和，否则用直接填的汇总值
+  // 类别有效金额：有明细行用明细之和，否则用直接填的汇总值。
+  // 财务直改总额(2026-07-11):有明细时总额框也可编辑(override)——与明细差额在保存时
+  // 自动落一条「手工调整」行,保住"桶=明细之和"不变量(同步来的预算错了财务当场能纠)。
   const catValue = (key: string, lumpStr: string) => {
     const ls = editLines[key]
-    return ls && ls.length > 0 ? lineSum(ls) : (Number(lumpStr) || 0)
+    if (!ls || ls.length === 0) return Number(lumpStr) || 0
+    const ov = editBucketOverride[key]
+    return ov != null && ov !== '' ? (Number(ov) || 0) : lineSum(ls)
   }
   const addLine = (key: string) =>
     setEditLines(p => ({ ...p, [key]: [...(p[key] || []), emptyLine()] }))
@@ -295,6 +302,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           amount: it.amount != null ? String(it.amount) : '',
         }))
       setEditRevLines(restoredRev)
+      setEditBucketOverride({})   // 进编辑态清空总额覆盖(每次以当前明细之和起步)
       // 尝试从items中读取细分（之前保存的）
       const breakdown = (order.items as unknown as Record<string, unknown>[])?.[0]
       setEditPoNo(String((breakdown?._cost_breakdown as Record<string, unknown> | undefined)?._po_no || ''))
@@ -386,8 +394,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           return { name: l.name || '', qty, unit: l.unit || '', unit_price: unitPrice, amount }
         })
         // 只持久化「有实际金额」的明细行：丢弃仅有名称、金额为 0 的占位行，
-        // 避免导出对账单/预算表时出现 ¥0 噪声行。
-        .filter(l => l.amount > 0)
+        // 避免导出对账单/预算表时出现 ¥0 噪声行。负数保留(手工调整差额可为负)。
+        .filter(l => l.amount !== 0)
+      // 财务直改总额:覆盖值与明细合计的差额落「手工调整」行(桶=明细之和不变量)
+      const ov = editBucketOverride[k]
+      if (ov != null && ov !== '' && cleaned.length > 0) {
+        const diff = Math.round(((Number(ov) || 0) - cleaned.reduce((s, l) => s + l.amount, 0)) * 100) / 100
+        if (Math.abs(diff) >= 0.01) cleaned.push({ name: '手工调整(财务改总额)', qty: 0, unit: '', unit_price: 0, amount: diff })
+      }
       if (cleaned.length > 0) linesData[k] = cleaned
     }
     const totalCostCny = fabric + accessory + processing + forwarder + container + logistics + extrasTotal
@@ -896,11 +910,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                                 <button type="button" className="text-muted-foreground hover:text-foreground text-xs w-4 shrink-0" onClick={() => setExpandedCat(expanded ? null : c.key)}>{expanded ? '▼' : '▶'}</button>
                                 <Label className="text-xs flex-1 cursor-pointer" onClick={() => setExpandedCat(expanded ? null : c.key)}>{c.label} (¥){hasLines && <span className="text-[10px] text-primary ml-1">{lines.length}行明细</span>}</Label>
                                 {hasLines ? (
-                                  <span className="text-xs font-medium tabular-nums w-28 text-right pr-2" title="由明细自动合计">¥{sum.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                                  <Input type="number" step="0.01"
+                                    title="可直接改总额;与明细的差额保存时自动落一条「手工调整」行"
+                                    value={editBucketOverride[c.key] ?? String(r2c(sum))}
+                                    onChange={e => setEditBucketOverride(o => ({ ...o, [c.key]: e.target.value }))}
+                                    className={`h-7 w-28 text-right text-xs ${editBucketOverride[c.key] != null && Math.abs((Number(editBucketOverride[c.key]) || 0) - sum) > 0.005 ? 'border-amber-400 bg-amber-50' : ''}`} />
                                 ) : (
                                   <Input type="number" step="0.01" value={c.val} onChange={e => c.set(e.target.value)} className="h-7 w-28 text-right text-xs" />
                                 )}
                               </div>
+                              {hasLines && editBucketOverride[c.key] != null && Math.abs((Number(editBucketOverride[c.key]) || 0) - sum) > 0.005 && (
+                                <p className="px-2 pb-1 text-[10px] text-amber-600">总额已改：与明细合计差 ¥{r2c((Number(editBucketOverride[c.key]) || 0) - sum).toLocaleString()}，保存时自动加「手工调整」行</p>
+                              )}
                               {expanded && (
                                 <div className="px-2 pb-2 space-y-1.5 bg-muted/30">
                                   {hasLines && (
