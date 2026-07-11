@@ -52,6 +52,7 @@ export default function PaymentsPage() {
   const [records, setRecords] = useState<PayableRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
+  const [scheduledIds, setScheduledIds] = useState<Set<string>>(new Set())   // 已排入活动周排款单(planned/held)的应付 id
   const [search, setSearch] = useState('')
   const [payDialog, setPayDialog] = useState<PayableRecord | null>(null)
   const [payRef, setPayRef] = useState('')
@@ -111,6 +112,17 @@ export default function PaymentsPage() {
     async function load() {
       const [data, ordersData, suppliersData] = await Promise.all([getPayableRecords(), getBudgetOrders(), getSuppliers()])
       setRecords(data)
+      // 已排入活动周排款单(planned/held 排款行)的应付 → 这边不当待审批、禁操作,统一到周排款放款(防重复付款/双界面混乱)
+      try {
+        const ids = data.map(d => d.id)
+        if (ids.length) {
+          const { createClient } = await import('@/lib/supabase/client')
+          const sb = createClient()
+          const { data: bl } = await sb.from('payment_batch_lines')
+            .select('payable_id').in('payable_id', ids).is('deleted_at', null).in('status', ['planned', 'held'])
+          setScheduledIds(new Set(((bl as Array<{ payable_id: string }>) || []).map(x => x.payable_id)))
+        }
+      } catch { /* 排款感知失败不阻断主流程 */ }
       setOrders(ordersData)
       setSuppliers(suppliersData)
       // 关联订单下拉要能按【内部订单号/绮陌号/客户】搜(否则只有 BO 号,内部号如 1022934 搜不到)
@@ -270,6 +282,9 @@ export default function PaymentsPage() {
   }
 
   const filtered = records.filter(r => {
+    // 已排入周排款的应付:从「待审批/待付款」里移出(去周排款放款),仍可在「全部」看到
+    const scheduled = scheduledIds.has(r.id) && r.payment_status !== 'paid'
+    if (scheduled && (filter === 'unpaid' || filter === 'approved')) return false
     const matchFilter = filter === 'all' || r.payment_status === filter
     const matchSearch = !search || r.supplier_name.toLowerCase().includes(search.toLowerCase()) || (r.order_no || '').toLowerCase().includes(search.toLowerCase())
     const matchChannel = channelFilter === 'all' || r.payment_channel === channelFilter
@@ -592,19 +607,25 @@ export default function PaymentsPage() {
                       </TableCell>
                       <TableCell className="text-sm">{fmtDate(r.due_date)}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">{fmtDate(r.created_at)}</TableCell>
-                      <TableCell><Badge className={`${statusConfig[r.payment_status]?.color || ''} border-0`}>{statusConfig[r.payment_status]?.label}</Badge></TableCell>
+                      <TableCell>{scheduledIds.has(r.id) && r.payment_status !== 'paid'
+                        ? <Badge className="bg-blue-100 text-blue-700 border-0">已排周排款·待放款</Badge>
+                        : <Badge className={`${statusConfig[r.payment_status]?.color || ''} border-0`}>{statusConfig[r.payment_status]?.label}</Badge>}</TableCell>
                       <TableCell className="text-center">
                         <div className="flex items-center justify-center gap-1">
                           {Number(r.paid_amount) > 0 && <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => openHistory(r)} title="分批付款历史"><History className="h-3.5 w-3.5 mr-1" />明细</Button>}
-                          {r.payment_status === 'unpaid' && <Button size="sm" onClick={() => handleApprove(r.id)} disabled={processing}><CheckCircle className="h-3.5 w-3.5 mr-1" />审批</Button>}
-                          {r.payment_status === 'approved' && <Button size="sm" onClick={() => { setPayDialog(r); setDupSuspects(null) }} disabled={processing}><DollarSign className="h-3.5 w-3.5 mr-1" />付款</Button>}
-                          {r.payment_status === 'paid' && <span className="text-xs text-green-600 mr-1">✓ 已付</span>}
-                          {r.payment_status !== 'paid' && (
-                            <>
-                              <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => openEdit(r)} disabled={processing}><Pencil className="h-3.5 w-3.5" /></Button>
-                              <Button size="sm" variant="outline" className="h-7 px-2 text-red-600 hover:text-red-700" onClick={() => handleDelete(r)} disabled={processing}><Trash2 className="h-3.5 w-3.5" /></Button>
-                            </>
-                          )}
+                          {scheduledIds.has(r.id) && r.payment_status !== 'paid' ? (
+                            <span className="text-xs text-blue-600">→ 在「周排款」放款</span>
+                          ) : (<>
+                            {r.payment_status === 'unpaid' && <Button size="sm" onClick={() => handleApprove(r.id)} disabled={processing}><CheckCircle className="h-3.5 w-3.5 mr-1" />审批</Button>}
+                            {r.payment_status === 'approved' && <Button size="sm" onClick={() => { setPayDialog(r); setDupSuspects(null) }} disabled={processing}><DollarSign className="h-3.5 w-3.5 mr-1" />付款</Button>}
+                            {r.payment_status === 'paid' && <span className="text-xs text-green-600 mr-1">✓ 已付</span>}
+                            {r.payment_status !== 'paid' && (
+                              <>
+                                <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => openEdit(r)} disabled={processing}><Pencil className="h-3.5 w-3.5" /></Button>
+                                <Button size="sm" variant="outline" className="h-7 px-2 text-red-600 hover:text-red-700" onClick={() => handleDelete(r)} disabled={processing}><Trash2 className="h-3.5 w-3.5" /></Button>
+                              </>
+                            )}
+                          </>)}
                         </div>
                       </TableCell>
                     </TableRow>

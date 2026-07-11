@@ -319,10 +319,10 @@ export default function PaymentBatchesPage() {
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-xs text-muted-foreground">{l.payment_ref || '—'} · {fmtDate(l.executed_at)}</span>
                               {l.payment_proof_path ? (
-                                <button type="button" className="text-xs text-primary underline" onClick={() => openAttachment(l.payment_proof_path)}>📎 查看凭证</button>
+                                <button type="button" className="text-xs text-primary underline" onClick={() => openAttachment(l.payment_proof_path)}>📎 查看水单</button>
                               ) : (
                                 <label className="text-xs text-primary underline cursor-pointer">
-                                  {proofBusy === l.id ? '上传中…' : '补传凭证'}
+                                  {proofBusy === l.id ? '上传中…' : '补传水单'}
                                   <input type="file" accept="image/*,.pdf" className="hidden" disabled={proofBusy === l.id}
                                     onChange={e => { const f = e.target.files?.[0]; if (f) attachProofToPaid(l, f); e.currentTarget.value = '' }} />
                                 </label>
@@ -445,8 +445,8 @@ export default function PaymentBatchesPage() {
                 <Label>付款日期</Label>
                 <Input type="date" value={execDate} onChange={e => setExecDate(e.target.value)} />
               </div>
-              <div className="space-y-2">
-                <Label>付款凭证图片 <span className="text-[11px] text-muted-foreground">（银行回单/转账截图，可选；付款后也可在该行「补传凭证」）</span></Label>
+              <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                <Label>📎 付款水单 / 回单 <span className="text-[11px] text-muted-foreground">（银行转账截图/回单——放款的凭据，建议上传；付款后也可在该行「补传水单」）</span></Label>
                 <Input type="file" accept="image/*,.pdf" onChange={e => setExecProofFile(e.target.files?.[0] || null)} />
                 {execProofFile && <p className="text-[11px] text-muted-foreground">已选：{execProofFile.name}</p>}
               </div>
