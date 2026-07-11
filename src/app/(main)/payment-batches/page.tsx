@@ -179,6 +179,7 @@ export default function PaymentBatchesPage() {
       }
       void fetch('/api/integration/finance-progress', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
+        keepalive: true,   // E-2:关页/跳转后仍发出,付款进度回传不丢(到路由即入 outbox)
         body: JSON.stringify({ event: 'payment.completed', qimo_order_id: qimo, order_no: (pay as { order_no?: string } | null)?.order_no || null, amount: execLine.pay_amount, currency: execLine.currency, note: `供应商 ${execLine.supplier_name} 付款完成` }),
       }).catch(() => {})
     } catch { /* 进度回传不阻断付款 */ }
@@ -348,7 +349,7 @@ export default function PaymentBatchesPage() {
 
       {/* 加应付选择器 */}
       <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="sm:max-w-3xl">
           <DialogHeader><DialogTitle>加应付进 {selected?.batch_no}（{selected?.currency}）</DialogTitle></DialogHeader>
           <div className="max-h-[60vh] overflow-auto">
             {pickLoading ? (
@@ -356,28 +357,28 @@ export default function PaymentBatchesPage() {
             ) : pickables.length === 0 ? (
               <div className="p-8 text-center text-sm text-muted-foreground">没有可排的 {selected?.currency} 应付（都已排款/付清，或币种不符）。</div>
             ) : (
-              <Table>
+              <Table className="w-full table-fixed">
                 <TableHeader>
                   <TableRow>
                     <TableHead>供应商 / 说明</TableHead>
-                    <TableHead className="text-right">应付</TableHead>
-                    <TableHead className="text-right">剩余可排</TableHead>
-                    <TableHead className="w-40">本次付</TableHead>
-                    <TableHead></TableHead>
+                    <TableHead className="text-right w-24">应付</TableHead>
+                    <TableHead className="text-right w-24">剩余可排</TableHead>
+                    <TableHead className="w-28">本次付</TableHead>
+                    <TableHead className="w-12"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {pickables.map(p => (
                     <TableRow key={p.id}>
                       <TableCell>
-                        <div className="font-medium">{p.supplier_name}</div>
-                        <div className="text-xs text-muted-foreground">{p.description}{p.order_no ? ` · ${p.order_no}` : ''}{p.due_date ? ` · 到期 ${fmtDate(p.due_date)}` : ''}</div>
+                        <div className="font-medium break-all">{p.supplier_name}</div>
+                        <div className="text-xs text-muted-foreground break-all">{p.description}{p.order_no ? ` · ${p.order_no}` : ''}{p.due_date ? ` · 到期 ${fmtDate(p.due_date)}` : ''}</div>
                       </TableCell>
-                      <TableCell className="text-right">{fmt(p.amount, p.currency)}</TableCell>
-                      <TableCell className="text-right font-semibold">{fmt(p.remaining, p.currency)}</TableCell>
+                      <TableCell className="text-right whitespace-nowrap">{fmt(p.amount, p.currency)}</TableCell>
+                      <TableCell className="text-right font-semibold whitespace-nowrap">{fmt(p.remaining, p.currency)}</TableCell>
                       <TableCell>
                         <Input type="number" step="0.01" placeholder={String(p.remaining)} value={pickAmt[p.id] || ''}
-                          onChange={e => setPickAmt(m => ({ ...m, [p.id]: e.target.value }))} className="h-8" />
+                          onChange={e => setPickAmt(m => ({ ...m, [p.id]: e.target.value }))} className="h-8 w-24" />
                       </TableCell>
                       <TableCell>
                         <Button size="sm" className="h-8" disabled={busy} onClick={() => addOne(p)}><Plus className="h-3.5 w-3.5" /></Button>
