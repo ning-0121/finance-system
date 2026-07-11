@@ -170,12 +170,15 @@ export const BUCKET_LABELS: Record<string, string> = {
 }
 
 export interface QuoteCostLineUI { bucket: string; name: string; supplier?: string | null; qty?: number | null; unit?: string | null; unit_price?: number | null; amount: number }
+export interface QuoteStyleUI { style_label: string; sell_price?: number | null; unit_cost?: number | null; cost_lines: QuoteCostLineUI[] }
 export interface QuoteResultUI {
   success: boolean
   order_no?: string | null; style_no?: string | null; customer_name?: string | null
   quantity?: number | null; unit?: string | null
   sell_price?: number | null; currency?: string | null; total_revenue?: number | null
   exchange_rate?: number | null
+  per_unit?: boolean            // 单件成本口径(金额=每件人民币,预算要×订单数量)
+  styles?: QuoteStyleUI[]       // 多款核算单:一款一组
   cost_lines: QuoteCostLineUI[]
   cost_total?: number | null
   raw_text_summary?: string

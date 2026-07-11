@@ -62,6 +62,7 @@ export default function PurchaseApprovalsPage() {
   const [atts, setAtts] = useState<PoAttachment[]>([])
   const [attsLoading, setAttsLoading] = useState(false)
   const [quotes, setQuotes] = useState<Record<string, QuoteResultUI | 'loading'>>({})   // docId → 识别结果
+  const [qStyleIdx, setQStyleIdx] = useState(0)   // 多款核算单:当前查看/预填的款
   const [linkedOrders, setLinkedOrders] = useState<LinkedOrder[]>([])
   // 生成预算草稿弹窗
   const [bdOpen, setBdOpen] = useState(false)
@@ -122,7 +123,7 @@ export default function PurchaseApprovalsPage() {
   // 选中某采购单 → 载明细行 + 预算对照 + 附件
   useEffect(() => {
     if (!sel) { setLines([]); setBudget(null); setAtts([]); setLinkedOrders([]); return }
-    setExpandedMat(null); setHistory({}); setQuotes({})
+    setExpandedMat(null); setHistory({}); setQuotes({}); setQStyleIdx(0)
     ;(async () => {
       setLinesLoading(true)
       setLines(await getPoLines(sel.id))
@@ -211,18 +212,39 @@ export default function PurchaseApprovalsPage() {
     if (missingBudget.length === 0) return
     const target = missingBudget[0]
     const q = quoteReady?.quote
+    const style = q?.styles?.[qStyleIdx] || q?.styles?.[0]
+    const qLines = style?.cost_lines || q?.cost_lines || []
+    const orderQty = q?.quantity ?? target.quantity ?? null
     setBdTarget(target.id)
     setBdSourceDoc(quoteReady?.docId || null)
-    setBdRevenue(String(q?.total_revenue ?? target.total_amount ?? ''))
-    setBdCurrency(q?.currency || target.currency || 'USD')
-    setBdRate(q?.exchange_rate != null ? String(q.exchange_rate) : '')
-    setBdQty(String(q?.quantity ?? target.quantity ?? ''))
-    setBdLines((q?.cost_lines || []).map(l => ({
-      bucket: l.bucket, name: l.name, supplier: l.supplier || '',
-      qty: l.qty != null ? String(l.qty) : '', unit: l.unit || '',
-      unit_price: l.unit_price != null ? String(l.unit_price) : '',
-      amount: String(l.amount ?? ''),
-    })))
+    setBdQty(orderQty != null ? String(orderQty) : '')
+    if (q?.per_unit) {
+      // 单件成本口径:每行 单价=单件金额、数量=订单件数 → 金额自动=件数×单件
+      // 售价:优先订单同步总额(原币);没有则 单件含税价(CNY)×件数
+      const sell = style?.sell_price ?? q.sell_price
+      if (target.total_amount) {
+        setBdRevenue(String(target.total_amount)); setBdCurrency(target.currency || 'USD')
+      } else if (sell != null && orderQty) {
+        setBdRevenue(String(r2(sell * orderQty))); setBdCurrency('CNY')
+      } else { setBdRevenue(''); setBdCurrency(target.currency || 'CNY') }
+      setBdRate('')
+      setBdLines(qLines.map(l => ({
+        bucket: l.bucket, name: l.name, supplier: l.supplier || '',
+        qty: orderQty != null ? String(orderQty) : '', unit: '件',
+        unit_price: String(l.amount ?? ''),          // 单件金额作单价
+        amount: orderQty != null ? String(r2((l.amount || 0) * orderQty)) : String(l.amount ?? ''),
+      })))
+    } else {
+      setBdRevenue(String(q?.total_revenue ?? target.total_amount ?? ''))
+      setBdCurrency(q?.currency || target.currency || 'USD')
+      setBdRate(q?.exchange_rate != null ? String(q.exchange_rate) : '')
+      setBdLines(qLines.map(l => ({
+        bucket: l.bucket, name: l.name, supplier: l.supplier || '',
+        qty: l.qty != null ? String(l.qty) : '', unit: l.unit || '',
+        unit_price: l.unit_price != null ? String(l.unit_price) : '',
+        amount: String(l.amount ?? ''),
+      })))
+    }
     setBdOpen(true)
   }
 
@@ -443,15 +465,31 @@ export default function PurchaseApprovalsPage() {
                                 )}
                               </div>
                             </div>
-                            {/* 识别结果:售价 + 成本行 + 与PO行的价差对照 */}
-                            {q && q !== 'loading' && (
+                            {/* 识别结果:售价 + 成本行 + 与PO行的价差对照(多款可切,单件口径标识) */}
+                            {q && q !== 'loading' && (() => {
+                              const styles = q.styles || []
+                              const st = styles[qStyleIdx] || styles[0]
+                              const showLines = st?.cost_lines || q.cost_lines
+                              const showSell = st?.sell_price ?? q.sell_price
+                              const showCost = st?.unit_cost ?? q.cost_total
+                              return (
                               <div className="border-t px-3 py-2 space-y-2 bg-muted/20">
-                                <div className="flex flex-wrap gap-4 text-xs">
-                                  <span>订单：<b>{q.order_no || q.style_no || '—'}</b></span>
-                                  <span>数量：<b className="tabular-nums">{q.quantity != null ? money(q.quantity) : '—'}{q.unit || ''}</b></span>
-                                  <span>售价：<b className="tabular-nums">{q.currency || ''} {q.sell_price != null ? money(q.sell_price) : '—'}/件 · 总额 {q.total_revenue != null ? money(q.total_revenue) : '—'}</b></span>
-                                  <span>成本合计：<b className="tabular-nums">¥{money(q.cost_total)}</b></span>
+                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                                  {q.per_unit && <Badge className="bg-blue-100 text-blue-700 border-0 text-[10px]">单件口径(每件¥,预算×订单数量)</Badge>}
+                                  <span>订单/客户：<b>{q.order_no || q.style_no || q.customer_name || '—'}</b></span>
+                                  <span>售价：<b className="tabular-nums">{q.per_unit ? '¥' : (q.currency || '')} {showSell != null ? money(showSell) : '—'}/件{q.total_revenue != null ? ` · 总额 ${money(q.total_revenue)}` : ''}</b></span>
+                                  <span>成本{q.per_unit ? '/件' : '合计'}：<b className="tabular-nums">¥{money(showCost)}</b></span>
                                 </div>
+                                {styles.length > 1 && (
+                                  <div className="flex flex-wrap gap-1">
+                                    {styles.map((s, i) => (
+                                      <button key={i} onClick={() => setQStyleIdx(i)}
+                                        className={`text-[11px] px-2 py-1 rounded-md border transition ${i === qStyleIdx ? 'border-primary bg-primary/10 font-medium' : 'hover:bg-muted'}`}>
+                                        {s.style_label}{s.sell_price != null ? ` ·¥${money(s.sell_price)}` : ''}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                                 <div className="rounded-md border bg-background overflow-x-auto">
                                   <Table>
                                     <TableHeader><TableRow>
@@ -464,7 +502,7 @@ export default function PurchaseApprovalsPage() {
                                       <TableHead className="text-xs text-right">vs 本采购单</TableHead>
                                     </TableRow></TableHeader>
                                     <TableBody>
-                                      {q.cost_lines.map((l, i) => {
+                                      {showLines.map((l, i) => {
                                         // 与 PO 行按物料名互含匹配 → 单价差(PO 可能和报价不一样,审的就是这个)
                                         const po = lines.find(pl => {
                                           const a1 = norm(pl.material_name), b1 = norm(l.name)
@@ -490,7 +528,8 @@ export default function PurchaseApprovalsPage() {
                                 </div>
                                 <p className="text-[11px] text-muted-foreground">红=采购单价高于报价(重点核);绿=低于报价。识别是 AI 建议,以你调价确认后的预算为准。</p>
                               </div>
-                            )}
+                              )
+                            })()}
                           </div>
                         )
                       })}
