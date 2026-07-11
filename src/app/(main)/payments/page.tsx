@@ -77,6 +77,7 @@ export default function PaymentsPage() {
   const [newAmount, setNewAmount] = useState('')
   const [newOrderId, setNewOrderId] = useState('')
   const [newDueDate, setNewDueDate] = useState('')       // 付款日期（沿用 due_date 存储）
+  const [newDeliveryDate, setNewDeliveryDate] = useState('')  // 送货日期（delivery_date）→ 按送货月归集
   const [newChannel, setNewChannel] = useState('')       // 付款方式 payment_channel
   const [newPayeeName, setNewPayeeName] = useState('')   // 收款人名称
   const [newPayeeAccount, setNewPayeeAccount] = useState('') // 收款银行账号
@@ -185,30 +186,34 @@ export default function PaymentsPage() {
         order_no: orders.find(o => o.id === newOrderId)?.order_no || null,
         bill_no: billNo || null,
         due_date: newDueDate || null,
+        delivery_date: newDeliveryDate || null,   // 送货日期→按送货月归集
         payment_channel: newChannel || null,
         payee_name: newPayeeName.trim() || null,
         payee_account: newPayeeAccount.trim() || null,
         payee_bank: newPayeeBank.trim() || null,
         attachment_url: newAttachment || null,
       }
+      // 降级:delivery_date 迁移(20260711)未跑时,去掉该列重试,不阻断建单
+      const missingDelivery = (msg?: string) => /delivery_date/i.test(msg || '') && /does not exist|column|schema cache/i.test(msg || '')
+      const { delivery_date: _dd, ...payloadNoDelivery } = payload
       if (editingId) {
-        const { data, error } = await supabase.from('payable_records')
-          .update(payload).eq('id', editingId).select().single()
-        if (error) {
-          if (/payable_records_supplier_bill/.test(error.message)) { toast.error(`单据号「${billNo}」该供应商下已存在，不可重复登记`); setProcessing(false); return }
-          throw error
+        let res = await supabase.from('payable_records').update(payload).eq('id', editingId).select().single()
+        if (res.error && missingDelivery(res.error.message)) res = await supabase.from('payable_records').update(payloadNoDelivery).eq('id', editingId).select().single()
+        if (res.error) {
+          if (/payable_records_supplier_bill/.test(res.error.message)) { toast.error(`单据号「${billNo}」该供应商下已存在，不可重复登记`); setProcessing(false); return }
+          throw res.error
         }
-        setRecords(records.map(r => r.id === editingId ? (data as unknown as PayableRecord) : r))
+        setRecords(records.map(r => r.id === editingId ? (res.data as unknown as PayableRecord) : r))
         toast.success('付款申请已更新')
       } else {
-        const { data, error } = await supabase.from('payable_records').insert({
-          ...payload, currency: 'CNY', payment_status: 'unpaid', notes: bankSnapshot || null,
-        }).select().single()
-        if (error) {
-          if (/payable_records_supplier_bill/.test(error.message)) { toast.error(`单据号「${billNo}」该供应商下已存在，不可重复登记（疑似重复付款）`); setProcessing(false); return }
-          throw error
+        const base = { currency: 'CNY', payment_status: 'unpaid' as const, notes: bankSnapshot || null }
+        let res = await supabase.from('payable_records').insert({ ...payload, ...base }).select().single()
+        if (res.error && missingDelivery(res.error.message)) res = await supabase.from('payable_records').insert({ ...payloadNoDelivery, ...base }).select().single()
+        if (res.error) {
+          if (/payable_records_supplier_bill/.test(res.error.message)) { toast.error(`单据号「${billNo}」该供应商下已存在，不可重复登记（疑似重复付款）`); setProcessing(false); return }
+          throw res.error
         }
-        setRecords([data as unknown as PayableRecord, ...records])
+        setRecords([res.data as unknown as PayableRecord, ...records])
         toast.success('付款申请已创建')
       }
       setShowCreate(false); resetForm()
@@ -220,7 +225,7 @@ export default function PaymentsPage() {
 
   function resetForm() {
     setEditingId(null); setNewSupplierId(''); setNewSupplier(''); setNewDesc(''); setNewAmount('')
-    setNewOrderId(''); setNewDueDate(''); setNewChannel(''); setNewPayeeName(''); setNewPayeeAccount('')
+    setNewOrderId(''); setNewDueDate(''); setNewDeliveryDate(''); setNewChannel(''); setNewPayeeName(''); setNewPayeeAccount('')
     setNewPayeeBank(''); setNewAttachment(''); setNewBillNo(''); setAttError(''); setUploadingAtt(false)
   }
 
@@ -236,6 +241,7 @@ export default function PaymentsPage() {
     setNewBillNo(r.bill_no || '')
     setNewOrderId(r.budget_order_id || '')
     setNewDueDate(r.due_date ? String(r.due_date).slice(0, 10) : '')
+    setNewDeliveryDate((r as unknown as { delivery_date?: string }).delivery_date ? String((r as unknown as { delivery_date?: string }).delivery_date).slice(0, 10) : '')
     setNewChannel(r.payment_channel || '')
     setNewPayeeName(r.payee_name || '')
     setNewPayeeAccount(r.payee_account || '')
@@ -492,7 +498,9 @@ export default function PaymentsPage() {
                   const g = byKey.get(key) || { key, supplier: r.supplier_name, currency: r.currency, count: 0, total: 0, paid: 0, months: new Map<string, MG>() }
                   const amt = Number(r.amount) || 0, paid = Number(r.paid_amount) || 0
                   g.count++; g.total += amt; g.paid += paid
-                  const mo = r.due_date ? String(r.due_date).slice(0, 7) : '无账期'
+                  // 按【送货月】归集(供应商按月送货结款);缺送货日期时退回付款日期,不丢
+                  const dm = (r as unknown as { delivery_date?: string }).delivery_date || r.due_date
+                  const mo = dm ? String(dm).slice(0, 7) : '无送货月'
                   const mg = g.months.get(mo) || { count: 0, total: 0, paid: 0 }
                   mg.count++; mg.total += amt; mg.paid += paid; g.months.set(mo, mg)
                   byKey.set(key, g)
@@ -502,7 +510,7 @@ export default function PaymentsPage() {
                 return (
                   <Table>
                     <TableHeader><TableRow>
-                      <TableHead>供应商 / 月份</TableHead>
+                      <TableHead>供应商 / 送货月</TableHead>
                       <TableHead className="text-right">笔数</TableHead>
                       <TableHead className="text-right">应付合计</TableHead>
                       <TableHead className="text-right">已付</TableHead>
@@ -755,6 +763,11 @@ export default function PaymentsPage() {
               <div className="space-y-2">
                 <Label>付款日期</Label>
                 <Input type="date" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>送货日期</Label>
+                <Input type="date" value={newDeliveryDate} onChange={e => setNewDeliveryDate(e.target.value)} />
+                <p className="text-[11px] text-muted-foreground">按送货月归集用（供应商按月送货结款时填）</p>
               </div>
             </div>
             <div className="space-y-2">
