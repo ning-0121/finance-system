@@ -174,7 +174,9 @@ export default function PaymentBatchesPage() {
   }
   const doExec = async () => {
     if (!execLine) return
-    if (!execRef.trim() && !confirm('未填付款凭证号(银行流水/回单号)。凭证号是防重复付款最硬的一道锁，确定不填就付款？')) return
+    // 凭证号可选(支付宝/微信等没有回单号)——但凭证号和水单至少要有一样,放款必须留凭据。
+    // 不用 window.confirm(部分浏览器吞原生弹窗,点了没反应像"提交不了")。
+    if (!execRef.trim() && !execProofFile) { toast.error('请填「付款凭证号」或上传「付款水单」——至少一样,留作放款凭据(支付宝/微信没有回单号就传水单)'); return }
     setBusy(true)
     const { error } = await executeBatchLine(execLine.id, { payment_ref: execRef.trim(), paid_at: execDate || null, note: execNote.trim() || null })
     if (error) { setBusy(false); return toast.error(error) }
@@ -438,8 +440,8 @@ export default function PaymentBatchesPage() {
                 <div className="flex justify-between mt-1"><span className="text-muted-foreground">收款</span><span>{execLine.payee_name || '-'}{execLine.payee_account ? ` · ${execLine.payee_account}` : ''}</span></div>
               </div>
               <div className="space-y-2">
-                <Label>付款凭证号 / 单据号 <span className="text-[11px] text-muted-foreground">（银行流水号/回单号——防重复付款最硬的锁，强烈建议填）</span></Label>
-                <Input placeholder="同供应商同凭证号，数据库层拒绝重复付款" value={execRef} onChange={e => setExecRef(e.target.value)} />
+                <Label>付款凭证号 / 单据号（可选）<span className="text-[11px] text-muted-foreground">（银行付款填流水号/回单号——防重复付款最硬的锁；支付宝/微信没有回单号就留空、传下面的水单）</span></Label>
+                <Input placeholder="银行流水号/回单号;同供应商同号拒重复。别填「支付宝」这类通用词,会撞重复锁" value={execRef} onChange={e => setExecRef(e.target.value)} />
               </div>
               <div className="space-y-2">
                 <Label>付款日期</Label>
