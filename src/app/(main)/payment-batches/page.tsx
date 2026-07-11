@@ -228,6 +228,8 @@ export default function PaymentBatchesPage() {
           <Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4 mr-1" />新建排款单</Button>
         </div>
 
+        <WeekdayGuide />
+
         <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-4">
           {/* 左：排款单列表 */}
           <Card>
@@ -478,6 +480,29 @@ export default function PaymentBatchesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+// 周付款节奏引导(老板 2026-07-11:周五之前都可以审批,周五安排付款)——按今天周几提示现在该干什么
+function WeekdayGuide() {
+  const dow = new Date().getDay()          // 0=周日
+  const cn = ['日', '一', '二', '三', '四', '五', '六'][dow]
+  const fri = thisFriday()                  // 本周五(已过周五则取下周五)
+  const friLabel = `${Number(fri.slice(5, 7))}/${Number(fri.slice(8, 10))}`
+  if (dow === 5) return (
+    <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">
+      💸 <b>今天周五 —— 统一放款日</b>:老板完成最后审批;出纳对已审批的单逐笔「放款」并<b>上传付款水单</b>(凭证号或水单至少一样)。
+    </div>
+  )
+  if (dow === 0 || dow === 6) return (
+    <div className="rounded-lg border border-gray-200 bg-muted/40 px-4 py-2.5 text-sm text-muted-foreground">
+      📅 今天周{cn}(周末)· 下个放款日:<b>周五 {friLabel}</b>。周一~周四随时排款/提交/老板审批;周五统一放款、传水单。等不到的走应付账款页「🔥 紧急付款」。
+    </div>
+  )
+  return (
+    <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm text-sky-800">
+      📅 今天周{cn} · <b>周五({friLabel})统一放款</b> —— 现在到周四:把要付的应付排进本周单、提交,老板随时审批;<b>周五</b>出纳放款并上传付款水单。等不到的走应付账款页「🔥 紧急付款」。
     </div>
   )
 }
