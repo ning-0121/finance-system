@@ -16,6 +16,7 @@ import {
 import { CheckCircle, XCircle, AlertTriangle, Loader2, Clock, Eye } from 'lucide-react'
 import { toast } from 'sonner'
 import { getBudgetOrders, updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
+import { OrderPoDocsPanel } from '@/app/(main)/orders/[id]/OrderPoDocsPanel'
 import { createClient } from '@/lib/supabase/client'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canApprove, canViewApprovalQueue, requiresExtraConfirmation } from '@/lib/auth/permissions'
@@ -114,6 +115,20 @@ export default function ApprovalsPage() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ businessEvent: 'order_approved', sourceType: 'budget_order', sourceId: order.id }),
       }).catch(err => console.error('[GL] 确认收入入队失败:', err))
+      // 回传绮陌 budget.confirmed(=财务完成PO审批,绮陌硬闸门放行下采购)。
+      // 此前只有订单详情页发,从本队列通过的单绮陌收不到 → 采购被闸门误拦。keepalive 关页仍发。
+      try {
+        void fetch('/api/integration/finance-progress', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+          body: JSON.stringify({
+            event: 'budget.confirmed',
+            qimo_order_id: (order as unknown as { qimo_order_id?: string }).qimo_order_id ?? null,
+            order_no: order.order_no,
+            amount: order.total_revenue, currency: order.currency,
+            note: `财务已确认预算(毛利率 ${order.estimated_margin}%)`,
+          }),
+        }).catch(() => {})
+      } catch { /* 回传不阻断审批 */ }
     }
 
     setOrders(prev => prev.filter(o => o.id !== order.id))
@@ -258,9 +273,9 @@ export default function ApprovalsPage() {
       {/* Approve/Reject Dialog */}
       {showDialog && (
         <Dialog open={true} onOpenChange={() => { setShowDialog(null); setComment(''); setHighValueConfirmed(false) }}>
-          <DialogContent>
+          <DialogContent className="sm:max-w-2xl max-h-[88vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>{showDialog.action === 'approve' ? '审批通过确认' : '驳回确认'}</DialogTitle>
+              <DialogTitle>{showDialog.action === 'approve' ? '审批通过确认（=财务完成 PO 审批，回传绮陌放行执行）' : '驳回确认'}</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 py-2">
               <div className="grid grid-cols-2 gap-4 text-sm">
@@ -269,6 +284,12 @@ export default function ApprovalsPage() {
                 <div><span className="text-muted-foreground">金额: </span><span className="font-medium">{showDialog.order.currency} {showDialog.order.total_revenue.toLocaleString()}</span></div>
                 <div><span className="text-muted-foreground">毛利率: </span><span className={`font-medium ${showDialog.order.estimated_margin < 15 ? 'text-amber-600' : 'text-green-600'}`}>{showDialog.order.estimated_margin}%</span></div>
               </div>
+
+              {/* PO 审批材料:客户PO单据+报价单只读核对(通过前最后一眼) */}
+              <OrderPoDocsPanel
+                qimoOrderId={(showDialog.order as unknown as { qimo_order_id?: string }).qimo_order_id}
+                budget={{ revenue: showDialog.order.total_revenue, currency: showDialog.order.currency, totalCost: showDialog.order.total_cost, margin: showDialog.order.estimated_margin }}
+              />
 
               {showDialog.action === 'approve' && requiresExtraConfirmation(showDialog.order) && (
                 <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200" role="alert">

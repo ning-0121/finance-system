@@ -203,6 +203,18 @@ export async function getPoAttachments(purchaseOrderId: string): Promise<PoAttac
   } catch { return [] }
 }
 
+/** 该订单(节拍器 orders.id)关联的附件 —— 客户PO单据/内部报价单(订单级 PO 审批用) */
+export async function getOrderAttachments(qimoOrderId: string): Promise<PoAttachment[]> {
+  try {
+    const sb = createClient()
+    const { data } = await sb.from('uploaded_documents')
+      .select('id, file_name, file_type, file_url, doc_hint, status, related_qimo_order_id, extracted_fields')
+      .eq('related_qimo_order_id', qimoOrderId)
+      .order('created_at', { ascending: true })
+    return (data as PoAttachment[]) || []
+  } catch { return [] }
+}
+
 /** 触发/读取报价单识别(服务端按需调 AI;已识别过直接回缓存) */
 export async function extractQuote(documentId: string, force = false): Promise<{ ok: boolean; quote?: QuoteResultUI; error?: string }> {
   try {

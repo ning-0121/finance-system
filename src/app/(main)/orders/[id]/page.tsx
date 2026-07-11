@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useState, useEffect, useMemo } from 'react'
+import { use, useState, useEffect, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { Header } from '@/components/layout/Header'
 import { Button } from '@/components/ui/button'
@@ -31,6 +31,8 @@ import { FinanceWorkflowGuide } from '@/components/orders/FinanceWorkflowGuide'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canViewApprovalQueue } from '@/lib/auth/permissions'
 import { OrderVoidDialog } from './OrderVoidDialog'
+import { OrderPoDocsPanel } from './OrderPoDocsPanel'
+import type { QuoteCostLineUI } from '@/lib/supabase/purchase-approvals'
 import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBudgetOrderStatus, createApprovalLog, correctOrderRate } from '@/lib/supabase/queries'
 import { generateOrderSettlement } from '@/lib/supabase/queries-v2'
 import { validateBudgetEdit } from '@/lib/engines/validation-engine'
@@ -236,6 +238,33 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [expandedCat, setExpandedCat] = useState<string | null>(null)
   // 有明细的桶,财务直改总额的覆盖值(差额保存时落「手工调整」行)
   const [editBucketOverride, setEditBucketOverride] = useState<Record<string, string>>({})
+  // 报价单预填(PO审批面板→编辑器):进编辑态的恢复effect会重置editLines,故挂起待effect跑完再应用
+  const pendingPrefill = useRef<QuoteCostLineUI[] | null>(null)
+
+  // 报价桶 → 编辑器六桶;佣金/报关/其他 → 其他费用行
+  const applyQuotePrefill = (lines: QuoteCostLineUI[]) => {
+    const mapKey: Record<string, string> = { fabric: 'fabric', accessory: 'accessory', processing: 'processing', freight: 'forwarder' }
+    const grouped: Record<string, EditLine[]> = {}
+    const extras: { name: string; amount: string }[] = []
+    for (const l of lines) {
+      const k = mapKey[l.bucket]
+      if (k) {
+        if (!grouped[k]) grouped[k] = []
+        grouped[k].push({ name: l.name, qty: l.qty != null ? String(l.qty) : '', unit: l.unit || '', unitPrice: l.unit_price != null ? String(l.unit_price) : '', amount: l.amount != null ? String(l.amount) : '' })
+      } else {
+        extras.push({ name: l.name, amount: l.amount != null ? String(l.amount) : '' })
+      }
+    }
+    setEditLines(prev => ({ ...prev, ...grouped }))
+    if (extras.length) setEditExtras(prev => [...prev, ...extras])
+    setEditBucketOverride({})
+    toast.success('已按报价单预填成本，请逐行核对调价后保存')
+  }
+  const requestQuotePrefill = (lines: QuoteCostLineUI[]) => {
+    if (editMode) { applyQuotePrefill(lines); return }
+    pendingPrefill.current = lines
+    setEditMode(true)   // 恢复effect跑完后在effect尾部消费 pendingPrefill
+  }
   const emptyLine = (): EditLine => ({ name: '', qty: '', unit: '', unitPrice: '', amount: '' })
   const r2c = (n: number) => Math.round(n * 100) / 100
   const lineSum = (ls: EditLine[] | undefined) =>
@@ -355,8 +384,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         setEditExtras([])
         setEditLines({})
       }
+      // 报价单预填在恢复之后应用(先恢复原值再叠加,预填不被本 effect 冲掉)
+      if (pendingPrefill.current) { applyQuotePrefill(pendingPrefill.current); pendingPrefill.current = null }
     }
-  }, [editMode, order])
+  }, [editMode, order]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSaveEdit = async () => {
     if (!order) return
@@ -708,6 +739,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
           {/* Budget Tab */}
           <TabsContent value="budget" className="space-y-4 mt-4">
+            {/* PO 审批材料:客户PO单据+内部报价单(核价格/总额与利润;识别可预填成本进编辑器) */}
+            <OrderPoDocsPanel
+              qimoOrderId={(order as unknown as { qimo_order_id?: string }).qimo_order_id}
+              quantity={syncedInfo?.quantity ?? null}
+              budget={{ revenue: order.total_revenue, currency: order.currency, totalCost: order.total_cost, margin: order.estimated_margin }}
+              onPrefillCosts={order.status === 'draft' || order.status === 'rejected' ? (lines) => requestQuotePrefill(lines) : undefined}
+            />
             {/* 预算表 —— 逐类目预算金额(总额口径)+ 实际归集对照。数据源:预算单 _cost_breakdown */}
             {(() => {
               const cbTop = (order.items as unknown as Record<string, unknown>[])?.[0]?._cost_breakdown as Record<string, number | string> | undefined
