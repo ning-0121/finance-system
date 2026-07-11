@@ -16,6 +16,7 @@ export interface JournalAccount {
   opening_balance: number
   opening_date: string | null
   is_active: boolean
+  current_balance?: number   // 对账页余额徽标用（银行对账单最新余额）
 }
 
 export interface JournalRow {
@@ -47,12 +48,48 @@ export const ACCOUNT_TYPE_LABEL: Record<string, string> = { bank: '银行', alip
 export const MANUAL_CATEGORIES = ['银行手续费', '税费', '工资', '内部转账', '利息收入', '取现', '其他收入', '其他支出'] as const
 
 const d10 = (s: string | null | undefined) => (s ? String(s).slice(0, 10) : '')
+const r2 = (n: number) => Math.round(n * 100) / 100
+
+// ── 内部转账 / 结汇：一出一进配对 ─────────────────
+/**
+ * 建一对转账流水（同 transfer_group）：转出账户记 out、转入账户记 in。
+ * 同币种=内部转账（两额相等）；异币种=结汇（记汇率，摘要留痕 如 USD 206,733.60 @ 6.7812 → RMB 1,401,901.89）。
+ * 人工在 UI 触发，记真实 auth.uid()——符合铁律。两账户逐笔余额随之一致联动。
+ */
+export async function createTransfer(p: {
+  fromAccountId: string; toAccountId: string; date: string
+  amountOut: number; currencyOut: string
+  amountIn: number; currencyIn: string
+  fromName?: string | null; toName?: string | null
+  summary?: string | null
+}): Promise<{ error: string | null }> {
+  const supabase = createClient()
+  if (!p.fromAccountId || !p.toAccountId) return { error: '请选择转出/转入账户' }
+  if (p.fromAccountId === p.toAccountId) return { error: '转出与转入账户不能相同' }
+  if (!(p.amountOut > 0) || !(p.amountIn > 0)) return { error: '请输入有效的转出/转入金额' }
+  const cross = p.currencyOut !== p.currencyIn
+  const cat = cross ? '结汇' : '内部转账'
+  const rate4 = Math.round((p.amountIn / p.amountOut) * 10000) / 10000  // 汇率留 4 位小数
+  const rateNote = cross
+    ? `结汇 ${p.currencyOut} ${p.amountOut.toLocaleString()} @ ${rate4} → ${p.currencyIn} ${p.amountIn.toLocaleString()}`
+    : ''
+  const summaryText = [p.summary?.trim(), rateNote].filter(Boolean).join(' · ') || (cross ? '结汇' : '内部转账')
+  const { data: userData } = await supabase.auth.getUser()
+  const uid = userData?.user?.id || null
+  const grp = crypto.randomUUID()
+  const base = { transfer_group: grp, txn_date: p.date, category: cat, summary: summaryText, created_by: uid }
+  const { error } = await supabase.from('bank_journal_manual').insert([
+    { ...base, bank_account_id: p.fromAccountId, direction: 'out', amount: r2(p.amountOut), currency: p.currencyOut, counterparty: p.toName || null },
+    { ...base, bank_account_id: p.toAccountId, direction: 'in', amount: r2(p.amountIn), currency: p.currencyIn, counterparty: p.fromName || null },
+  ])
+  return { error: error?.message || null }
+}
 
 // ── 账户档案 ─────────────────────────────
 export async function getJournalAccounts(activeOnly = false): Promise<JournalAccount[]> {
   const supabase = createClient()
   let q = supabase.from('bank_accounts')
-    .select('id, account_name, bank_name, account_number, currency, account_type, opening_balance, opening_date, is_active')
+    .select('id, account_name, bank_name, account_number, currency, account_type, opening_balance, opening_date, is_active, current_balance')
     .order('is_active', { ascending: false }).order('account_name')
   if (activeOnly) q = q.eq('is_active', true)
   const { data, error } = await q
