@@ -17,9 +17,10 @@ import { createClient } from '@/lib/supabase/client'
 import {
   getPaymentBatches, getBatchLines, getSchedulablePayables, getAppRole,
   createPaymentBatch, addBatchLine, removeBatchLine, submitBatch, approveBatch,
-  executeBatchLine, closeBatch, cancelBatch,
+  executeBatchLine, setBatchLinePaymentProof, closeBatch, cancelBatch,
   type PaymentBatch, type PaymentBatchLine, type SchedulablePayable, type BatchStatus,
 } from '@/lib/supabase/payment-batches'
+import { uploadAttachment, openAttachment } from '@/lib/supabase/storage'
 
 const STATUS: Record<BatchStatus, { label: string; color: string }> = {
   draft: { label: '草稿(排款中)', color: 'bg-gray-100 text-gray-700' },
@@ -65,6 +66,8 @@ export default function PaymentBatchesPage() {
   const [execRef, setExecRef] = useState('')
   const [execDate, setExecDate] = useState(today())
   const [execNote, setExecNote] = useState('')
+  const [execProofFile, setExecProofFile] = useState<File | null>(null)   // 放款时选的付款凭证图片
+  const [proofBusy, setProofBusy] = useState<string | null>(null)          // 补传凭证的行 id
 
   const selected = batches.find(b => b.id === selectedId) || null
   const canApprove = !role || ['finance_manager', 'admin', 'boss', 'owner'].includes(role)
@@ -158,14 +161,30 @@ export default function PaymentBatchesPage() {
   }
 
   // ── 执行付款 ──
-  const openExec = (l: PaymentBatchLine) => { setExecLine(l); setExecRef(''); setExecDate(today()); setExecNote('') }
+  const openExec = (l: PaymentBatchLine) => { setExecLine(l); setExecRef(''); setExecDate(today()); setExecNote(''); setExecProofFile(null) }
+  // 给已付行补传付款凭证图片(放款时没传的,事后补)
+  const attachProofToPaid = async (l: PaymentBatchLine, file: File) => {
+    setProofBusy(l.id)
+    const { path, error } = await uploadAttachment(file, 'payment-proof')
+    if (error || !path) { setProofBusy(null); return toast.error(error || '上传失败') }
+    const { error: e2 } = await setBatchLinePaymentProof(l.id, path)
+    setProofBusy(null)
+    if (e2) return toast.error(e2)
+    toast.success('付款凭证已上传'); await refresh()
+  }
   const doExec = async () => {
     if (!execLine) return
     if (!execRef.trim() && !confirm('未填付款凭证号(银行流水/回单号)。凭证号是防重复付款最硬的一道锁，确定不填就付款？')) return
     setBusy(true)
     const { error } = await executeBatchLine(execLine.id, { payment_ref: execRef.trim(), paid_at: execDate || null, note: execNote.trim() || null })
+    if (error) { setBusy(false); return toast.error(error) }
+    // 付款已成功。凭证图片 best-effort 附加(失败不回退付款,可在该行「补传凭证」)
+    if (execProofFile) {
+      const { path, error: upErr } = await uploadAttachment(execProofFile, 'payment-proof')
+      if (upErr || !path) toast.error('付款已登记,但凭证图上传失败:' + (upErr || '') + ',可在该行「补传凭证」')
+      else { const { error: pe } = await setBatchLinePaymentProof(execLine.id, path); if (pe) toast.error('凭证保存失败:' + pe) }
+    }
     setBusy(false)
-    if (error) return toast.error(error)
     toast.success('付款已登记，应付已核销')
     // 往返:付款完成 → 回传节拍器(让采购/订单部门看到"付款完成"进度)。best-effort,失败自动入 outbox。
     try {
@@ -297,7 +316,18 @@ export default function PaymentBatchesPage() {
                         <TableCell><Badge className={LINE_STATUS[l.status]?.color} variant="secondary">{LINE_STATUS[l.status]?.label}</Badge></TableCell>
                         <TableCell>
                           {l.status === 'paid' ? (
-                            <span className="text-xs text-muted-foreground">{l.payment_ref || '—'} · {fmtDate(l.executed_at)}</span>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs text-muted-foreground">{l.payment_ref || '—'} · {fmtDate(l.executed_at)}</span>
+                              {l.payment_proof_path ? (
+                                <button type="button" className="text-xs text-primary underline" onClick={() => openAttachment(l.payment_proof_path)}>📎 查看凭证</button>
+                              ) : (
+                                <label className="text-xs text-primary underline cursor-pointer">
+                                  {proofBusy === l.id ? '上传中…' : '补传凭证'}
+                                  <input type="file" accept="image/*,.pdf" className="hidden" disabled={proofBusy === l.id}
+                                    onChange={e => { const f = e.target.files?.[0]; if (f) attachProofToPaid(l, f); e.currentTarget.value = '' }} />
+                                </label>
+                              )}
+                            </div>
                           ) : l.status === 'planned' && selected.status === 'draft' ? (
                             <Button size="sm" variant="ghost" className="text-destructive h-7 px-2" onClick={() => doRemoveLine(l)}><Trash2 className="h-3.5 w-3.5" /></Button>
                           ) : l.status === 'planned' && (selected.status === 'approved' || selected.status === 'executing') ? (
@@ -414,6 +444,11 @@ export default function PaymentBatchesPage() {
               <div className="space-y-2">
                 <Label>付款日期</Label>
                 <Input type="date" value={execDate} onChange={e => setExecDate(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>付款凭证图片 <span className="text-[11px] text-muted-foreground">（银行回单/转账截图，可选；付款后也可在该行「补传凭证」）</span></Label>
+                <Input type="file" accept="image/*,.pdf" onChange={e => setExecProofFile(e.target.files?.[0] || null)} />
+                {execProofFile && <p className="text-[11px] text-muted-foreground">已选：{execProofFile.name}</p>}
               </div>
               <div className="space-y-2">
                 <Label>备注（可选）</Label>

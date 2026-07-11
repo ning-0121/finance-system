@@ -42,6 +42,7 @@ export interface PaymentBatchLine {
   status: BatchLineStatus
   payment_id: string | null
   payment_ref: string | null
+  payment_proof_path: string | null   // 付款凭证图片(finance-attachments 路径)
   executed_at: string | null
   executed_by: string | null
   notes: string | null
@@ -176,6 +177,13 @@ export async function executeBatchLine(lineId: string, p: {
   return callRpc('execute_batch_line_payment', {
     p_line_id: lineId, p_actor: await actorId(),
     p_payment_ref: p.payment_ref, p_paid_at: p.paid_at || null, p_note: p.note || null,
+  })
+}
+
+/** 附加/补传付款凭证图片(finance-attachments 路径)到已付排款行。 */
+export async function setBatchLinePaymentProof(lineId: string, proofPath: string): Promise<RpcResult> {
+  return callRpc('set_batch_line_payment_proof', {
+    p_line_id: lineId, p_actor: await actorId(), p_proof_path: proofPath,
   })
 }
 
