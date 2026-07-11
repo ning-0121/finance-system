@@ -12,7 +12,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { DollarSign, Clock, CheckCircle, AlertTriangle, Loader2, Search, CreditCard, Plus, Pencil, Trash2 } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Command, CommandInput, CommandList, CommandItem, CommandEmpty } from '@/components/ui/command'
+import { DollarSign, Clock, CheckCircle, AlertTriangle, Loader2, Search, CreditCard, Plus, Pencil, Trash2, ChevronsUpDown, History } from 'lucide-react'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { getSuppliers } from '@/lib/supabase/queries-v2'
 import { uploadAttachment, openAttachment, attachmentName } from '@/lib/supabase/storage'
@@ -24,10 +26,13 @@ import { createClient } from '@/lib/supabase/client'
 import { getPayableRecords, createSupplierPayment } from '@/lib/supabase/queries-v2'
 import type { PayableRecord, PaymentStatus } from '@/lib/types'
 
-const statusConfig: Record<PaymentStatus, { label: string; color: string }> = {
+// 用 Record<string> 而非 Record<PaymentStatus>:DB 里有 partially_paid(部分已付),但共享类型没列;
+// 这里补上标签,修此前「部分已付」显示空白徽章的 bug(不动共享类型,避免牵连其它文件)。
+const statusConfig: Record<string, { label: string; color: string }> = {
   unpaid: { label: '待审批', color: 'bg-amber-100 text-amber-700' },
   pending_approval: { label: '审批中', color: 'bg-blue-100 text-blue-700' },
   approved: { label: '待付款', color: 'bg-purple-100 text-purple-700' },
+  partially_paid: { label: '部分已付', color: 'bg-orange-100 text-orange-700' },
   paid: { label: '已付款', color: 'bg-green-100 text-green-700' },
   cancelled: { label: '已取消', color: 'bg-gray-100 text-gray-700' },
 }
@@ -56,7 +61,15 @@ export default function PaymentsPage() {
   const [processing, setProcessing] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [orders, setOrders] = useState<BudgetOrder[]>([])
+  const [orderSyncMap, setOrderSyncMap] = useState<Record<string, { internalNo: string; qmNo: string; customer: string }>>({})
+  const [orderPickerOpen, setOrderPickerOpen] = useState(false)  // 关联订单可搜索下拉
+  // 分批付款历史(A):某笔应付的逐次付款(周排款分批 executed 行;直接付款用应付自身)
+  const [histFor, setHistFor] = useState<PayableRecord | null>(null)
+  const [histRows, setHistRows] = useState<{ date: string | null; amount: number; currency: string; ref: string | null; source: string }[]>([])
+  const [histLoading, setHistLoading] = useState(false)
+  const [expandedSups, setExpandedSups] = useState<Set<string>>(new Set())  // 按供应商汇总:展开看各月
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [supPickerOpen, setSupPickerOpen] = useState(false)  // 供应商可搜索下拉
   const [newSupplierId, setNewSupplierId] = useState('')
   const [newSupplier, setNewSupplier] = useState('')
   const [newDesc, setNewDesc] = useState('')
@@ -98,6 +111,20 @@ export default function PaymentsPage() {
       setRecords(data)
       setOrders(ordersData)
       setSuppliers(suppliersData)
+      // 关联订单下拉要能按【内部订单号/绮陌号/客户】搜(否则只有 BO 号,内部号如 1022934 搜不到)
+      try {
+        const { createClient } = await import('@/lib/supabase/client')
+        const supabase = createClient()
+        const { data: synced } = await supabase.from('synced_orders')
+          .select('budget_order_id, order_no, style_no, customer_name').not('budget_order_id', 'is', null)
+        const map: Record<string, { internalNo: string; qmNo: string; customer: string }> = {}
+        for (const s of (synced as Array<Record<string, unknown>>) || []) {
+          if (s.budget_order_id) map[s.budget_order_id as string] = {
+            internalNo: (s.style_no as string) || '', qmNo: (s.order_no as string) || '', customer: (s.customer_name as string) || '',
+          }
+        }
+        setOrderSyncMap(map)
+      } catch { /* 关联订单搜索增强失败不影响主流程 */ }
       setLoading(false)
     }
     load()
@@ -259,6 +286,27 @@ export default function PaymentsPage() {
   const totalPaidStr = fmtMulti(sumByCur(records.filter(r => r.payment_status === 'paid'), r => r.paid_amount || r.amount))
   const overBudgetCount = records.filter(r => r.over_budget).length
 
+  const openHistory = async (r: PayableRecord) => {
+    setHistFor(r); setHistRows([]); setHistLoading(true)
+    try {
+      const supabase = createClient()
+      // 分批:周排款已放款的行(payment_batch_lines,status=paid);逐次的凭证号/金额/时间都在这
+      const { data: lines } = await supabase.from('payment_batch_lines')
+        .select('pay_amount, currency, payment_ref, executed_at').eq('payable_id', r.id).is('deleted_at', null).eq('status', 'paid').order('executed_at')
+      const rows = ((lines as Array<Record<string, unknown>>) || []).map(l => ({
+        date: (l.executed_at as string) || null, amount: Number(l.pay_amount) || 0,
+        currency: (l.currency as string) || r.currency, ref: (l.payment_ref as string) || null, source: '周排款分批',
+      }))
+      // 直接付款(未走周排款):用应付自身的 paid_at/凭证。仅当无分批行时补,避免与分批重复计。
+      const rr = r as unknown as { paid_at?: string; payment_reference?: string }
+      if (rows.length === 0 && rr.paid_at) {
+        rows.push({ date: rr.paid_at || null, amount: Number(r.paid_amount) || 0, currency: r.currency, ref: rr.payment_reference || null, source: '直接付款' })
+      }
+      setHistRows(rows)
+    } catch { /* 历史拉取失败不阻断 */ }
+    setHistLoading(false)
+  }
+
   const handleApprove = async (id: string) => {
     setProcessing(true)
     try {
@@ -413,6 +461,7 @@ export default function PaymentsPage() {
               <TabsTrigger value="unpaid">待审批</TabsTrigger>
               <TabsTrigger value="approved">待付款</TabsTrigger>
               <TabsTrigger value="paid">已付款</TabsTrigger>
+              <TabsTrigger value="by_supplier">按供应商汇总</TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="flex items-center gap-2">
@@ -432,6 +481,69 @@ export default function PaymentsPage() {
           <CardContent className="p-0 overflow-x-auto">
             {loading ? (
               <div className="flex justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
+            ) : filter === 'by_supplier' ? (
+              (() => {
+                // B:按【供应商+币种】聚合,可展开看各月(账期月 due_date)应付/已付/未付。适合"按月送货结款"。
+                type MG = { count: number; total: number; paid: number }
+                const byKey = new Map<string, { key: string; supplier: string; currency: string; count: number; total: number; paid: number; months: Map<string, MG> }>()
+                for (const r of records) {
+                  if (r.payment_status === 'cancelled') continue
+                  const key = `${r.supplier_name}|||${r.currency}`
+                  const g = byKey.get(key) || { key, supplier: r.supplier_name, currency: r.currency, count: 0, total: 0, paid: 0, months: new Map<string, MG>() }
+                  const amt = Number(r.amount) || 0, paid = Number(r.paid_amount) || 0
+                  g.count++; g.total += amt; g.paid += paid
+                  const mo = r.due_date ? String(r.due_date).slice(0, 7) : '无账期'
+                  const mg = g.months.get(mo) || { count: 0, total: 0, paid: 0 }
+                  mg.count++; mg.total += amt; mg.paid += paid; g.months.set(mo, mg)
+                  byKey.set(key, g)
+                }
+                const rows = [...byKey.values()].map(g => ({ ...g, unpaid: Math.round((g.total - g.paid) * 100) / 100 })).sort((a, b) => b.unpaid - a.unpaid)
+                const toggle = (k: string) => setExpandedSups(prev => { const n = new Set(prev); if (n.has(k)) n.delete(k); else n.add(k); return n })
+                return (
+                  <Table>
+                    <TableHeader><TableRow>
+                      <TableHead>供应商 / 月份</TableHead>
+                      <TableHead className="text-right">笔数</TableHead>
+                      <TableHead className="text-right">应付合计</TableHead>
+                      <TableHead className="text-right">已付</TableHead>
+                      <TableHead className="text-right">未付</TableHead>
+                      <TableHead></TableHead>
+                    </TableRow></TableHeader>
+                    <TableBody>
+                      {rows.flatMap(g => {
+                        const open = expandedSups.has(g.key)
+                        const months = [...g.months.entries()].map(([mo, mg]) => ({ mo, ...mg, unpaid: Math.round((mg.total - mg.paid) * 100) / 100 })).sort((a, b) => (a.mo < b.mo ? 1 : -1))
+                        const out = [
+                          <TableRow key={g.key} className="hover:bg-muted/40">
+                            <TableCell className="font-medium">
+                              <button onClick={() => toggle(g.key)} className="inline-flex items-center gap-1 hover:text-primary">
+                                <span className="text-muted-foreground w-3 inline-block text-center">{open ? '▾' : '▸'}</span>{g.supplier}
+                              </button>
+                            </TableCell>
+                            <TableCell className="text-right">{g.count}</TableCell>
+                            <TableCell className="text-right font-semibold">{g.currency} {g.total.toLocaleString()}</TableCell>
+                            <TableCell className="text-right text-green-600">{g.paid.toLocaleString()}</TableCell>
+                            <TableCell className={`text-right font-semibold ${g.unpaid > 0.005 ? 'text-orange-600' : 'text-muted-foreground'}`}>{g.unpaid.toLocaleString()}</TableCell>
+                            <TableCell className="text-right"><Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => { setSearch(g.supplier); setFilter('all') }}>看明细</Button></TableCell>
+                          </TableRow>,
+                        ]
+                        if (open) for (const mm of months) out.push(
+                          <TableRow key={`${g.key}|${mm.mo}`} className="bg-muted/20 text-sm">
+                            <TableCell className="pl-8 text-muted-foreground">{mm.mo}</TableCell>
+                            <TableCell className="text-right text-muted-foreground">{mm.count}</TableCell>
+                            <TableCell className="text-right">{g.currency} {mm.total.toLocaleString()}</TableCell>
+                            <TableCell className="text-right text-green-600">{mm.paid.toLocaleString()}</TableCell>
+                            <TableCell className={`text-right ${mm.unpaid > 0.005 ? 'text-orange-600' : 'text-muted-foreground'}`}>{mm.unpaid.toLocaleString()}</TableCell>
+                            <TableCell></TableCell>
+                          </TableRow>,
+                        )
+                        return out
+                      })}
+                      {rows.length === 0 && <TableRow><TableCell colSpan={6} className="text-center py-12 text-muted-foreground">暂无应付</TableCell></TableRow>}
+                    </TableBody>
+                  </Table>
+                )
+              })()
             ) : filtered.length === 0 ? (
               <div className="text-center py-20 text-muted-foreground"><CreditCard className="h-12 w-12 mx-auto mb-3 opacity-30" /><p>暂无应付记录</p><p className="text-xs mt-1">应付从订单决算确认后自动产生</p></div>
             ) : (
@@ -457,7 +569,14 @@ export default function PaymentsPage() {
                       <TableCell className="text-sm text-primary">{r.order_no || '-'}</TableCell>
                       <TableCell><Badge variant="outline">{r.cost_category || '-'}</Badge></TableCell>
                       <TableCell className="text-sm">{channelLabel(r.payment_channel) || '-'}</TableCell>
-                      <TableCell className="text-right font-semibold">{r.currency} {r.amount.toLocaleString()}</TableCell>
+                      <TableCell className="text-right font-semibold">
+                        {r.currency} {r.amount.toLocaleString()}
+                        {Number(r.paid_amount) > 0 && (
+                          <div className="text-[11px] font-normal text-muted-foreground mt-0.5">
+                            已付 {Number(r.paid_amount).toLocaleString()} · 剩 <span className={(r.amount - Number(r.paid_amount)) > 0.005 ? 'text-orange-600' : 'text-green-600'}>{(r.amount - Number(r.paid_amount)).toLocaleString()}</span>
+                          </div>
+                        )}
+                      </TableCell>
                       <TableCell className="text-right text-sm text-muted-foreground">
                         {r.budget_amount != null ? `${r.currency} ${r.budget_amount.toLocaleString()}` : '-'}
                         {r.over_budget && <span className="text-red-600 ml-1">超支</span>}
@@ -467,6 +586,7 @@ export default function PaymentsPage() {
                       <TableCell><Badge className={`${statusConfig[r.payment_status]?.color || ''} border-0`}>{statusConfig[r.payment_status]?.label}</Badge></TableCell>
                       <TableCell className="text-center">
                         <div className="flex items-center justify-center gap-1">
+                          {Number(r.paid_amount) > 0 && <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => openHistory(r)} title="分批付款历史"><History className="h-3.5 w-3.5 mr-1" />明细</Button>}
                           {r.payment_status === 'unpaid' && <Button size="sm" onClick={() => handleApprove(r.id)} disabled={processing}><CheckCircle className="h-3.5 w-3.5 mr-1" />审批</Button>}
                           {r.payment_status === 'approved' && <Button size="sm" onClick={() => { setPayDialog(r); setDupSuspects(null) }} disabled={processing}><DollarSign className="h-3.5 w-3.5 mr-1" />付款</Button>}
                           {r.payment_status === 'paid' && <span className="text-xs text-green-600 mr-1">✓ 已付</span>}
@@ -536,6 +656,39 @@ export default function PaymentsPage() {
         </Dialog>
       )}
 
+      {/* 分批付款历史(A):这笔应付分了几次付、各付多少、凭证号、走哪条渠道 */}
+      {histFor && (
+        <Dialog open={true} onOpenChange={() => setHistFor(null)}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>分批付款历史 · {histFor.supplier_name}</DialogTitle></DialogHeader>
+            <div className="space-y-2 py-1 text-sm">
+              <div className="flex justify-between text-muted-foreground">
+                <span>应付 {histFor.currency} {histFor.amount.toLocaleString()}</span>
+                <span>已付 {Number(histFor.paid_amount).toLocaleString()} · 剩 <span className={(histFor.amount - Number(histFor.paid_amount)) > 0.005 ? 'text-orange-600' : 'text-green-600'}>{(histFor.amount - Number(histFor.paid_amount)).toLocaleString()}</span></span>
+              </div>
+              {histLoading ? (
+                <div className="py-6 text-center text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin inline mr-1" />加载中…</div>
+              ) : histRows.length === 0 ? (
+                <div className="py-6 text-center text-muted-foreground">暂无付款记录</div>
+              ) : (
+                <div className="rounded-lg border divide-y">
+                  {histRows.map((h, i) => (
+                    <div key={i} className="flex items-center justify-between px-3 py-2">
+                      <div>
+                        <div className="font-medium">{h.currency} {h.amount.toLocaleString()}</div>
+                        <div className="text-[11px] text-muted-foreground">{h.date ? new Date(h.date).toLocaleDateString('zh-CN') : '—'} · {h.source}</div>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground text-right">凭证号 <span className="font-mono text-foreground">{h.ref || '—'}</span></div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <DialogFooter><Button variant="outline" onClick={() => setHistFor(null)}>关闭</Button></DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
       {/* 新增/编辑 付款申请弹窗 */}
       <Dialog open={showCreate} onOpenChange={o => { setShowCreate(o); if (!o) resetForm() }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto">
@@ -548,19 +701,31 @@ export default function PaymentsPage() {
                   供应商信息库为空。请先到 <Link href="/profiles/suppliers" className="text-primary underline">供应商信息库</Link> 建档（含账号/户名/开户行），再回来选择。
                 </div>
               ) : (
-                <Select value={newSupplierId} onValueChange={v => {
-                  const id = v || ''; const s = suppliers.find(x => x.id === id)
-                  setNewSupplierId(id); setNewSupplier(s?.name || '')
-                  // 自动带出收款人（户名/账号/开户行），仍可手改
-                  setNewPayeeName(s?.account_name || s?.name || '')
-                  setNewPayeeAccount(s?.account_no || '')
-                  setNewPayeeBank(s?.bank_name || '')
-                }}>
-                  <SelectTrigger>{selectedSupplier ? <span className="truncate">{selectedSupplier.name}</span> : <SelectValue placeholder="选择供应商" />}</SelectTrigger>
-                  <SelectContent>
-                    {suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <Popover open={supPickerOpen} onOpenChange={setSupPickerOpen}>
+                  <PopoverTrigger render={<Button type="button" variant="outline" className="w-full justify-between font-normal" />}>
+                    {selectedSupplier ? <span className="truncate">{selectedSupplier.name}</span> : <span className="text-muted-foreground">选择供应商（可搜名字）</span>}
+                    <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-[min(92vw,380px)] p-0">
+                    {/* 自定义 filter:按 名字/户名 大小写不敏感子串,保证中文可搜(cmdk 默认 fuzzy 对中文不稳) */}
+                    <Command filter={(value, search) => value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0}>
+                      <CommandInput placeholder="输供应商名或片段搜索…" />
+                      <CommandList className="max-h-64">
+                        <CommandEmpty>没找到该供应商，换个关键词或先去信息库建档</CommandEmpty>
+                        {suppliers.map(s => (
+                          <CommandItem key={s.id} value={`${s.name} ${s.account_name || ''}`} onSelect={() => {
+                            setNewSupplierId(s.id); setNewSupplier(s.name || '')
+                            // 自动带出收款人（户名/账号/开户行），仍可手改
+                            setNewPayeeName(s.account_name || s.name || '')
+                            setNewPayeeAccount(s.account_no || '')
+                            setNewPayeeBank(s.bank_name || '')
+                            setSupPickerOpen(false)
+                          }}>{s.name}</CommandItem>
+                        ))}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               )}
               {selectedSupplier && (
                 <div className="text-xs bg-muted/40 rounded-md p-2 space-y-0.5 mt-1">
@@ -612,16 +777,45 @@ export default function PaymentsPage() {
             </div>
             <div className="space-y-2">
               <Label>关联订单（可选）</Label>
-              {/* Radix Select 不允许空字符串值，用哨兵值 __none__ 表示「不关联」并映射回空 */}
-              <Select value={newOrderId || '__none__'} onValueChange={v => setNewOrderId(v === '__none__' ? '' : (v || ''))}>
-                <SelectTrigger><SelectValue placeholder="不关联" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">不关联（仅记到供应商）</SelectItem>
-                  {orders.map(o => (
-                    <SelectItem key={o.id} value={o.id}>{o.order_no} - {o.customer?.company || ''}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {(() => {
+                const selOrder = orders.find(o => o.id === newOrderId)
+                const sm = newOrderId ? orderSyncMap[newOrderId] : undefined
+                const cust = sm?.customer || selOrder?.customer?.company || ''
+                return (
+                  <Popover open={orderPickerOpen} onOpenChange={setOrderPickerOpen}>
+                    <PopoverTrigger render={<Button type="button" variant="outline" className="w-full justify-between font-normal" />}>
+                      {selOrder
+                        ? <span className="truncate">{selOrder.order_no}{sm?.internalNo ? ` · 内部 ${sm.internalNo}` : ''}{cust ? ` · ${cust}` : ''}</span>
+                        : <span className="text-muted-foreground">不关联 · 可搜订单号/内部号/客户</span>}
+                      <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-[min(92vw,440px)] p-0">
+                      {/* 搜索文本含 内部订单号/绮陌号/客户 → 输 1022934 这类内部号也能命中 */}
+                      <Command filter={(value, search) => value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0}>
+                        <CommandInput placeholder="搜 订单号 / 内部号(如 1022934) / 客户…" />
+                        <CommandList className="max-h-64">
+                          <CommandEmpty>没找到。若内部号也搜不到,可能该订单还没建预算单。</CommandEmpty>
+                          <CommandItem value="不关联 none" onSelect={() => { setNewOrderId(''); setOrderPickerOpen(false) }}>不关联（仅记到供应商）</CommandItem>
+                          {orders.map(o => {
+                            const m = orderSyncMap[o.id]
+                            const c = m?.customer || o.customer?.company || ''
+                            return (
+                              <CommandItem key={o.id} value={`${o.order_no} ${m?.internalNo || ''} ${m?.qmNo || ''} ${c}`}
+                                onSelect={() => { setNewOrderId(o.id); setOrderPickerOpen(false) }}>
+                                <span className="truncate">
+                                  {o.order_no}
+                                  {m?.internalNo ? <span className="text-muted-foreground"> · 内部 {m.internalNo}</span> : null}
+                                  {c ? <span className="text-muted-foreground"> · {c}</span> : null}
+                                </span>
+                              </CommandItem>
+                            )
+                          })}
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                )
+              })()}
             </div>
             <div className="space-y-2">
               <Label>插入附件（发票/合同/银行回单等，可选）</Label>
