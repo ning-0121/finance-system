@@ -191,6 +191,9 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     // 出货 财务审批(2026-07-11:节拍器业务申请出货 → 财务队列 → 批/驳回传 approval_type:'shipment')
     case 'shipment_approval.requested':
       return handleGenericApprovalRequest(payload.data as Record<string, unknown>, 'shipment')
+    // 业务撤回出货申请 → 队列里未决的那条置 expired(CHECK 无 'cancelled';已决的不动)
+    case 'shipment_approval.cancelled':
+      return handleShipmentApprovalCancelled(payload.data as Record<string, unknown>)
 
     case 'file.uploaded':
       return handleFileUpload(payload.data as Record<string, unknown>)
@@ -1110,6 +1113,25 @@ async function handleGenericApprovalRequest(data: Record<string, unknown>, type:
   }, { onConflict: 'id' })
   if (error) throw new Error(`${type} approval sync failed: ${error.message}`)
   return { action: 'approval_queued', type, order_no: (data.order_no as string) ?? null }
+}
+
+// --- 出货申请撤回:未决审批置 expired(pending_approvals CHECK 无 'cancelled',合法终态用 'expired') ---
+async function handleShipmentApprovalCancelled(data: Record<string, unknown>) {
+  const supabase = createServiceClient()
+  const id = String(data.id || data.approval_id || '')
+  if (!id) throw new Error('shipment_approval.cancelled 缺少 id')
+  // 只动未决(pending)的行;财务已批/驳的不覆盖(节拍器侧撤回闸已挡竞态,这里再兜一层)
+  const { data: upd, error } = await supabase.from('pending_approvals')
+    .update({
+      status: 'expired',
+      decided_at: new Date().toISOString(),
+      decider_name: '节拍器',
+      decision_note: `业务撤回出货申请${data.reason ? `: ${data.reason}` : ''}`,
+    })
+    .eq('id', id).eq('approval_type', 'shipment').eq('status', 'pending')
+    .select('id')
+  if (error) throw new Error(`shipment approval cancel failed: ${error.message}`)
+  return { action: upd && upd.length ? 'approval_cancelled' : 'ignored_already_decided', id }
 }
 
 // --- 文件上传同步 ---
