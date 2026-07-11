@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   const roleErr = requireRole(auth, ['finance_staff', 'finance_manager', 'admin'])
   if (roleErr) return roleErr
 
-  let body: { event?: string; qimo_order_id?: string | null; order_no?: string | null; internal_order_no?: string | null; amount?: number; currency?: string; note?: string }
+  let body: { event?: string; qimo_order_id?: string | null; order_no?: string | null; internal_order_no?: string | null; amount?: number; currency?: string; note?: string; source_ref?: string | null }
   try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }) }
   const event = body.event as FinanceProgressEvent
   if (!ALLOWED.includes(event)) return NextResponse.json({ error: '不支持的进度事件' }, { status: 400 })
@@ -28,6 +28,7 @@ export async function POST(request: Request) {
     amount: body.amount,
     currency: body.currency,
     note: body.note,
+    source_ref: body.source_ref ?? null,   // 采购对账付款回传锚(节拍器累加对账 paid_amount、付满转 paid)
   })
   // 回传失败已在 client 层入 outbox 重试;这里只回报结果,不阻断业务
   return NextResponse.json({ ok: true, sent: r.success, error: r.success ? undefined : r.error })

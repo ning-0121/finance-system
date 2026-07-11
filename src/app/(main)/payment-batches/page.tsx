@@ -170,17 +170,18 @@ export default function PaymentBatchesPage() {
     // 往返:付款完成 → 回传节拍器(让采购/订单部门看到"付款完成"进度)。best-effort,失败自动入 outbox。
     try {
       const sb = createClient()
-      const { data: pay } = await sb.from('payable_records').select('order_no, budget_order_id').eq('id', execLine.payable_id).maybeSingle()
+      const { data: pay } = await sb.from('payable_records').select('order_no, budget_order_id, source_ref').eq('id', execLine.payable_id).maybeSingle()
       let qimo: string | null = null
       const boId = (pay as { budget_order_id?: string } | null)?.budget_order_id
       if (boId) {
         const { data: so } = await sb.from('synced_orders').select('id').eq('budget_order_id', boId).maybeSingle()
         qimo = (so as { id?: string } | null)?.id || null
       }
+      // 采购对账付款(source_ref 非空)→ 回传带 source_ref,节拍器累加对账 paid_amount、付满转 paid。手工应付为 NULL 不影响。
       void fetch('/api/integration/finance-progress', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         keepalive: true,   // E-2:关页/跳转后仍发出,付款进度回传不丢(到路由即入 outbox)
-        body: JSON.stringify({ event: 'payment.completed', qimo_order_id: qimo, order_no: (pay as { order_no?: string } | null)?.order_no || null, amount: execLine.pay_amount, currency: execLine.currency, note: `供应商 ${execLine.supplier_name} 付款完成` }),
+        body: JSON.stringify({ event: 'payment.completed', qimo_order_id: qimo, order_no: (pay as { order_no?: string } | null)?.order_no || null, source_ref: (pay as { source_ref?: string } | null)?.source_ref || null, amount: execLine.pay_amount, currency: execLine.currency, note: `供应商 ${execLine.supplier_name} 付款完成` }),
       }).catch(() => {})
     } catch { /* 进度回传不阻断付款 */ }
     setExecLine(null); await refresh()

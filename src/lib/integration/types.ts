@@ -26,6 +26,7 @@ export type WebhookEventType =
   | 'quotation.frozen'        // 内部报价单冻结 → 财务预算自动到位（6桶+逐行+核算日期/版本）
   | 'order.budget_updated'    // 采购核料预算即时更新（业务在采购核料填/改预算 → 送绝对总额，填 draft 预算）
   | 'shipping_invoice.issued' // 出货发票金额 → 应收（出运完成累计 CI 金额；draft 更新 total_revenue，已确认只告警）
+  | 'payable.created'         // 采购对账付款申请 → 财务应付入账（source_ref=节拍器付款申请id;回传复用 payment.completed 带 source_ref）
   | 'test.ping'               // 联调签名测试（不入业务账）
 
 // --- Webhook 事件载荷 ---

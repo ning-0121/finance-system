@@ -235,6 +235,11 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'shipping_invoice.issued':
       return handleShippingInvoiceIssued(payload.data as Record<string, unknown>)
 
+    // 采购对账付款申请 → 财务应付入账(2026-07-11 P2):节拍器采购对账确认后提付款申请,
+    // source_ref=节拍器付款申请id(幂等键)。detail.lines 存采购订单↔供应商对账明细供付款审批核对。
+    case 'payable.created':
+      return handlePayableCreated(payload.data as Record<string, unknown>, payload.request_id)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
@@ -293,6 +298,9 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
       material_code: (l.material_code as string) ?? null,
       specification: (l.specification as string) ?? null,
       category: (l.category as string) ?? null,
+      // 颜色/尺码(2026-07-11):同料多色行财务要按色核数量,此前节拍器发了这里丢弃
+      color: (l.color as string) ?? null,
+      size: (l.size as string) ?? null,
       // 行级供应商(预算原辅料按供应商分组的源;不同料下给不同供应商)
       supplier_id: (l.supplier_id as string) ?? null,
       supplier_name: (l.supplier_name as string) ?? null,
@@ -1001,6 +1009,50 @@ async function handleOrderReversal(order: SyncedOrder, event: string) {
   }
 
   return { action: 'order_reversed', event, order_no: order.order_no, actions, warnings }
+}
+
+// --- 采购对账付款申请入账(2026-07-11 P2 财务侧)---
+// source_ref=节拍器付款申请id,幂等。detail.lines 存采购订单/供应商对账明细,供付款审批页核对实际付款。
+async function handlePayableCreated(data: Record<string, unknown>, _requestId: string) {
+  const supabase = createServiceClient()
+  const sourceRef = String(data.source_ref || '')
+  if (!sourceRef) return { action: 'ignored', reason: 'payable.created 缺 source_ref' }
+  const num = (v: unknown) => (v == null ? 0 : Number(v))
+
+  const row: Record<string, unknown> = {
+    source_ref: sourceRef,
+    supplier_name: (data.supplier_name as string) || '(未标注供应商)',   // NOT NULL
+    description: (data.description as string) || '采购对账付款',           // NOT NULL
+    order_no: (data.po_no as string) || null,
+    cost_category: 'raw_material',
+    amount: num(data.amount),                                              // NOT NULL
+    currency: (data.currency as string) || 'CNY',
+    bill_no: (data.bill_no as string) || null,
+    due_date: (data.due_date as string) || null,
+    payment_status: 'unpaid',
+    detail: {
+      lines: Array.isArray(data.lines) ? data.lines : [],
+      order_refs: Array.isArray(data.order_refs) ? data.order_refs : [],
+      reconciliation_id: (data.reconciliation_id as string) ?? null,
+      purchase_order_id: (data.purchase_order_id as string) ?? null,
+    },
+  }
+
+  // 幂等:先按 source_ref 查(局部唯一索引 where source_ref not null and deleted_at is null)
+  const { data: existing } = await supabase.from('payable_records')
+    .select('id, payment_status').eq('source_ref', sourceRef).is('deleted_at', null).maybeSingle()
+  if (existing) {
+    // 已入账:仅在未付/待审时刷新金额与明细(已付/已批不覆盖,防回改已决记录)
+    if (['unpaid', 'pending_approval'].includes((existing as { payment_status: string }).payment_status)) {
+      const { error } = await supabase.from('payable_records')
+        .update({ ...row, updated_at: new Date().toISOString() }).eq('id', (existing as { id: string }).id)
+      if (error) throw new Error(`payable 更新失败: ${error.message}`)
+    }
+    return { action: 'payable_updated', source_ref: sourceRef }
+  }
+  const { error } = await supabase.from('payable_records').insert(row)
+  if (error) throw new Error(`payable 入账失败: ${error.message}`)
+  return { action: 'payable_created', source_ref: sourceRef, supplier: row.supplier_name }
 }
 
 // --- 价格审批请求 ---

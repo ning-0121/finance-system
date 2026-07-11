@@ -58,10 +58,12 @@ async function enqueueOutbox(event: string, requestId: string, data: Record<stri
 export type FinanceProgressEvent = 'settlement.closed' | 'collection.received' | 'payment.completed' | 'budget.confirmed'
 export async function notifyFinanceProgress(
   event: FinanceProgressEvent,
-  data: { qimo_order_id?: string | null; order_no?: string | null; internal_order_no?: string | null; amount?: number; currency?: string; note?: string; at?: string }
+  data: { qimo_order_id?: string | null; order_no?: string | null; internal_order_no?: string | null; amount?: number; currency?: string; note?: string; at?: string; source_ref?: string | null }
 ): Promise<{ success: boolean; error?: string }> {
   const payload = { ...data, at: data.at || new Date().toISOString() }
-  const requestId = detId(event, [data.qimo_order_id || data.order_no, data.amount, data.currency])
+  // 采购对账付款(source_ref 非空)以 source_ref 为幂等锚——采购应付常无订单锚点(qimo/order_no 皆空),
+  // 若仍按订单锚点定 request_id,不同供应商同额付款会撞成同一 id 被去重丢单。source_ref 优先。
+  const requestId = detId(event, [data.source_ref || data.qimo_order_id || data.order_no, data.amount, data.currency])
   const r = await postMetronomeCallback(event, requestId, payload)
   if (!r.success) {
     console.error(`[Integration] ${event} 回传失败(${r.error}) → 落 outbox 待重试`)
