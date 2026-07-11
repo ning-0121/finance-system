@@ -474,4 +474,25 @@ export interface PayableRecord {
   created_at: string
   updated_at: string
   deleted_at?: string | null
+  source_ref?: string | null       // 采购付款申请外部引用(节拍器付款申请id)
+  detail?: PayableDetail | null     // 采购对账明细(采购订单↔供应商对账逐行),来自 payable.created
+}
+
+// 采购对账付款明细(payable_records.detail):每行含采购订单口径 + 供应商对账口径,供付款审批核对。
+export interface PayableReconLine {
+  material_name?: string | null
+  specification?: string | null
+  ordered_qty?: number | null
+  unit_price?: number | null
+  po_amount?: number | null
+  received_qty?: number | null
+  supplier_qty?: number | null
+  supplier_amount?: number | null
+  net_amount?: number | null
+}
+export interface PayableDetail {
+  lines?: PayableReconLine[]
+  order_refs?: unknown[]
+  reconciliation_id?: string | null
+  purchase_order_id?: string | null
 }

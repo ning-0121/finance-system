@@ -24,6 +24,7 @@ import { validatePayment, type ValidationWarning } from '@/lib/engines/validatio
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import { getPayableRecords, createSupplierPayment } from '@/lib/supabase/queries-v2'
+import { PayableReconcileLines } from './PayableReconcileLines'
 import type { PayableRecord, PaymentStatus } from '@/lib/types'
 
 // 用 Record<string> 而非 Record<PaymentStatus>:DB 里有 partially_paid(部分已付),但共享类型没列;
@@ -617,7 +618,7 @@ export default function PaymentsPage() {
 
       {payDialog && (
         <Dialog open={true} onOpenChange={() => setPayDialog(null)}>
-          <DialogContent>
+          <DialogContent className={payDialog.detail?.lines?.length ? 'sm:max-w-2xl' : undefined}>
             <DialogHeader><DialogTitle>确认付款</DialogTitle></DialogHeader>
             <div className="space-y-4 py-2">
               <div className="grid grid-cols-2 gap-4 text-sm">
@@ -640,6 +641,8 @@ export default function PaymentsPage() {
                   <AlertTriangle className="h-4 w-4 shrink-0" />超预算: 预算{payDialog.currency} {payDialog.budget_amount?.toLocaleString()} → 实际{payDialog.currency} {payDialog.amount.toLocaleString()}
                 </div>
               )}
+              {/* 采购对账付款:采购订单 ↔ 供应商对账 逐行核对(手工应付无 detail.lines → 不显示) */}
+              <PayableReconcileLines detail={payDialog.detail} />
               <div className="space-y-2"><p className="text-sm font-medium">付款凭证号</p><Input placeholder="银行流水号" value={payRef} onChange={e => setPayRef(e.target.value)} /></div>
               <div className="space-y-2"><p className="text-sm font-medium">备注</p><Textarea placeholder="付款备注" value={payNote} onChange={e => setPayNote(e.target.value)} rows={2} /></div>
               {dupSuspects && dupSuspects.length > 0 && (
