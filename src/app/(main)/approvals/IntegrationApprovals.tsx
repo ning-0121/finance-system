@@ -19,7 +19,7 @@ import { createClient } from '@/lib/supabase/client'
 
 interface PendingApproval {
   id: string
-  approval_type: 'price' | 'delay' | 'cancel' | 'milestone'
+  approval_type: 'price' | 'delay' | 'cancel' | 'milestone' | 'shipment'
   order_no: string
   customer_name: string | null
   requested_by_name: string | null
@@ -35,6 +35,7 @@ const TYPE_LABEL: Record<string, { label: string; color: string }> = {
   delay: { label: '延期审批', color: 'bg-amber-100 text-amber-700' },
   cancel: { label: '取消订单', color: 'bg-red-100 text-red-700' },
   milestone: { label: '里程碑确认', color: 'bg-blue-100 text-blue-700' },
+  shipment: { label: '出货审批', color: 'bg-teal-100 text-teal-700' },
 }
 
 // 节拍器环节 step_key → 中文
@@ -53,6 +54,10 @@ const KEY_LABEL: Record<string, string> = {
   // 节拍器审批 detail 若带本次金额,自动以中文显示(加工费确认/价格审批等)
   processing_amount: '本次加工费', processing_fee: '本次加工费', per_piece: '单件加工费', unit_price: '单价',
   total_amount: '总额', fee: '费用', delta: '差额', variance_pct: '差异%', supplier_name: '供应商', material_name: '物料',
+  // 出货审批 detail(2026-07-11)
+  shipment_qty: '出货数量', carton_count: '出货箱数', order_qty: '订单数量', delivery_method: '交货方式',
+  requested_ship_date: '申请出运日', destination_port: '目的港', shipping_port: '起运港', ci_number: 'CI号',
+  internal_order_no: '内部订单号', product_name: '品名',
 }
 
 function fmtDate(v: unknown): string {
@@ -187,7 +192,7 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
           集成审批（来自节拍器）
           {rows.length > 0 && <Badge className="bg-amber-100 text-amber-700">{rows.length}</Badge>}
         </CardTitle>
-        <p className="text-xs text-muted-foreground">价格 / 延期 / 取消订单 / 里程碑 —— 点行查看详情,财务批/驳后自动回传节拍器执行。</p>
+        <p className="text-xs text-muted-foreground">价格 / 延期 / 取消订单 / 里程碑 / 出货 —— 点行查看详情,财务批/驳后自动回传节拍器执行。</p>
       </CardHeader>
       <CardContent className="p-0 overflow-x-auto">
         {loading ? (
