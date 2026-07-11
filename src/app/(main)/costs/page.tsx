@@ -715,16 +715,39 @@ export default function CostsPage() {
         ) : tab === 'taxpoint' ? (
           <TaxPointOverview costItems={costItems} syncedOrderMap={syncedOrderMap} />
         ) : tab === 'po' ? (
-          <PurchaseOrderInbox syncedOrderMap={syncedOrderMap} onChanged={loadPoCount} onRegister={(po) => {
-            // 从采购单一键回填录入费用：供应商/金额/币种/关联订单，并记住待登记的采购单
+          <PurchaseOrderInbox syncedOrderMap={syncedOrderMap} onChanged={loadPoCount} onRegister={async (po) => {
+            // 从采购单一键回填录入费用:供应商/币种/关联订单;并【按采购明细逐行预填】(每料带颜色/数量/单价/金额)
             setEditItem(null); setEntryMode('single'); setSharedOrderIds([])
             setFormSupplier(po.supplier_name || '')
-            setFormAmount(po.total_amount != null ? String(po.total_amount) : '')
             setFormCurrency(po.currency || 'CNY')
             setFormOrderId(po.budget_order_id || '')
             setRegisteringPoId(po.id)
-            setShowAdd(true)
-            setTab('all')
+            // 先清空行字段,避免上次录入残留
+            setFormDesc(''); setFormColor(''); setFormQty(''); setFormUnitPrice(''); setFormUnit('件'); setFormRollCount(''); setExtraLines([])
+            setFormAmount(po.total_amount != null ? String(po.total_amount) : '')  // 先兜底放总额
+            setTab('all'); setShowAdd(true)
+            // 取采购单明细行 → 首行填主表单,其余填「额外品目」。取不到明细则保持单总额。
+            const { data: poLines } = await createClient().from('fin_po_lines')
+              .select('material_name, category, color, ordered_qty, ordered_unit, unit_price, amount')
+              .eq('fin_po_id', po.id).order('line_id')
+            const lns = (poLines as Record<string, unknown>[] | null) || []
+            if (lns.length === 0) return
+            const catType = (c: unknown): CostType => (c === 'accessory' ? 'accessory' : 'fabric')
+            const f = lns[0]
+            setFormType(catType(f.category))
+            setFormDesc((f.material_name as string) || '')
+            setFormColor((f.color as string) || '')
+            setFormQty(f.ordered_qty != null ? String(f.ordered_qty) : '')
+            setFormUnit((f.ordered_unit as string) || '件')
+            setFormUnitPrice(f.unit_price != null ? String(f.unit_price) : '')
+            if (f.amount != null) setFormAmount(String(f.amount))
+            setExtraLines(lns.slice(1).map(l => ({
+              desc: (l.material_name as string) || '', color: (l.color as string) || '', roll: '',
+              qty: l.ordered_qty != null ? String(l.ordered_qty) : '',
+              unit: (l.ordered_unit as string) || '件',
+              unitPrice: l.unit_price != null ? String(l.unit_price) : '',
+              amount: l.amount != null ? String(l.amount) : '',
+            })))
           }} />
         ) : (
         <Card>
