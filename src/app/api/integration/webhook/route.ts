@@ -13,6 +13,7 @@ import {
 } from '@/lib/integration/security'
 import type { WebhookPayload, SyncedOrder, PriceApprovalRequest } from '@/lib/integration/types'
 import { createServiceClient } from '@/lib/supabase/service'
+import { preflightOrderVoid } from '@/lib/financial/order-void'
 
 export async function POST(request: Request) {
   // 1. 速率限制
@@ -954,6 +955,38 @@ async function handleOrderReversal(order: SyncedOrder, event: string) {
     if (exErr) warnings.push(`撤审批失败: ${exErr.message}`)
     else if (expired && expired.length) actions.push(`撤销 ${expired.length} 条未决审批`)
   } catch (e) { warnings.push(`撤审批失败: ${e instanceof Error ? e.message : e}`) }
+
+  // 3.5 兜底(问题2 · 切片4):订单被节拍器取消/删除,但仍含【已审批/已动钱】数据(🟡/🔴)→
+  //   不再只写 warning 让财务看不到,而是建一条 source=metronome 的作废申请进【作废审批队列】,
+  //   由财务终审(级联软删/驳回)。根治「取消审批被节拍器同步秒过期、财务永远看不到」#3。
+  //   仅 severity≠clean 才建(clean 单上面已保守作废);幂等——每单同时只一个 pending(唯一索引兜底)。
+  if (budgetId) {
+    try {
+      const report = await preflightOrderVoid(supabase, budgetId)
+      if (report.severity !== 'clean') {
+        const { data: exist } = await supabase.from('order_void_requests')
+          .select('id').eq('budget_order_id', budgetId).eq('status', 'pending').maybeSingle()
+        if (!exist) {
+          const { error: vErr } = await supabase.from('order_void_requests').insert({
+            budget_order_id: budgetId,
+            order_no: report.orderNo,
+            qm_order_no: report.qmOrderNo || order.order_no,
+            internal_no: report.internalNo,
+            source: 'metronome',
+            reason: `节拍器${event === 'order.deleted' ? '删除' : '取消'}订单,含已审批数据,待财务终审`,
+            severity: report.severity,
+            blockers: report.items,
+            status: 'pending',
+            requested_by_name: '节拍器',
+          })
+          if (vErr) warnings.push(`转作废队列失败,需人工: ${vErr.message}`)
+          else actions.push('已转财务作废队列待终审(含已审批数据)')
+        } else {
+          actions.push('作废申请已存在(幂等跳过)')
+        }
+      }
+    } catch (e) { warnings.push(`转作废队列失败: ${e instanceof Error ? e.message : e}`) }
+  }
 
   // 4. 需人工处理 → 记审计日志(失败不阻断)
   if (warnings.length) {

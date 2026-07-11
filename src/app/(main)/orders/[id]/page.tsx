@@ -29,6 +29,8 @@ import {
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
 import { FinanceWorkflowGuide } from '@/components/orders/FinanceWorkflowGuide'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
+import { canViewApprovalQueue } from '@/lib/auth/permissions'
+import { OrderVoidDialog } from './OrderVoidDialog'
 import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBudgetOrderStatus, createApprovalLog, correctOrderRate } from '@/lib/supabase/queries'
 import { generateOrderSettlement } from '@/lib/supabase/queries-v2'
 import { validateBudgetEdit } from '@/lib/engines/validation-engine'
@@ -52,6 +54,7 @@ import {
   LineChart,
   Download,
   Pencil,
+  Ban,
 } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
@@ -212,6 +215,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   // 编辑模式 — 外贸服装成本细分
   const [editMode, setEditMode] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
+  const [showVoidDialog, setShowVoidDialog] = useState(false)   // 作废体检弹窗(切片1 只读)
   const [editCurrencyMode, setEditCurrencyMode] = useState<'USD' | 'CNY'>('USD') // 收款币种
   const [editRate, setEditRate] = useState('')       // 结汇汇率
   const [editRevenue, setEditRevenue] = useState('')
@@ -222,6 +226,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [editContainer, setEditContainer] = useState('') // 装柜费
   const [editLogistics, setEditLogistics] = useState('') // 物流费
   const [editExtras, setEditExtras] = useState<{ name: string; amount: string }[]>([]) // 其他费用
+  const [editPoNo, setEditPoNo] = useState('')   // 客户 PO 号(一单一号)
+  // 收入按款号行录入:款号 × 数量 × 单价 = 金额;多行汇总=合同金额(把客户原始 PO 单价/数量/总价录进来)
+  type RevLine = { sku: string; qty: string; unitPrice: string; amount: string }
+  const [editRevLines, setEditRevLines] = useState<RevLine[]>([])
   // 各成本类别下的明细行（品名/数量/单位/单价/金额）；有明细时类别总额=明细之和
   type EditLine = { name: string; qty: string; unit: string; unitPrice: string; amount: string }
   const [editLines, setEditLines] = useState<Record<string, EditLine[]>>({})
@@ -252,13 +260,44 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       return { ...p, [key]: list }
     })
 
+  // 收入款号行:金额=数量×单价(可手改),多行之和=合同金额
+  const revLineAmount = (l: RevLine) => Number(l.amount) || (Number(l.qty) || 0) * (Number(l.unitPrice) || 0)
+  const revLinesTotal = (ls: RevLine[]) => ls.reduce((s, l) => s + revLineAmount(l), 0)
+  const hasRevLines = editRevLines.some(l => revLineAmount(l) > 0)
+  const addRevLine = () => setEditRevLines(p => [...p, { sku: '', qty: '', unitPrice: '', amount: '' }])
+  const removeRevLine = (idx: number) => setEditRevLines(p => p.filter((_, i) => i !== idx))
+  const updateRevLine = (idx: number, field: keyof RevLine, value: string) =>
+    setEditRevLines(p => {
+      const list = [...p]
+      const line = { ...list[idx], [field]: value }
+      if (field === 'qty' || field === 'unitPrice') {
+        const q = Number(field === 'qty' ? value : line.qty) || 0
+        const up = Number(field === 'unitPrice' ? value : line.unitPrice) || 0
+        if (q && up) line.amount = (q * up).toFixed(2)
+      }
+      list[idx] = line
+      return list
+    })
+
   // 进入编辑模式时预填当前值（从items或现有字段解析）
   useEffect(() => {
     if (editMode && order) {
       setEditRate((order.exchange_rate || 7).toString())
       setEditRevenue(order.total_revenue.toString())
+      // 恢复收入款号行:items 里带 sku/product_name/amount 的即收入行(_cost_breakdown 载体行不算)
+      const itemsArr = (order.items as unknown as Record<string, unknown>[]) || []
+      const restoredRev: RevLine[] = itemsArr
+        .filter(it => it && (it.sku || it.product_name || Number(it.amount) > 0))
+        .map(it => ({
+          sku: String(it.sku || it.product_name || ''),
+          qty: it.qty != null ? String(it.qty) : '',
+          unitPrice: it.unit_price != null ? String(it.unit_price) : '',
+          amount: it.amount != null ? String(it.amount) : '',
+        }))
+      setEditRevLines(restoredRev)
       // 尝试从items中读取细分（之前保存的）
       const breakdown = (order.items as unknown as Record<string, unknown>[])?.[0]
+      setEditPoNo(String((breakdown?._cost_breakdown as Record<string, unknown> | undefined)?._po_no || ''))
       if (breakdown && breakdown._cost_breakdown) {
         const cb = breakdown._cost_breakdown as Record<string, number | string>
         // 恢复币种模式：写入方对 CNY 直收单写 _currency='CNY_DIRECT'（且总是带 _rate），
@@ -314,7 +353,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const handleSaveEdit = async () => {
     if (!order) return
     setSavingEdit(true)
-    const revenueInput = Number(editRevenue) || 0
+    // 收入款号行清洗:金额=数量×单价,丢弃空行;有金额行时合同金额=各行之和(客户原始 PO 价)
+    const cleanedRevLines = editRevLines
+      .map(l => {
+        const qty = Number(l.qty) || 0
+        const unitPrice = Number(l.unitPrice) || 0
+        const amount = Number(l.amount) || qty * unitPrice
+        return { sku: String(l.sku || '').trim(), qty, unit_price: unitPrice, amount }
+      })
+      .filter(l => l.amount > 0 || l.sku)
+    const hasCleanRev = cleanedRevLines.some(l => l.amount > 0)
+    const revenueInput = hasCleanRev ? cleanedRevLines.reduce((s, l) => s + l.amount, 0) : (Number(editRevenue) || 0)
     const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 7)
     const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate
     const revenueUsd = editCurrencyMode === 'CNY' ? revenueInput : revenueInput // DB stores the input value
@@ -355,12 +404,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
       const extrasData = editExtras.filter(e => e.name && Number(e.amount)).map(e => ({ name: e.name, amount: Number(e.amount) || 0 }))
-      const breakdownData = { fabric, accessory, processing, forwarder, container, logistics, extras: extrasData, lines: linesData, _currency: editCurrencyMode === 'CNY' ? 'CNY_DIRECT' : 'CNY', _revenue_input: revenueInput, _revenue_currency: editCurrencyMode, _rate: rate }
-      // 保留原有产品明细，将cost breakdown存入第一个item或单独追加
+      const breakdownData = { fabric, accessory, processing, forwarder, container, logistics, extras: extrasData, lines: linesData, _currency: editCurrencyMode === 'CNY' ? 'CNY_DIRECT' : 'CNY', _revenue_input: revenueInput, _revenue_currency: editCurrencyMode, _rate: rate, _po_no: editPoNo.trim() || null }
+      // 收入款号行 → items 收入行(与节拍器 revenue_lines 同构:sku/product_name/qty/unit_price/amount)
+      const revItemsData = cleanedRevLines.map(l => ({
+        sku: l.sku || null, product_name: l.sku || '-', qty: l.qty, unit: syncedInfo?.quantityUnit || '件', unit_price: l.unit_price, amount: l.amount,
+      }))
+      // _cost_breakdown 载体挂在 items[0]:有款号行则挂到首行款号上,否则挂到空载体行(保留旧产品明细)
       const existingItems = (order.items || []) as unknown as Record<string, unknown>[]
-      const updatedItems = existingItems.length > 0
-        ? [{ ...existingItems[0], _cost_breakdown: breakdownData }, ...existingItems.slice(1)]
-        : [{ _cost_breakdown: breakdownData }]
+      const updatedItems = revItemsData.length > 0
+        ? [{ ...revItemsData[0], _cost_breakdown: breakdownData }, ...revItemsData.slice(1)]
+        : existingItems.length > 0
+          ? [{ ...existingItems[0], _cost_breakdown: breakdownData }, ...existingItems.slice(1)]
+          : [{ _cost_breakdown: breakdownData }]
       // .select() 取命中行：乐观锁 version 不匹配时 PostgREST 更新 0 行且不报错，
       // 必须显式判 0 行，否则并发冲突会被当成保存成功（本地展示一套 DB 里不存在的数字）
       const { data: hit, error } = await supabase.from('budget_orders').update({
@@ -397,6 +452,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           toast.error('保存异常：金额不一致，请刷新页面')
         } else {
           toast.success('预算已保存')
+        }
+        // 款号回写内部单号(synced_orders.style_no)+ PO号(po_number),顺带补全表头空白的内部单号。
+        // 仅在有值时写,不用空值覆盖已有;失败不影响预算保存(best-effort)。
+        const skus = [...new Set(cleanedRevLines.map(l => l.sku).filter(Boolean))]
+        const soPatch: Record<string, unknown> = {}
+        if (skus.length) soPatch.style_no = skus.join('/')
+        if (editPoNo.trim()) soPatch.po_number = editPoNo.trim()
+        if (Object.keys(soPatch).length) {
+          const { error: soErr } = await supabase.from('synced_orders').update(soPatch).eq('budget_order_id', order.id)
+          if (soErr) console.error('[回写内部单号] 失败:', soErr.message)
+          else if (skus.length && syncedInfo) setSyncedInfo({ ...syncedInfo, internalNo: skus.join('/') })
         }
         setOrder({ ...order, total_revenue: revenueInput, currency: editCurrencyMode === 'CNY' ? 'CNY' : 'USD', exchange_rate: rate, target_purchase_price: purchase, estimated_freight: freight, estimated_commission: commission, estimated_customs_fee: customs, other_costs: other, total_cost: totalCostCny, estimated_profit: profitCny, estimated_margin: margin, version: (verify?.version as number) || (order.version || 1) + 1, items: updatedItems as unknown as typeof order.items })
         setEditMode(false)
@@ -601,8 +667,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               <Download className="h-4 w-4 mr-1" />
               导出预算表
             </Button>
+            {/* 申请作废(切片1:先做只读体检预览)。发起人=创建人本人 或 财务角色 */}
+            {user && (order.created_by === user.id || canViewApprovalQueue(user)) && (
+              <Button size="sm" variant="outline" className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200" onClick={() => setShowVoidDialog(true)}>
+                <Ban className="h-4 w-4 mr-1" />
+                申请作废
+              </Button>
+            )}
           </div>
         </div>
+
+        <OrderVoidDialog orderId={order.id} open={showVoidDialog} onOpenChange={setShowVoidDialog} />
 
         {/* 财务流程引导 */}
         <FinanceWorkflowGuide order={order} context={workflowCtx} onNavigate={setActiveTab} />
@@ -736,7 +811,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   {editMode ? (
                     (() => {
                       const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 7)
-                      const revenueInput = Number(editRevenue) || 0
+                      // 有款号行时合同金额=各行之和(只读);否则用手填的合同金额(兼容旧单)
+                      const revenueInput = hasRevLines ? revLinesTotal(editRevLines) : (Number(editRevenue) || 0)
                       const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate
                       const cats: { key: string; label: string; val: string; set: (v: string) => void }[] = [
                         { key: 'fabric', label: '面料', val: editFabric, set: setEditFabric },
@@ -762,9 +838,43 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                             </Button>
                           </div>
                         </div>
+                        {/* 客户 PO 号(一单一号) */}
+                        <div className="space-y-1">
+                          <Label className="text-xs font-semibold">客户 PO 号</Label>
+                          <Input placeholder="客户下单 PO 号" value={editPoNo} onChange={e => setEditPoNo(e.target.value)} className="h-8 text-sm" />
+                        </div>
+                        {/* 收入明细:款号 × 数量 × 单价 = 金额(客户原始 PO 价);多行汇总=合同金额 */}
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-xs font-semibold text-primary">收入明细 · 款号 × 数量 × 单价</Label>
+                            <span className="text-[10px] text-muted-foreground">款号将同步为内部单号</span>
+                          </div>
+                          {editRevLines.length > 0 && (
+                            <div className="grid grid-cols-[1fr_64px_72px_84px_22px] gap-1 text-[10px] text-muted-foreground px-0.5">
+                              <span>款号</span><span className="text-right">数量</span><span className="text-right">单价</span><span className="text-right">金额</span><span />
+                            </div>
+                          )}
+                          {editRevLines.map((l, idx) => (
+                            <div key={idx} className="grid grid-cols-[1fr_64px_72px_84px_22px] gap-1 items-center">
+                              <Input placeholder="款号" value={l.sku} onChange={e => updateRevLine(idx, 'sku', e.target.value)} className="h-7 text-xs" />
+                              <Input type="number" placeholder="0" value={l.qty} onChange={e => updateRevLine(idx, 'qty', e.target.value)} className="h-7 text-xs text-right px-1" />
+                              <Input type="number" step="0.01" placeholder="单价" value={l.unitPrice} onChange={e => updateRevLine(idx, 'unitPrice', e.target.value)} className="h-7 text-xs text-right px-1" />
+                              <Input type="number" step="0.01" placeholder="金额" value={l.amount} onChange={e => updateRevLine(idx, 'amount', e.target.value)} className="h-7 text-xs text-right px-1" />
+                              <Button type="button" size="sm" variant="ghost" className="h-6 w-6 p-0 text-red-400 hover:text-red-600" onClick={() => removeRevLine(idx)}>×</Button>
+                            </div>
+                          ))}
+                          <Button type="button" size="sm" variant="outline" className="w-full text-xs h-7" onClick={addRevLine}>+ 加款号行</Button>
+                        </div>
                         <div className="space-y-1">
                           <Label className="text-xs font-semibold text-primary">合同金额 ({editCurrencyMode === 'CNY' ? 'CNY' : 'USD'})</Label>
-                          <Input type="number" step="0.01" value={editRevenue} onChange={e => setEditRevenue(e.target.value)} className="border-primary/30" />
+                          {hasRevLines ? (
+                            <div className="h-9 flex items-center px-3 rounded-md border border-primary/30 bg-muted/40 text-sm font-semibold tabular-nums">
+                              {editCurrencyMode === 'CNY' ? '¥' : '$'} {revLinesTotal(editRevLines).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                              <span className="ml-2 text-[10px] text-muted-foreground font-normal">= 各款号行之和(自动)</span>
+                            </div>
+                          ) : (
+                            <Input type="number" step="0.01" value={editRevenue} onChange={e => setEditRevenue(e.target.value)} className="border-primary/30" />
+                          )}
                         </div>
                         {editCurrencyMode === 'USD' && (
                           <div className="space-y-1">
