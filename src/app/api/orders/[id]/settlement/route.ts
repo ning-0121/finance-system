@@ -75,9 +75,13 @@ export async function POST(
       freight: 'freight', forwarder: 'freight', logistics: 'freight',
       container: 'other', customs: 'other', tax: 'tax', other: 'other',
     }
+    // D1 3b-2:排除采购对账来源的 cost_items —— 它们已由采购对账建了(分期)应付,决算不再重复派生
+    // (采购成本记 cost_items 只为进毛利/决算利润,不作为应付来源;应付走采购对账 payable_records)。
     const { data: costItems } = await supabase.from('cost_items')
       .select('amount, currency, exchange_rate, supplier, cost_type, delivery_date')
-      .eq('budget_order_id', budgetOrderId).neq('cost_type', 'tax_point').is('deleted_at', null)
+      .eq('budget_order_id', budgetOrderId).neq('cost_type', 'tax_point')
+      .or('source_module.is.null,source_module.neq.procurement_reconciliation')
+      .is('deleted_at', null)
     const payGroups = new Map<string, { supplier: string; currency: string; amount: number; cat: string; due: string | null; n: number }>()
     for (const c of costItems || []) {
       const supplier = (c.supplier as string) || '未知供应商'

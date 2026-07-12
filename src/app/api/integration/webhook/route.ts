@@ -1021,9 +1021,24 @@ async function handlePayableCreated(data: Record<string, unknown>, _requestId: s
   const sourceRef = String(data.source_ref || '')
   if (!sourceRef) return { action: 'ignored', reason: 'payable.created 缺 source_ref' }
   const num = (v: unknown) => (v == null ? 0 : Number(v))
+  const lines = Array.isArray(data.lines) ? (data.lines as Record<string, unknown>[]) : []
+  const orderRefs = Array.isArray(data.order_refs) ? (data.order_refs as Record<string, unknown>[]) : []
+  const reconciliationId = (data.reconciliation_id as string) ?? null
+
+  // 统一应付口径(D1 3b-2):把采购对账应付挂到 budget_order(order_refs[].id=绮陌单 → synced_orders),
+  // 使其 dedup_key 含订单、与决算派生的应付对齐。唯一订单才挂;跨多订单/解析不出 → 留 null(不误挂)。
+  let budgetOrderId: string | null = null
+  const qimoOrderIds = [...new Set(orderRefs.map((o) => o.id).filter(Boolean))] as string[]
+  if (qimoOrderIds.length > 0) {
+    const { data: syn } = await supabase.from('synced_orders')
+      .select('budget_order_id').in('id', qimoOrderIds).not('budget_order_id', 'is', null)
+    const boIds = [...new Set((syn || []).map((s) => (s as { budget_order_id: string }).budget_order_id))]
+    if (boIds.length === 1) budgetOrderId = boIds[0]
+  }
 
   const row: Record<string, unknown> = {
     source_ref: sourceRef,
+    budget_order_id: budgetOrderId,                                        // D1:挂订单,对齐去重键
     supplier_name: (data.supplier_name as string) || '(未标注供应商)',   // NOT NULL
     description: (data.description as string) || '采购对账付款',           // NOT NULL
     order_no: (data.po_no as string) || null,
@@ -1034,9 +1049,9 @@ async function handlePayableCreated(data: Record<string, unknown>, _requestId: s
     due_date: (data.due_date as string) || null,
     payment_status: 'unpaid',
     detail: {
-      lines: Array.isArray(data.lines) ? data.lines : [],
-      order_refs: Array.isArray(data.order_refs) ? data.order_refs : [],
-      reconciliation_id: (data.reconciliation_id as string) ?? null,
+      lines,
+      order_refs: orderRefs,
+      reconciliation_id: reconciliationId,
       purchase_order_id: (data.purchase_order_id as string) ?? null,
     },
   }
@@ -1044,18 +1059,56 @@ async function handlePayableCreated(data: Record<string, unknown>, _requestId: s
   // 幂等:先按 source_ref 查(局部唯一索引 where source_ref not null and deleted_at is null)
   const { data: existing } = await supabase.from('payable_records')
     .select('id, payment_status').eq('source_ref', sourceRef).is('deleted_at', null).maybeSingle()
+  let result: Record<string, unknown>
   if (existing) {
-    // 已入账:仅在未付/待审时刷新金额与明细(已付/已批不覆盖,防回改已决记录)
     if (['unpaid', 'pending_approval'].includes((existing as { payment_status: string }).payment_status)) {
       const { error } = await supabase.from('payable_records')
         .update({ ...row, updated_at: new Date().toISOString() }).eq('id', (existing as { id: string }).id)
       if (error) throw new Error(`payable 更新失败: ${error.message}`)
     }
-    return { action: 'payable_updated', source_ref: sourceRef }
+    result = { action: 'payable_updated', source_ref: sourceRef }
+  } else {
+    const { error } = await supabase.from('payable_records').insert(row)
+    if (error) throw new Error(`payable 入账失败: ${error.message}`)
+    result = { action: 'payable_created', source_ref: sourceRef, supplier: row.supplier_name }
   }
-  const { error } = await supabase.from('payable_records').insert(row)
-  if (error) throw new Error(`payable 入账失败: ${error.message}`)
-  return { action: 'payable_created', source_ref: sourceRef, supplier: row.supplier_name }
+
+  // 采购成本归集(D1 3b-2,治毛利虚高 F-1):对账付款(有逐行明细)→ 按 reconciliation_id 归一 UPSERT
+  //   一条 cost_items(source_module=procurement_reconciliation)。分期付款(定金+尾款)都指向同一对账 →
+  //   成本只记一次总额(net_amount 优先,退回 po_amount);毛利/决算从此看得到采购成本。
+  //   决算派生应付时会跳过本来源(采购对账已建其分期应付,不重复派生)。
+  //   仅在解析到订单 + 有明细时归集;定金(无明细)不记成本,待对账付款时记。系统同步 created_by=null。
+  try {
+    if (reconciliationId && budgetOrderId && lines.length > 0) {
+      const costTotal = Math.round(lines.reduce((s, l) => s + num(l.net_amount ?? l.po_amount ?? 0), 0) * 100) / 100
+      if (costTotal > 0) {
+        const costRow = {
+          budget_order_id: budgetOrderId,
+          cost_type: 'procurement',
+          description: `采购对账成本 ${(data.po_no as string) || ''}`.trim(),
+          supplier: (data.supplier_name as string) || '(未标注供应商)',
+          amount: costTotal,
+          currency: (data.currency as string) || 'CNY',
+          exchange_rate: 1,
+          source_module: 'procurement_reconciliation',
+          source_id: reconciliationId,
+          created_by: null,
+        }
+        const { data: exCost } = await supabase.from('cost_items')
+          .select('id').eq('source_module', 'procurement_reconciliation').eq('source_id', reconciliationId)
+          .is('deleted_at', null).maybeSingle()
+        if (exCost) {
+          await supabase.from('cost_items').update(costRow).eq('id', (exCost as { id: string }).id)
+        } else {
+          await supabase.from('cost_items').insert(costRow)
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[handlePayableCreated] 采购成本归集 cost_items 失败(不阻断应付):', (e as Error).message)
+  }
+
+  return result
 }
 
 // --- 价格审批请求 ---
