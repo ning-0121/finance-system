@@ -1,0 +1,5 @@
+-- 回滚 20260712_rpc_actor_guard(移除角色门 —— 安全加固,通常不需回滚)
+-- 恢复方式:重跑改前的 live 定义(即本迁移各函数体去掉首行
+--   `v_actor := public._finance_actor_guard(...)` 声明、并把 v_actor 换回 p_actor_id/p_created_by)。
+-- 改前定义已由 pg_get_functiondef 归档在会话记录;如需回滚请从归档重放,
+-- 或对每个函数 CREATE OR REPLACE 回无 guard 版本。不提供自动 down 以免误删角色门。
