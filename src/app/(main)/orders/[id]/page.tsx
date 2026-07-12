@@ -1264,8 +1264,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 </CardContent>
               </Card>
 
-              {/* B-1(2026-07-10):成本对账 —— 费用归集(算利润) vs 实际发票(算应付)两条实际流是否对齐。
-                  只读比对/警示,不动账(符合数据治理铁律)。费用归集→决算利润;实际发票→决算确认生成应付,两者应对齐。*/}
+              {/* 成本对账(2026-07-12 统一应付口径 D1 后重写):应付与利润都以【费用归集 cost_items】为准
+                  (Option 2:应付来自 cost_items,采购成本经采购对账已归集进来)。实际发票仅作佐证,不再单独生成应付。
+                  只读比对/警示,不动账(符合治理铁律)。仅当发票金额 > 归集时提示可能有费用漏归集(利润虚高);发票少/空为正常。*/}
               {(() => {
                 const costLines = Object.values(costDetail).flat()
                 const costItemsTotal = costLines.reduce((s, l) => s + (Number(l.amount) || 0), 0)
@@ -1277,27 +1278,26 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   return s + (Number(i.total_amount) || 0) * rate
                 }, 0)
                 if (costItemsTotal <= 0 && invoiceTotal <= 0) return null
-                const diff = Math.round((costItemsTotal - invoiceTotal) * 100) / 100
                 const tol = Math.max(1000, costItemsTotal * 0.01)
-                const diverge = Math.abs(diff) > tol
+                const overInvoice = invoiceTotal - costItemsTotal > tol   // 仅"发票多于归集"才警示(可能漏归集费用→利润虚高)
                 return (
                   <Card className="mt-4">
-                    <CardHeader className="pb-3"><CardTitle className="text-sm">成本对账 · 费用归集 vs 实际发票</CardTitle></CardHeader>
+                    <CardHeader className="pb-3"><CardTitle className="text-sm">成本对账 · 费用归集(算利润+应付)</CardTitle></CardHeader>
                     <CardContent className="space-y-2 text-sm">
-                      <div className="flex justify-between"><span className="text-muted-foreground">费用归集（算利润）</span><span className="font-medium">¥ {costItemsTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })} · {costLines.length} 笔</span></div>
-                      <div className="flex justify-between"><span className="text-muted-foreground">实际发票（算应付）</span><span className="font-medium">¥ {invoiceTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })} · {invRows.length} 张</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground">费用归集（算利润 & 应付基础）</span><span className="font-medium">¥ {costItemsTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })} · {costLines.length} 笔</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground">实际发票（佐证，可选）</span><span className="font-medium">¥ {invoiceTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })} · {invRows.length} 张</span></div>
                       <Separator />
-                      {diverge ? (
+                      {overInvoice ? (
                         <div className="flex items-start gap-2 p-2 rounded-lg bg-amber-50 text-amber-700 text-xs" role="alert">
                           <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" aria-hidden="true" />
-                          <span>两条实际流差 ¥{Math.abs(diff).toLocaleString(undefined, { maximumFractionDigits: 2 })}：利润按「费用归集」口径算，但{invoiceTotal > costItemsTotal ? '实际发票更多，可能有费用未归集' : '发票支撑不足，可能有发票未上传/未匹配'}。决算确认会按「实际发票」生成应付——请先核对，避免利润与应付背离。</span>
+                          <span>实际发票比费用归集多 ¥{Math.abs(invoiceTotal - costItemsTotal).toLocaleString(undefined, { maximumFractionDigits: 2 })}：可能有费用未归集到 cost_items，利润会虚高——请核对是否漏归集。</span>
                         </div>
                       ) : (
                         <div className="flex items-center gap-2 p-2 rounded-lg bg-green-50 text-green-700 text-xs">
-                          <span>✓ 两条流基本一致（差 ¥{Math.abs(diff).toLocaleString(undefined, { maximumFractionDigits: 2 })}，容差内）</span>
+                          <span>✓ 费用归集已覆盖(发票在归集范围内)。应付与利润均以费用归集为准。</span>
                         </div>
                       )}
-                      <p className="text-[10px] text-muted-foreground">费用归集(cost_items) → 决算利润；实际发票(actual_invoices) → 决算确认生成应付。两者应对齐。</p>
+                      <p className="text-[10px] text-muted-foreground">口径(Option 2 · D1):应付与决算利润均来自费用归集 cost_items(采购成本经采购对账自动归集);实际发票仅作佐证,不再单独生成应付。</p>
                     </CardContent>
                   </Card>
                 )
