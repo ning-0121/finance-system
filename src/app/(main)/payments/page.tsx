@@ -654,7 +654,9 @@ export default function PaymentsPage() {
                             <span className="text-xs text-blue-600">→ 在「周排款」放款</span>
                           ) : (<>
                             {r.payment_status === 'unpaid' && <Button size="sm" onClick={() => handleApprove(r.id)} disabled={processing}><CheckCircle className="h-3.5 w-3.5 mr-1" />审批</Button>}
-                            {r.payment_status === 'approved' && <Button size="sm" onClick={() => { setPayDialog(r); setDupSuspects(null) }} disabled={processing}><DollarSign className="h-3.5 w-3.5 mr-1" />付款</Button>}
+                            {/* P0-C 收敛(2026-07-12):出款唯一走周排款(两步审批+职责分离),此处不再直接付款,
+                                避免同一 finance_staff 自审自付。常规→去周排款排款放款;急件用右侧「🔥紧急」。 */}
+                            {r.payment_status === 'approved' && <Link href="/payment-batches" className="text-xs px-2 py-1.5 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 font-medium whitespace-nowrap inline-flex items-center"><CreditCard className="h-3.5 w-3.5 mr-1" />去周排款放款</Link>}
                             {['unpaid', 'pending_approval', 'approved', 'partially_paid'].includes(r.payment_status) && (
                               <Button size="sm" variant="outline" className="h-7 px-2 text-orange-600 border-orange-200 hover:bg-orange-50" onClick={() => openUrgent(r)} disabled={processing} title="等不到周排款的单笔(如定金):建紧急排款单,老板即批、出纳即付">🔥 紧急</Button>
                             )}
