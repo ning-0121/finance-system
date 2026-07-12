@@ -64,18 +64,30 @@ export async function POST(request: Request) {
     } as never) as { data: { id?: string } | null; error: { message: string } | null }
     if (custErr || !cust?.id) return NextResponse.json({ error: `客户匹配失败: ${custErr?.message || '无客户'}` }, { status: 422 })
 
-    // 3. 组装成本(人民币)与利润口径
+    // 3. 组装成本(人民币)与利润口径。
+    //    ⚠ 关键(审计P1.16修复):_cost_breakdown 必须用【canonical 桶键】+【桶标量】,否则
+    //    预算总表/对照(budgetBucketsFromOrder 读 cb.fabric 等标量)全读 0,且订单编辑页只认这6键的
+    //    lines,一保存 freight/commission/customs/other 的成本直接蒸发。
+    //    报价桶(7种) → 预算canonical桶(6种)映射:commission/other 归 物流/其他(logistics),名字保在行里。
+    const QUOTE_TO_CANON: Record<QuoteBucket, string> = {
+      fabric: 'fabric', accessory: 'accessory', processing: 'processing',
+      freight: 'forwarder', customs: 'container', commission: 'logistics', other: 'logistics',
+    }
     const lines: Record<string, InLine[]> = {}
+    const scalar: Record<string, number> = { fabric: 0, accessory: 0, processing: 0, forwarder: 0, container: 0, logistics: 0 }
     for (const l of costLines) {
-      const bucket = (QUOTE_BUCKETS as readonly string[]).includes(l.bucket) ? l.bucket as QuoteBucket : 'other'
+      const qb = (QUOTE_BUCKETS as readonly string[]).includes(l.bucket) ? l.bucket as QuoteBucket : 'other'
+      const key = QUOTE_TO_CANON[qb]
+      const amt = r2(Number(l.amount) || 0)
       const row: InLine = {
-        bucket, name: String(l.name).trim(), supplier: l.supplier?.trim() || null,
+        bucket: key, name: String(l.name).trim(), supplier: l.supplier?.trim() || null,
         qty: l.qty != null ? Number(l.qty) : null, unit: l.unit || null,
         unit_price: l.unit_price != null ? Number(l.unit_price) : null,
-        amount: r2(Number(l.amount) || 0),
+        amount: amt,
       }
-      if (!lines[bucket]) lines[bucket] = []
-      lines[bucket].push(row)
+      if (!lines[key]) lines[key] = []
+      lines[key].push(row)
+      scalar[key] = r2(scalar[key] + amt)   // 桶标量=该桶 lines 之和(不变量)
     }
     const totalCost = r2(costLines.reduce((s, l) => s + (Number(l.amount) || 0), 0))
     const currency = (body.currency || so.currency || 'USD') as string
@@ -92,9 +104,12 @@ export async function POST(request: Request) {
       unit_price: quantity ? r2(revenue / quantity) : null,
       total: revenue,
       _cost_breakdown: {
+        ...scalar,                                        // 六桶标量(canonical键)——预算表/对照/编辑页都读这个
+        extras: [],
         lines,
         total_cost: totalCost,
-        source: 'internal_quote',                       // 溯源:来自报价单识别+财务调价
+        _currency: 'CNY', _revenue_input: revenue, _revenue_currency: currency, _rate: rate,
+        source: 'internal_quote',                         // 溯源:来自报价单识别+财务调价
         source_document_id: body.sourceDocumentId || null,
         purchase_order_id: body.purchaseOrderId || null,
       },

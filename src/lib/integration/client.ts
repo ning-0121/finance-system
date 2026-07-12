@@ -18,7 +18,9 @@ function detId(prefix: string, parts: (string | number | null | undefined)[]): s
 
 // 低层:对已定 request_id 的 payload 签名并投递到节拍器 finance-callback
 async function postMetronomeCallback(event: string, requestId: string, data: Record<string, unknown>): Promise<{ success: boolean; error?: string }> {
-  if (!ORDER_METRONOME_URL || !API_KEY) return { success: true }   // 未配置则静默跳过,绝不阻塞主流程
+  // 未配置不再假成功(审计P1:那会让 budget.confirmed 等回传静默蒸发、outbox 无痕、绮陌硬闸门永不放行)。
+  // 返回失败 → 上层落 outbox 留durable痕,配好环境变量后 cron 自动重投;重试耗尽转 dead 并告警。
+  if (!ORDER_METRONOME_URL || !API_KEY) return { success: false, error: 'ORDER_METRONOME_URL/INTEGRATION_API_KEY 未配置(回传未送达,已入 outbox 待配置后重投)' }
   const payload: WebhookPayload = {
     event: event as WebhookPayload['event'], timestamp: new Date().toISOString(),
     source: 'finance-system', request_id: requestId, data, signature: '',

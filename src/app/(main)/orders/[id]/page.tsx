@@ -563,7 +563,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
           body: JSON.stringify({
             event: 'budget.confirmed',
-            qimo_order_id: (order as unknown as { qimo_order_id?: string }).qimo_order_id ?? null,
+            qimo_order_id: order.qimo_order_id ?? null,
             order_no: syncedInfo?.orderNo || order.order_no,
             amount: order.total_revenue, currency: order.currency,
             note: `财务已确认预算(毛利率 ${order.estimated_margin}%)`,
@@ -741,7 +741,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           <TabsContent value="budget" className="space-y-4 mt-4">
             {/* PO 审批材料:客户PO单据+内部报价单(核价格/总额与利润;识别可预填成本进编辑器) */}
             <OrderPoDocsPanel
-              qimoOrderId={(order as unknown as { qimo_order_id?: string }).qimo_order_id}
+              qimoOrderId={order.qimo_order_id}
               quantity={syncedInfo?.quantity ?? null}
               budget={{ revenue: order.total_revenue, currency: order.currency, totalCost: order.total_cost, margin: order.estimated_margin }}
               onPrefillCosts={order.status === 'draft' || order.status === 'rejected' ? (lines) => requestQuotePrefill(lines) : undefined}

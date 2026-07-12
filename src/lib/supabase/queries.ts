@@ -56,7 +56,7 @@ export async function getBudgetOrders(statusFilter?: string): Promise<BudgetOrde
       // 需要 items 的走 getBudgetOrderById（单条全量）。其余标量字段一个不落，功能不变。
       let query = supabase
         .from('budget_orders')
-        .select('id, order_no, customer_id, order_date, delivery_date, target_purchase_price, estimated_freight, estimated_commission, estimated_customs_fee, other_costs, total_revenue, total_cost, estimated_profit, estimated_margin, currency, exchange_rate, version, status, created_by, approved_by, approved_at, notes, attachments, ar_received_amount, ar_received_at, ar_received_bank, created_at, updated_at, customers(*)')
+        .select('id, order_no, customer_id, order_date, delivery_date, target_purchase_price, estimated_freight, estimated_commission, estimated_customs_fee, other_costs, total_revenue, total_cost, estimated_profit, estimated_margin, currency, exchange_rate, version, status, qimo_order_id, created_by, approved_by, approved_at, notes, attachments, ar_received_amount, ar_received_at, ar_received_bank, created_at, updated_at, customers(*)')
         .is('deleted_at', null)
         .order('created_at', { ascending: false }).order('id', { ascending: true })
       if (statusFilter && statusFilter !== 'all') {
@@ -642,6 +642,7 @@ function mapDbBudgetOrder(row: Record<string, unknown>): BudgetOrder {
     exchange_rate: (row.exchange_rate as number) || 1,
     version: (row.version as number) || 1,
     status: row.status as BudgetOrderStatus,
+    qimo_order_id: (row.qimo_order_id as string) || null,   // budget.confirmed/硬闸门匹配靠它,别再丢
     created_by: row.created_by as string,
     approved_by: (row.approved_by as string) || null,
     approved_at: (row.approved_at as string) || null,

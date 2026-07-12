@@ -86,6 +86,8 @@ export interface BudgetOrder {
   exchange_rate: number
   version: number
   status: BudgetOrderStatus
+  /** 节拍器订单 id（=synced_orders.id=OM orders.id）——budget.confirmed 回传/绮陌硬闸门按此匹配,不可丢 */
+  qimo_order_id?: string | null
   created_by: string
   creator?: User
   approved_by: string | null

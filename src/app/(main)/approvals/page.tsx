@@ -122,7 +122,7 @@ export default function ApprovalsPage() {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
           body: JSON.stringify({
             event: 'budget.confirmed',
-            qimo_order_id: (order as unknown as { qimo_order_id?: string }).qimo_order_id ?? null,
+            qimo_order_id: order.qimo_order_id ?? null,
             order_no: order.order_no,
             amount: order.total_revenue, currency: order.currency,
             note: `财务已确认预算(毛利率 ${order.estimated_margin}%)`,
@@ -287,7 +287,7 @@ export default function ApprovalsPage() {
 
               {/* PO 审批材料:客户PO单据+报价单只读核对(通过前最后一眼) */}
               <OrderPoDocsPanel
-                qimoOrderId={(showDialog.order as unknown as { qimo_order_id?: string }).qimo_order_id}
+                qimoOrderId={showDialog.order.qimo_order_id}
                 budget={{ revenue: showDialog.order.total_revenue, currency: showDialog.order.currency, totalCost: showDialog.order.total_cost, margin: showDialog.order.estimated_margin }}
               />
 
