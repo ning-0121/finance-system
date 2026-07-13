@@ -25,6 +25,7 @@ export async function GET() {
       .from('budget_orders')
       .select('customer_id, total_revenue, total_cost, currency, exchange_rate, status, customers(id, company, country, currency)')
       .in('status', ['approved', 'closed'])
+      .is('deleted_at', null)   // 审计P1:滤软删,取消/作废订单不计入客户利润概览
       .order('order_date', { ascending: false })
       .limit(1000)
 

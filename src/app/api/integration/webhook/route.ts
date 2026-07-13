@@ -545,6 +545,17 @@ async function handleQuotationFrozen(data: Record<string, unknown>) {
     : [{ _cost_breakdown: cb }]
   const patch: Record<string, unknown> = { items }
   if ((!bo?.total_revenue || Number(bo.total_revenue) === 0) && revenueTotal > 0) patch.total_revenue = revenueTotal
+  // 审计P1:同步标量 total_cost/estimated_profit(此前只写 items → 标量列 stale,利润概览按错列算)
+  const totalCost = r2(Object.values(scalar).reduce((s, v) => s + v, 0))
+  patch.total_cost = totalCost
+  ;(cb as Record<string, unknown>).total_cost = totalCost
+  const revCny = revenueTotal > 0 ? revenueTotal
+    : (currency === 'CNY' ? (Number(bo?.total_revenue) || 0) : (rate != null ? r2((Number(bo?.total_revenue) || 0) * rate) : null))
+  if (revCny != null) {
+    const p = r2(revCny - totalCost)
+    patch.estimated_profit = p
+    patch.estimated_margin = revCny ? r2((p / revCny) * 100) : 0
+  }
   const { error } = await supabase.from('budget_orders').update(patch).eq('id', budgetOrderId)
   if (error) throw new Error(`预算自动填充失败: ${error.message}`)
   return { action: 'done', reason: `报价冻结→预算已填 order=${orderNo} · ${Object.values(lines).flat().length} 行 · 核算日 ${quotationAt}${qtyUsed != null ? ` · 单件×数量${qtyUsed}` : ''}` }
@@ -639,41 +650,56 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
   }
 
   // 2. 只填 draft 预算,不覆盖已审批/锁定(与 quotation.frozen 同一保守口径)
-  const { data: bo } = await supabase.from('budget_orders').select('status, total_revenue, items').eq('id', budgetOrderId).maybeSingle()
+  const { data: bo } = await supabase.from('budget_orders').select('status, total_revenue, currency, exchange_rate, items').eq('id', budgetOrderId).maybeSingle()
   if (bo && bo.status !== 'draft') {
     await logFinancialDrop('order.budget_updated', orderNo || qimoOrderId, `采购核料预算/采购填价已收到,但预算单非 draft(${bo?.status})未自动覆盖、新数据未入账(order=${orderNo || qimoOrderId}),请财务核对是否需人工更新预算`)
     return { action: 'ok', reason: `预算单非 draft(${bo?.status}),不自动覆盖` }
   }
 
-  // 3. 绝对总额 → _cost_breakdown 三桶(桶标量=该桶明细之和,维持不变量)
+  // 3. 绝对总额 → _cost_breakdown 三桶(桶标量=该桶明细之和,维持不变量)。
+  //    审计P1:本事件只带 采购三桶(面料/辅料/加工),【合并】进既有 cb —— 绝不硬清零财务已填的
+  //    货代/装柜/物流 + 其他费用(extras)+ 手工调整/报价链明细。只覆盖它带来的三桶。
   const mkLine = (name: string, amount: number) => amount > 0 ? [{ name, qty: 0, unit: '', unit_price: 0, amount }] : []
-  const lines: Record<string, unknown[]> = {
+  const existingItems = Array.isArray((bo as { items?: unknown })?.items) ? ((bo as { items?: unknown[] }).items as unknown[]) : []
+  const prevCb = (existingItems[0] as Record<string, unknown> | undefined)?._cost_breakdown as Record<string, unknown> | undefined
+  const prevLines = (prevCb?.lines as Record<string, unknown[]> | undefined) || {}
+  const num2 = (v: unknown) => r2(Number(v) || 0)
+  // 合并:三采购桶用事件值覆盖;其余三桶 + extras 保留既有
+  const mergedLines: Record<string, unknown[]> = {
+    ...prevLines,
     fabric: mkLine('面料预算(采购核料)', fabric),
     accessory: mkLine('辅料预算(采购核料)', accessory),
     processing: mkLine('加工费预算(采购核料)', processing),
   }
-  const currency = (data.currency as string) || 'CNY'
+  const keepForwarder = num2(prevCb?.forwarder), keepContainer = num2(prevCb?.container), keepLogistics = num2(prevCb?.logistics)
+  const prevExtras = Array.isArray(prevCb?.extras) ? (prevCb!.extras as { name?: string; amount?: number }[]) : []
+  const extrasSum = r2(prevExtras.reduce((s, e) => s + (Number(e?.amount) || 0), 0))
+  const totalCost = r2(fabric + accessory + processing + keepForwarder + keepContainer + keepLogistics + extrasSum)
+  const currency = (bo?.currency as string) || (data.currency as string) || 'CNY'
+  const rate = bo?.exchange_rate != null ? Number(bo.exchange_rate) : (data.exchange_rate != null ? Number(data.exchange_rate) : (currency === 'CNY' ? 1 : null))
+  const revenueInput = Number(bo?.total_revenue) || 0
+  const revenueCny = rate != null ? r2(revenueInput * (currency === 'CNY' ? 1 : rate)) : null
+  const profit = revenueCny != null ? r2(revenueCny - totalCost) : null
+  const margin = profit != null && revenueCny ? r2((profit / revenueCny) * 100) : null
   const cb = {
-    fabric, accessory, processing, forwarder: 0, container: 0, logistics: 0,
-    extras: [], lines,
-    _currency: 'CNY',
-    _revenue_input: Number(bo?.total_revenue) || 0,
-    _revenue_currency: currency,
-    _rate: data.exchange_rate != null ? Number(data.exchange_rate) : (currency === 'CNY' ? 1 : null),
+    ...(prevCb || {}),                                    // 保留 _revenue_* 等元字段与未涉及键
+    fabric, accessory, processing,
+    forwarder: keepForwarder, container: keepContainer, logistics: keepLogistics,
+    extras: prevExtras, lines: mergedLines,
+    total_cost: totalCost,
     _source: 'qimo_procurement_budget',
     _budget_updated_at: new Date().toISOString(),
-    // 采购填价(采购核料按真实物料填的单价×数量)——财务看 原辅料 预算(报价) vs 采购价。
-    // 2026-07-08 辅料先行,2026-07-09 扩到面料/加工(节拍器 actual_totals 需带 fabric_amount/cmt_amount)。
     _actual_accessory: actualAccessory || null,
     _actual_fabric: actualFabric || null,
     _actual_processing: actualProcessing || null,
   }
-  // 保留已有 items 的收入行(如 SKU 款号行),只替换首行的 _cost_breakdown 载体
-  const existingItems = Array.isArray((bo as { items?: unknown })?.items) ? ((bo as { items?: unknown[] }).items as unknown[]) : []
   const items = existingItems.length
     ? existingItems.map((it, i) => (i === 0 ? { ...(it as Record<string, unknown>), _cost_breakdown: cb } : it))
     : [{ _cost_breakdown: cb }]
-  const { error } = await supabase.from('budget_orders').update({ items }).eq('id', budgetOrderId)
+  // 桶标量变了 → 同步 total_cost/estimated_profit/estimated_margin(审计P1:此前只写 items,标量列恒 stale)
+  const patch: Record<string, unknown> = { items, total_cost: totalCost }
+  if (profit != null) { patch.estimated_profit = profit; patch.estimated_margin = margin }
+  const { error } = await supabase.from('budget_orders').update(patch).eq('id', budgetOrderId)
   if (error) throw new Error(`采购核料预算填充失败: ${error.message}`)
   return { action: 'done', reason: `采购核料预算已填 order=${orderNo || qimoOrderId} · 面料 ${fabric} / 加工 ${processing} / 辅料预算 ${accessory} / 辅料实际 ${actualAccessory}` }
 }

@@ -27,6 +27,7 @@ export async function GET(request: NextRequest) {
       .from('budget_orders')
       .select('id, order_no, customer_id, order_date, delivery_date, total_revenue, total_cost, estimated_profit, estimated_margin, currency, exchange_rate, status, notes, customers(id, company, country, currency)')
       .in('status', ['approved', 'closed', 'pending_review', 'draft'])
+      .is('deleted_at', null)   // 审计P1:此前不滤软删,取消/作废订单($79.9万)以纯利润计入利润概览
       .order('order_date', { ascending: false })
       .limit(limit)
 
