@@ -1108,14 +1108,21 @@ async function handlePayableCreated(data: Record<string, unknown>, _requestId: s
     if (reconciliationId && budgetOrderId && lines.length > 0) {
       const costTotal = Math.round(lines.reduce((s, l) => s + num(l.net_amount ?? l.po_amount ?? 0), 0) * 100) / 100
       if (costTotal > 0) {
+        // 审计P2 FX:此前 exchange_rate 恒写 1 → 外币采购成本被 1:1 当人民币。按币种取真实汇率;
+        // 非 CNY 又没带汇率 → 暂 1:1 但记告警,不静默失真(采购基本是 CNY,故属潜伏防御)。
+        const cur = (data.currency as string) || 'CNY'
+        const cRate = cur === 'CNY' ? 1 : (Number(data.exchange_rate) > 0 ? Number(data.exchange_rate) : 1)
+        if (cur !== 'CNY' && !(Number(data.exchange_rate) > 0)) {
+          await logFinancialDrop('payable.created', reconciliationId, `采购对账成本为外币(${cur})但事件未带汇率,暂按1:1入cost_items,金额可能失真,请财务核对汇率(reconciliation=${reconciliationId})`)
+        }
         const costRow = {
           budget_order_id: budgetOrderId,
           cost_type: 'procurement',
           description: `采购对账成本 ${(data.po_no as string) || ''}`.trim(),
           supplier: (data.supplier_name as string) || '(未标注供应商)',
           amount: costTotal,
-          currency: (data.currency as string) || 'CNY',
-          exchange_rate: 1,
+          currency: cur,
+          exchange_rate: cRate,
           source_module: 'procurement_reconciliation',
           source_id: reconciliationId,
           created_by: null,
