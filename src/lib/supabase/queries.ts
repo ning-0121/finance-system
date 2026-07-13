@@ -210,10 +210,10 @@ export async function updateBudgetOrderStatus(
   try {
     const supabase = createClient()
 
-    // 1. 读取当前状态（乐观锁检查）
+    // 1. 读取当前状态（乐观锁检查）+ 审批内控所需字段
     const { data: current, error: readError } = await supabase
       .from('budget_orders')
-      .select('status, updated_at')
+      .select('status, updated_at, created_by, currency, exchange_rate')
       .eq('id', id)
       .single()
 
@@ -225,6 +225,20 @@ export async function updateBudgetOrderStatus(
     const allowedTransitions = VALID_TRANSITIONS[current.status] || []
     if (!allowedTransitions.includes(newStatus)) {
       return { error: `不能从"${current.status}"转为"${newStatus}"` }
+    }
+
+    // 2.5 审批内控闸(审计P1.2:下沉到此,两个审批入口共用——审批队列页此前完全没有这两道校验,已现自审自批)
+    if (newStatus === 'approved') {
+      // 自审批阻止:审批人 ≠ 创建人(建单即批单破坏内控)
+      if (approvedBy && current.created_by && approvedBy === current.created_by) {
+        return { error: '不能审批自己创建的预算单——需他人复核' }
+      }
+      // 外币汇率必填:否则折人民币收入/利润按缺省或 0 算错,GL 确认收入凭证也错
+      const cur = (current.currency as string) || 'USD'
+      const rate = Number(current.exchange_rate)
+      if (cur !== 'CNY' && !(rate > 0)) {
+        return { error: `外币(${cur})预算单必须先填结汇汇率才能审批通过` }
+      }
     }
 
     // 3. 带条件更新（乐观锁：只有状态没被他人改过才能更新）

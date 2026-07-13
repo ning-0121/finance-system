@@ -8,7 +8,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { sendApprovalToMetronome } from '@/lib/integration/client'
-import { validateRequest } from '@/lib/integration/security'
 import type { ApprovalDecision } from '@/lib/integration/types'
 
 export async function POST(request: Request) {
@@ -18,13 +17,13 @@ export async function POST(request: Request) {
     // 前端调用仍走 Supabase Auth + 角色。请求体只能读一次,按分支各自读取。
     const apiKey = request.headers.get('x-api-key')
     let body: ApprovalDecision
+    let trustedActorId: string          // 审批人一律取真身,绝不信客户端传入(铁律)
+    let trustedActorName: string
     if (apiKey) {
-      // 集成调用:强鉴权(签名+时间戳),防伪造/重放
-      const v = await validateRequest(request)
-      if (!v.valid) {
-        return NextResponse.json({ error: 'Unauthorized', reason: v.error }, { status: 401 })
-      }
-      body = JSON.parse(v.body!) as ApprovalDecision
+      // 审计P1.3:机器/集成通道不得代人写审批结论(违反铁律「机器不得代人审批」)。
+      // 本路由唯一调用方是财务前端(IntegrationApprovals.tsx,走 Supabase Auth),节拍器只发起
+      // 审批【请求】(webhook),不该决策。x-api-key 决策分支=后门,直接拒绝。
+      return NextResponse.json({ error: '审批须由财务在系统内操作,集成通道不受理审批决策' }, { status: 403 })
     } else {
       // 前端调用：必须验证登录状态和角色，无演示模式绕过
       const supabase = await createClient()
@@ -36,7 +35,7 @@ export async function POST(request: Request) {
 
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role')
+        .select('role, name')
         .eq('id', user.id)
         .single()
 
@@ -44,9 +43,14 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: '需要财务角色权限' }, { status: 403 })
       }
       body = await request.json() as ApprovalDecision
+      trustedActorId = user.id                                        // 真实登录人,忽略 body.decided_by
+      trustedActorName = (profile.name as string) || '财务'
     }
 
-    const { approval_id, approval_type, decision, decided_by, decider_name, decision_note } = body
+    // 审批人一律用真身覆盖客户端传入值(审计P1.3:防伪造留痕)
+    const { approval_id, approval_type, decision, decision_note } = body
+    const decided_by = trustedActorId
+    const decider_name = trustedActorName
 
     if (!approval_id || !approval_type || !decision || !decided_by) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
