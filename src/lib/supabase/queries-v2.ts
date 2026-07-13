@@ -741,10 +741,34 @@ export async function createSupplierPayment(payment: {
 export async function deleteSupplierPayment(id: string): Promise<{ error: string | null }> {
   try {
     const supabase = createClient()
-    const { error } = await supabase
+    // 审计P1守卫:系统出款通道(排款单执行 source_batch_line_id / 出纳同步 source_payable_id)产生的
+    //   实付流水不可直接软删——删了对账单余额回升,但 payable_records/payment_batch_lines 仍为 paid(终态),
+    //   破坏「出款唯一通道」守恒。只有手记付款(无来源锚点)可删。
+    const { data: pay, error: readErr } = await supabase
       .from('supplier_payments')
-      .update({ deleted_at: new Date().toISOString() })
+      .select('id, source_batch_line_id, source_payable_id, deleted_at')
+      .eq('id', id).maybeSingle()
+    if (readErr) {
+      // 列不存在的老环境(source_* 未建)→ 退回原行为(不因守卫拿不到就打挂)
+      if (!/column .* does not exist/i.test(readErr.message)) return { error: readErr.message }
+    } else {
+      if (!pay) return { error: '付款流水不存在' }
+      if ((pay as { deleted_at?: string }).deleted_at) return { error: null }   // 已删,幂等
+      const p = pay as { source_batch_line_id?: string | null; source_payable_id?: string | null }
+      if (p.source_batch_line_id || p.source_payable_id) {
+        return { error: '这是系统出款通道(排款单执行/出纳同步)产生的实付流水,不能直接删除——会破坏付款守恒(排款/应付仍为已付)。如确需红冲,请走冲销流程或联系管理员。' }
+      }
+    }
+    const { data: userData } = await supabase.auth.getUser()
+    const now = new Date().toISOString()
+    // 先带留痕列(deleted_by/delete_reason);列未建的老环境降级只写 deleted_at(迁移 20260713 补列)
+    let { error } = await supabase
+      .from('supplier_payments')
+      .update({ deleted_at: now, deleted_by: userData?.user?.id || null, delete_reason: '手记付款流水删除' })
       .eq('id', id)
+    if (error && /column .* does not exist/i.test(error.message)) {
+      ({ error } = await supabase.from('supplier_payments').update({ deleted_at: now }).eq('id', id))
+    }
     return { error: error?.message || null }
   } catch (e) {
     return { error: e instanceof Error ? e.message : 'Unknown error' }

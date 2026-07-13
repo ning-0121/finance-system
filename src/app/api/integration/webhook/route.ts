@@ -261,21 +261,39 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
   //   (pending_approval/approved/rejected/registered/ignored)inbox 重投/重发一律不改状态,
   //   否则已批已下单的单凭空回到待审、留痕与状态自相矛盾。
   const { data: existing } = await supabase.from('fin_purchase_orders')
-    .select('fin_status').eq('purchase_order_id', poKey).maybeSingle()
-  const cur = (existing as { fin_status?: string } | null)?.fin_status || null
+    .select('fin_status, total_amount, supplier_name, currency').eq('purchase_order_id', poKey).maybeSingle()
+  const ex = existing as { fin_status?: string; total_amount?: number; supplier_name?: string; currency?: string } | null
+  const cur = ex?.fin_status || null
   const gated = !cur || cur === 'pending'   // 新单或旧 pending → 送审批
   const headExtra: Record<string, unknown> = gated
     ? { fin_status: 'pending_approval', requires_approval: true }
     : {}
 
-  const { data: poRow, error: poErr } = await supabase.from('fin_purchase_orders').upsert({
-    purchase_order_id: poKey,
-    po_no: String(data.po_no || poKey),
+  // 采购批后改价防护(审计P1):已批准/已付/已登记的单,金额/供应商/币种是审批基准,
+  //   节拍器 resync 不得静默覆盖(否则批的是A金额、付的是B金额,无再审批无告警)。
+  //   锁定单只更新追踪字段(状态/交期/order_refs/溯源);财务基准变了 → 记告警待复核,不改基准。
+  const LOCKED = ['approved', 'paid', 'registered']
+  const locked = LOCKED.includes(cur || '')
+  const financial: Record<string, unknown> = locked ? {} : {
     supplier_id: (data.supplier_id as string) ?? null,
     supplier_name: (data.supplier_name as string) ?? null,
     total_amount: totalAmount,
     currency: (data.currency as string) || 'CNY',
     payment_terms: (data.payment_terms as string) ?? null,
+  }
+  if (locked) {
+    const existAmt = ex?.total_amount != null ? Number(ex.total_amount) : null
+    const amtChanged = (totalAmount ?? null) !== existAmt
+    const supChanged = ((data.supplier_name as string) ?? null) !== (ex?.supplier_name ?? null)
+    const curChanged = ((data.currency as string) || 'CNY') !== (ex?.currency || 'CNY')
+    if (amtChanged || supChanged || curChanged)
+      await logFinancialDrop('purchase_order.placed', poKey, `采购单 ${String(data.po_no || poKey)} 已「${cur}」,节拍器重推的采购基准与审批时不同(金额 ${existAmt}→${totalAmount}${supChanged ? ` · 供应商 ${ex?.supplier_name}→${data.supplier_name}` : ''}${curChanged ? ` · 币种 ${ex?.currency}→${data.currency}` : ''}),已保留审批基准未改,请财务复核是否需驳回重批`)
+  }
+
+  const { data: poRow, error: poErr } = await supabase.from('fin_purchase_orders').upsert({
+    purchase_order_id: poKey,
+    po_no: String(data.po_no || poKey),
+    ...financial,
     delivery_date: (data.delivery_date as string) ?? null,
     status: (data.status as string) ?? null,
     placed_at: (data.placed_at as string) ?? null,
