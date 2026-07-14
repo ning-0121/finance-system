@@ -84,7 +84,12 @@ export async function voidReceivablePayment(id: string, reason?: string): Promis
     const supabase = createClient()
     const { data: userData } = await supabase.auth.getUser()
     const { error } = await supabase.rpc('void_receivable_payment', { p_receipt_id: id, p_actor: userData?.user?.id || null, p_reason: reason || null })
-    return { error: error?.message || null }
+    if (error) return { error: error.message }
+    // 审计P1:作废回款须解除银行对账认领,否则 bank_transactions 仍标 matched 指向已作废回款(悬挂认领)。
+    await supabase.from('bank_transactions')
+      .update({ match_status: 'unmatched', matched_type: null, matched_id: null, matched_by: null, matched_at: null, match_note: '关联回款已作废,自动解除对账' })
+      .eq('matched_type', 'receivable_payment').eq('matched_id', id).eq('match_status', 'matched')
+    return { error: null }
   } catch (e) { return { error: e instanceof Error ? e.message : '未知错误' } }
 }
 
@@ -100,6 +105,15 @@ export async function editReceivablePayment(a: {
   try {
     const supabase = createClient()
     const { data: userData } = await supabase.auth.getUser()
+    // 审计P1:改金额前先挡银行对账认领——RPC 的「仅未匹配可改」只看订单分配,不看 bank_transactions 认领;
+    //   已被银行流水认领的回款改了金额,对账金额就对不上了。改元数据(amount_original 为空)不受限。
+    if (a.amount_original != null) {
+      const { data: claimed } = await supabase.from('bank_transactions')
+        .select('id').eq('matched_type', 'receivable_payment').eq('matched_id', a.receipt_id).eq('match_status', 'matched').limit(1)
+      if (claimed && claimed.length > 0) {
+        return { error: '该回款已被银行对账认领,不能改金额——请先在「银行·对账」取消该笔匹配,再改金额。' }
+      }
+    }
     const { error } = await supabase.rpc('edit_receivable_payment', {
       p_receipt_id: a.receipt_id,
       p_received_at: a.received_at ? a.received_at.slice(0, 10) : null,
