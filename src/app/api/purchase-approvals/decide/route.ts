@@ -41,11 +41,17 @@ export async function POST(request: Request) {
     if (refs.length > 0) {
       const { data: synced } = await supabase.from('synced_orders')
         .select('id, order_no, style_no, budget_order_id').in('id', refs)
-      const missing = (synced || []).filter(s => !(s as { budget_order_id?: string | null }).budget_order_id)
+      const foundById = new Map((synced || []).map(s => [String((s as { id: string }).id), s as { order_no?: string; style_no?: string; budget_order_id?: string | null }]))
+      // 审计P2:闸门此前只 filter「查到的行」——订单从未同步到 synced_orders 时返回 0 行 → missing=[] 直接放行,
+      //   与「必须已生成预算单」相悖。改为:未同步的 ref 也算缺预算(查无此单=无预算,更该拦)。
+      const missing = refs.filter(id => {
+        const s = foundById.get(id)
+        return !s || !s.budget_order_id
+      })
       if (missing.length > 0) {
-        const names = missing.map(s => (s as { style_no?: string; order_no?: string }).style_no || (s as { order_no?: string }).order_no).filter(Boolean).join('、')
+        const names = missing.map(id => { const s = foundById.get(id); return s?.style_no || s?.order_no || `未同步订单(${id.slice(0, 8)})` }).join('、')
         return NextResponse.json({
-          error: `关联订单尚未生成预算单(${names || missing.length + ' 个订单'}),请先在本页「生成预算草稿」完成预算,再批准放行`,
+          error: `关联订单尚未生成预算单(${names}),请先在本页「生成预算草稿」完成预算,再批准放行`,
           code: 'BUDGET_REQUIRED',
         }, { status: 409 })
       }
