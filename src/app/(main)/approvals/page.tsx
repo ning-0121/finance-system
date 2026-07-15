@@ -22,6 +22,7 @@ import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canApprove, canViewApprovalQueue, requiresExtraConfirmation } from '@/lib/auth/permissions'
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
 import { IntegrationApprovals } from './IntegrationApprovals'
+import { MetronomePurposeApprovals } from './MetronomePurposeApprovals'
 import { OrderVoidQueue } from './OrderVoidQueue'
 import Link from 'next/link'
 import type { BudgetOrder, ApprovalLog } from '@/lib/types'
@@ -265,6 +266,9 @@ export default function ApprovalsPage() {
 
         {/* 集成审批(来自节拍器):price/delay/cancel/milestone —— 此前无 UI 的死信队列(审计#8) */}
         <IntegrationApprovals userId={user.id} userName={user.name} />
+
+        {/* 节拍器·订单用途变更审批(2026-07-15):业务提请自产/经销/委托 → 财务批准 → 回传节拍器执行 */}
+        <MetronomePurposeApprovals />
 
         {/* 作废审批队列(问题2):订单作废申请 → 财务终审 → 级联软删 */}
         <OrderVoidQueue />

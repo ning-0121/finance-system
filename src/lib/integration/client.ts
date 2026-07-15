@@ -173,6 +173,36 @@ export async function fetchAllOrdersFromMetronome(updatedSince?: string): Promis
   return { success: true, data: all }
 }
 
+// --- 拉取节拍器「订单用途变更」待审批申请(签名 GET;resource='purpose-requests')---
+// 节拍器侧 GET /api/integration/purpose-requests 返回 { data:[{id, order_id, order_no,
+//   internal_order_no, customer_name, from_purpose, to_purpose, reason, requester_name, created_at}] }
+export async function fetchPendingPurposeRequestsFromMetronome(): Promise<{
+  success: boolean
+  data?: Record<string, unknown>[]
+  error?: string
+}> {
+  if (!ORDER_METRONOME_URL) return { success: false, error: 'ORDER_METRONOME_URL not configured' }
+  try {
+    const timestamp = new Date().toISOString()
+    const signature = generateSignature(`GET:purpose-requests:${timestamp}`, WEBHOOK_SECRET)
+    const response = await fetch(`${ORDER_METRONOME_URL}/api/integration/purpose-requests`, {
+      headers: {
+        'x-api-key': API_KEY,
+        'x-webhook-signature': signature,
+        'x-timestamp': timestamp,
+        'x-source': 'finance-system',
+      },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!response.ok) return { success: false, error: `HTTP ${response.status}` }
+    const json = await response.json()
+    const data = Array.isArray(json) ? json : (json.data || [])
+    return { success: true, data: data as Record<string, unknown>[] }
+  } catch (error) {
+    return { success: false, error: `Network error: ${error instanceof Error ? error.message : 'unknown'}` }
+  }
+}
+
 // --- 查询节拍器订单详情 ---
 export async function fetchOrderFromMetronome(orderNo: string): Promise<{
   success: boolean

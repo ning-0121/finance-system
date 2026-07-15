@@ -111,8 +111,8 @@ export interface PriceDiff {
 
 // --- 审批决定（财务系统 -> 节拍器） ---
 export interface ApprovalDecision {
-  approval_id: string        // price/cancel=审批ID；purchase=采购单 purchase_order_id
-  approval_type: 'price' | 'cancel' | 'purchase'
+  approval_id: string        // price/cancel=审批ID；purchase=采购单 purchase_order_id；order_purpose=改用途申请ID
+  approval_type: 'price' | 'cancel' | 'purchase' | 'order_purpose'
   decision: 'approved' | 'rejected'
   decided_by: string         // 财务系统用户ID
   decider_name: string       // 财务系统用户名
