@@ -42,9 +42,20 @@ export function computeDedupKey(row: { txn_date: string; direction: string; amou
 
 export async function getBankAccounts() {
   const supabase = createClient()
-  const { data, error } = await supabase.from('bank_accounts').select('id, account_name, bank_name, account_number, currency, current_balance, is_active').eq('is_active', true).order('account_name')
+  const { data, error } = await supabase.from('bank_accounts').select('id, account_name, bank_name, account_number, currency, current_balance, is_active, branch_name, legal_entity, account_purpose, remarks').eq('is_active', true).order('account_name')
   if (error) console.error('[bank] getBankAccounts:', error.message)
   return data || []
+}
+
+export function maskBankAccountNumber(value: string | null | undefined) {
+  const raw = (value || '').replace(/\s/g, '')
+  if (!raw) return ''
+  return raw.length <= 8 ? `${raw.slice(0, 2)}***${raw.slice(-2)}` : `${raw.slice(0, 4)}****${raw.slice(-4)}`
+}
+
+export function bankAccountDisplay(account: { account_name?: string | null; bank_name?: string | null; account_number?: string | null; currency?: string | null; branch_name?: string | null }) {
+  return [account.account_name || account.bank_name || '未命名账户', account.bank_name, account.branch_name, account.currency, maskBankAccountNumber(account.account_number)]
+    .filter(Boolean).join(' · ')
 }
 
 export async function getBankTransactions(accountId: string): Promise<BankTxn[]> {

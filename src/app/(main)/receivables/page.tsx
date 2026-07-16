@@ -35,6 +35,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
+import { bankAccountDisplay, getBankAccounts } from '@/lib/supabase/bank'
 
 type ARStatus = 'unpaid' | 'partial' | 'paid' | 'overdue' | 'abnormal'
 type ReceivableRow = {
@@ -182,6 +183,7 @@ export default function ReceivablesPage() {
   // 回款流水层
   const [receipts, setReceipts] = useState<ReceivablePayment[]>([])
   const [allocations, setAllocations] = useState<ReceivablePaymentAllocation[]>([])
+  const [activeBankAccounts, setActiveBankAccounts] = useState<Array<{ id: string; account_name: string | null; bank_name: string | null; account_number: string | null; currency: string | null; branch_name?: string | null }>>([])
   const [showUnmatched, setShowUnmatched] = useState(false)   // 右侧切到「未匹配回款」视图
   const [expandedOrder, setExpandedOrder] = useState<Record<string, boolean>>({})
   // 登记回款 Dialog
@@ -221,10 +223,11 @@ export default function ReceivablesPage() {
   const [editSaving, setEditSaving] = useState(false)
 
   async function reload() {
-    const [orders, recv, allocs] = await Promise.all([getBudgetOrders(), getReceivablePayments(), getReceivableAllocations()])
+    const [orders, recv, allocs, bankAccounts] = await Promise.all([getBudgetOrders(), getReceivablePayments(), getReceivableAllocations(), getBankAccounts()])
     setDraftCount(orders.filter(o => o.status === 'draft' || o.status === 'pending_review').length)
     setReceipts(recv)
     setAllocations(allocs)
+    setActiveBankAccounts(bankAccounts as typeof activeBankAccounts)
     const arOrders = orders.filter(o => (o.status === 'approved' || o.status === 'closed' || o.status === 'draft') && o.total_revenue && o.total_revenue > 0)
     // 内部订单号：仅按相关订单精准查询 synced_orders（不拉全表）；含 draft 以便未审草稿也显示内部号
     const boIds = arOrders.map(o => o.id)
@@ -332,7 +335,12 @@ export default function ReceivablesPage() {
   const totalContract = customers.reduce((s, c) => s + c.contractCny, 0)
   const totalReceived = customers.reduce((s, c) => s + c.receivedCny, 0)
 
-  const bankOptions = Array.from(new Set(receivables.map(r => r.bank).filter((b): b is string => !!b && b.trim() !== ''))).sort()
+  const bankMasterOptions = activeBankAccounts.map(account => ({ id: account.id, label: bankAccountDisplay(account) }))
+  const bankOptions = Array.from(new Set([
+    ...bankMasterOptions.map(option => option.label),
+    ...receivables.map(r => r.bank).filter((b): b is string => !!b && b.trim() !== ''),
+  ])).sort()
+  const bankAccountIdFor = (label: string) => bankMasterOptions.find(option => option.label === label)?.id || null
 
   // 快捷登记收款 — 财务化：不再直写 ar_received_amount（projection），改为
   // 自动生成回款流水并匹配到本订单（RPC 内回写 projection）。操作习惯不变、数据归一：
@@ -398,6 +406,7 @@ export default function ReceivablesPage() {
           exchange_rate: effRate,
           received_at: at,
           bank_account: receiptBank.trim() || null,
+          bank_account_id: bankAccountIdFor(receiptBank),
           source_type: 'manual',
           notes: row.hasLedger ? '快捷登记收款（自动建流水）' : '快捷登记收款（含历史已收合并入流水）',
         })
@@ -544,6 +553,7 @@ export default function ReceivablesPage() {
       customer_name: regForm.customer.trim(), budget_order_id: regOrderId || null,
       amount_original: amt, currency: regForm.currency, exchange_rate: effRate,
       received_at: regForm.date || null, bank_account: regForm.bank.trim() || null,
+      bank_account_id: bankAccountIdFor(regForm.bank),
       attachment_url: regForm.attachmentUrl || null, source_type: regForm.source, notes: regForm.notes.trim() || null,
     })
     if (error || !pay) { setRegSaving(false); toast.error(error || '登记失败'); return }
