@@ -44,6 +44,7 @@ export async function createReceivablePayment(p: {
   customer_id?: string | null; customer_name?: string | null; budget_order_id?: string | null
   amount_original: number; currency?: string; exchange_rate?: number
   received_at?: string | null; bank_account?: string | null; payment_reference?: string | null
+  bank_account_id?: string | null
   attachment_url?: string | null
   source_type?: ReceivablePayment['source_type']; notes?: string | null
 }): Promise<{ data: ReceivablePayment | null; error: string | null }> {
@@ -62,6 +63,7 @@ export async function createReceivablePayment(p: {
       amount_cny: amountCny,
       received_at: p.received_at || null,
       bank_account: p.bank_account?.trim() || null,
+      bank_account_id: p.bank_account_id || null,
       payment_reference: p.payment_reference?.trim() || null,
       // 仅在有水单时才带该列——迁移未跑的环境下(列不存在)不影响无附件登记
       ...(p.attachment_url ? { attachment_url: p.attachment_url } : {}),
