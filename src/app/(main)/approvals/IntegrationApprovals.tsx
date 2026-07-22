@@ -63,19 +63,22 @@ const KEY_LABEL: Record<string, string> = {
 function fmtDate(v: unknown): string {
   try { const d = new Date(v as string); return isNaN(d.getTime()) ? String(v) : d.toLocaleString('zh-CN', { hour12: false }) } catch { return String(v) }
 }
+// 节拍器快照里会带 po_parse_snapshot(几 KB 的 AI 识别底档,嵌套对象)等大 blob,
+// 财务审批用不到,平铺出来只会把弹窗撑爆、把批准/驳回按钮挤到屏幕外。整行隐藏。
+const HIDDEN_KEYS = new Set(['po_parse_snapshot', 'po_parse_snapshot_at', 'styles', 'trims', 'measurements'])
 function fmtVal(k: string, v: unknown): string {
   if (v == null || v === '') return '—'
   if (k === 'step_key') return STEP_LABEL[v as string] || String(v)
   if (k === 'milestone_status') return MS_LABEL[v as string] || String(v)
   if (/(_at$|^due)/.test(k)) return fmtDate(v)
-  if (typeof v === 'object') return JSON.stringify(v)
+  if (typeof v === 'object') { const s = JSON.stringify(v); return s.length > 160 ? s.slice(0, 160) + '…' : s }  // 长 JSON 截断,不撑破布局
   return String(v)
 }
 function toPairs(obj: unknown): [string, string][] {
   if (obj == null) return []
   if (typeof obj !== 'object') return [['说明', String(obj)]]
   return Object.entries(obj as Record<string, unknown>)
-    .filter(([, v]) => v != null && v !== '')
+    .filter(([k, v]) => v != null && v !== '' && !HIDDEN_KEYS.has(k))
     .map(([k, v]) => [KEY_LABEL[k] || k, fmtVal(k, v)] as [string, string])
 }
 
@@ -236,16 +239,18 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
 
       {/* 详情 + 审批 弹窗 */}
       <Dialog open={!!sel} onOpenChange={o => !o && !busy && setSel(null)}>
-        <DialogContent className="max-w-lg">
+        {/* 2026-07-21:弹窗改「头/尾固定 + 中间滚动」。原来内容一长(如带识别快照),
+            底部批准/驳回按钮会掉到屏幕外看不到 → 财务无法审批。 */}
+        <DialogContent className="max-w-lg max-h-[88vh] flex flex-col gap-0 p-0">
           {sel && (
             <>
-              <DialogHeader>
+              <DialogHeader className="shrink-0 p-6 pb-3">
                 <DialogTitle className="flex items-center gap-2">
                   <Badge className={TYPE_LABEL[sel.approval_type]?.color} variant="secondary">{TYPE_LABEL[sel.approval_type]?.label || sel.approval_type}</Badge>
                   <span>{sel.summary}</span>
                 </DialogTitle>
               </DialogHeader>
-              <div className="space-y-3">
+              <div className="space-y-3 overflow-y-auto flex-1 px-6">
                 {/* 基本信息 */}
                 <div className="rounded-lg border p-3 text-sm space-y-1.5">
                   <div className="flex justify-between gap-2">
@@ -335,7 +340,7 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
                   placeholder="审批意见（驳回必填,会回传节拍器给申请人）" />
                 <p className="text-[11px] text-muted-foreground">结果回传节拍器：批准→节拍器执行；驳回→拦下并显示原因。</p>
               </div>
-              <DialogFooter className="gap-2">
+              <DialogFooter className="gap-2 shrink-0 border-t p-6 pt-3">
                 <Button variant="destructive" disabled={!!busy} onClick={() => decide('rejected')}>
                   {busy === 'rejected' ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <XCircle className="h-4 w-4 mr-1" />}驳回
                 </Button>
