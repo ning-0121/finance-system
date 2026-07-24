@@ -172,9 +172,15 @@ export default function OrdersPage() {
     return s && (s.status === 'confirmed' || s.status === 'locked') ? s.final_margin : fallback
   }
 
+  // 「待建预算」= 草稿且合同金额为 0 的空壳单(多为节拍器同步来、业务没定价 → 财务没法审 → 堰塞在草稿里)
+  const isNeedsBudget = (o: BudgetOrder) => o.status === 'draft' && Number(o.total_revenue || 0) === 0
+
   const filteredOrders = orders
     .filter((order) => {
-      const matchesStatus = statusFilter === 'all' || order.status === statusFilter
+      const matchesStatus =
+        statusFilter === 'all' ? true
+        : statusFilter === 'needs_budget' ? isNeedsBudget(order)
+        : order.status === statusFilter
       const matchesSearch = search === '' ||
         order.order_no.toLowerCase().includes(search.toLowerCase()) ||
         order.customer?.company?.toLowerCase().includes(search.toLowerCase()) ||
@@ -204,6 +210,7 @@ export default function OrdersPage() {
 
   const statusCounts = {
     all: orders.length,
+    needs_budget: orders.filter(isNeedsBudget).length,
     draft: orders.filter(o => o.status === 'draft').length,
     pending_review: orders.filter(o => o.status === 'pending_review').length,
     approved: orders.filter(o => o.status === 'approved').length,
@@ -265,6 +272,9 @@ export default function OrdersPage() {
           <TabsList className="flex-wrap">
             <TabsTrigger value="intake" className="data-[state=active]:bg-amber-100 data-[state=active]:text-amber-800">
               🆕 新到订单 ({intakeOrders.length})
+            </TabsTrigger>
+            <TabsTrigger value="needs_budget" className="data-[state=active]:bg-red-100 data-[state=active]:text-red-800">
+              ⚠️ 待建预算 ({statusCounts.needs_budget})
             </TabsTrigger>
             <TabsTrigger value="all">全部 ({statusCounts.all})</TabsTrigger>
             <TabsTrigger value="draft">草稿 ({statusCounts.draft})</TabsTrigger>
@@ -339,6 +349,12 @@ export default function OrdersPage() {
                 </Table>
               </div>
             ) : (
+              <>
+              {statusFilter === 'needs_budget' && (
+                <div className="px-4 py-3 text-xs text-red-800 bg-red-50 border-b border-red-100">
+                  这些订单已建预算单但 <b>合同金额为 0</b>（多为节拍器同步来、业务还没定价）——一直躺在草稿里、进不了审批队列，导致节拍器那边采购被硬闸门拦住。请点进订单 <b>补成交价 + 成本</b> 后 <b>提交审批</b>，审批通过会自动回传节拍器放行采购。
+                </div>
+              )}
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -426,11 +442,12 @@ export default function OrdersPage() {
                   ))}
                   {filteredOrders.length === 0 && !loading && (
                     <TableRow>
-                      <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">没有找到匹配的订单</TableCell>
+                      <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">{statusFilter === 'needs_budget' ? '没有待建预算的空壳单 —— 都已补价或已提交 👍' : '没有找到匹配的订单'}</TableCell>
                     </TableRow>
                   )}
                 </TableBody>
               </Table>
+              </>
             )}
           </CardContent>
         </Card>
