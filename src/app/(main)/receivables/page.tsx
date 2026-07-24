@@ -34,7 +34,11 @@ import {
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { getJournalAccounts, type JournalAccount } from '@/lib/supabase/bank-journal'
 import { toast } from 'sonner'
+
+/** 公司内部账号显示串:户名(·开户行)——收款银行下拉/补全用,与「收款信息维护」一致。 */
+const bankAccountLabel = (a: JournalAccount) => `${a.account_name}${a.bank_name ? ' · ' + a.bank_name : ''}`
 
 type ARStatus = 'unpaid' | 'partial' | 'paid' | 'overdue' | 'abnormal'
 type ReceivableRow = {
@@ -180,6 +184,7 @@ export default function ReceivablesPage() {
   const [openTabs, setOpenTabs] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
   // 回款流水层
+  const [internalAccounts, setInternalAccounts] = useState<JournalAccount[]>([])
   const [receipts, setReceipts] = useState<ReceivablePayment[]>([])
   const [allocations, setAllocations] = useState<ReceivablePaymentAllocation[]>([])
   const [showUnmatched, setShowUnmatched] = useState(false)   // 右侧切到「未匹配回款」视图
@@ -249,6 +254,7 @@ export default function ReceivablesPage() {
   useEffect(() => {
     async function load() { try { await reload() } catch { /* */ } setLoading(false) }
     load()
+    getJournalAccounts().then(setInternalAccounts).catch(() => {})   // 公司内部账号 → 收款银行下拉
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -332,7 +338,11 @@ export default function ReceivablesPage() {
   const totalContract = customers.reduce((s, c) => s + c.contractCny, 0)
   const totalReceived = customers.reduce((s, c) => s + c.receivedCny, 0)
 
-  const bankOptions = Array.from(new Set(receivables.map(r => r.bank).filter((b): b is string => !!b && b.trim() !== ''))).sort()
+  // 收款银行下拉/补全:公司内部账号(「收款信息维护」维护)优先,其后并入历史用过的银行名。
+  const bankOptions = Array.from(new Set([
+    ...internalAccounts.map(bankAccountLabel),
+    ...receivables.map(r => r.bank).filter((b): b is string => !!b && b.trim() !== ''),
+  ]))
 
   // 快捷登记收款 — 财务化：不再直写 ar_received_amount（projection），改为
   // 自动生成回款流水并匹配到本订单（RPC 内回写 projection）。操作习惯不变、数据归一：
@@ -707,6 +717,8 @@ export default function ReceivablesPage() {
 
   return (
     <div className="flex flex-col h-full">
+      {/* 全局收款银行下拉数据(公司内部账号 + 历史)——三处收款输入共用,任一弹窗打开都可选 */}
+      <datalist id="ar-bank-options">{bankOptions.map(b => <option key={b} value={b} />)}</datalist>
       <Header title="应收账款管理" subtitle="客户维度 · 左选客户右多标签同时打开对比 · 未收/逾期按人民币口径" />
 
       {/* KPI */}
@@ -1049,8 +1061,7 @@ export default function ReceivablesPage() {
               <div className="space-y-2"><Label>实际收款日期</Label><Input type="date" value={receiptDate} onChange={e => setReceiptDate(e.target.value)} /></div>
               <div className="space-y-2">
                 <Label>收款银行 / 账户</Label>
-                <Input list="ar-bank-options" placeholder="如：工行义乌分行 / 招行 6222... / PayPal" value={receiptBank} onChange={e => setReceiptBank(e.target.value)} />
-                <datalist id="ar-bank-options">{bankOptions.map(b => <option key={b} value={b} />)}</datalist>
+                <Input list="ar-bank-options" placeholder="选公司账号,或手填(工行义乌 / 招行 6222 / PayPal)" value={receiptBank} onChange={e => setReceiptBank(e.target.value)} />
                 <p className="text-[11px] text-muted-foreground">记录这笔钱打到哪个账户，方便核对回款流向。</p>
               </div>
             </div>
@@ -1111,7 +1122,7 @@ export default function ReceivablesPage() {
                 <p className="text-sm text-muted-foreground">客户 <span className="font-medium text-foreground">{editReceipt.customer_name || '—'}</span></p>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5"><Label>到账日期</Label><Input type="date" value={editForm.date} onChange={e => setEditForm(f => ({ ...f, date: e.target.value }))} /></div>
-                  <div className="space-y-1.5"><Label>收款银行</Label><Input value={editForm.bank} onChange={e => setEditForm(f => ({ ...f, bank: e.target.value }))} placeholder="如：工行 / 中行..." /></div>
+                  <div className="space-y-1.5"><Label>收款银行</Label><Input list="ar-bank-options" value={editForm.bank} onChange={e => setEditForm(f => ({ ...f, bank: e.target.value }))} placeholder="选公司账号 / 手填" /></div>
                 </div>
                 <div className="space-y-1.5"><Label>流水号 / 水单号</Label><Input value={editForm.ref} onChange={e => setEditForm(f => ({ ...f, ref: e.target.value }))} placeholder="银行流水号 / 回单号" /></div>
                 <div className="grid grid-cols-3 gap-3">
