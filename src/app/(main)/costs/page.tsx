@@ -250,6 +250,10 @@ export default function CostsPage() {
     )
   }
 
+  // 品名映射:关联订单(budget_order)的品名 → 费用表「品名」列
+  const productNameMap: Record<string, string> = {}
+  for (const o of orders) { const pn = (o as { id: string; product_name?: string | null }).product_name; if (pn) productNameMap[o.id] = pn }
+
   const filteredItems = costItems.filter(c => {
     // tab筛选
     if (tab === 'unlinked' && c.budget_order_id) return false
@@ -762,6 +766,7 @@ export default function CostsPage() {
                   <TableRow>
                     <TableHead>类型</TableHead>
                     <TableHead>供应商</TableHead>
+                    <TableHead>品名</TableHead>
                     <TableHead>描述</TableHead>
                     <TableHead>数量×单价</TableHead>
                     <TableHead>关联订单</TableHead>
@@ -782,6 +787,7 @@ export default function CostsPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-sm">{item.supplier || '-'}</TableCell>
+                        <TableCell className="text-sm max-w-[160px] truncate">{(item.budget_order_id && productNameMap[item.budget_order_id]) || '—'}</TableCell>
                         <TableCell className="max-w-[200px] truncate">{item.description}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {item.detail_meta ? `${item.detail_meta.qty}${item.detail_meta.unit}×¥${item.detail_meta.unit_price}` : '-'}
@@ -855,7 +861,7 @@ export default function CostsPage() {
                   })}
                   {filteredItems.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                      <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">
                         {(() => {
                           // 智能空态：搜索无费用时检查订单库——"订单存在但没录过费用"和
                           // "订单不存在/未同步"是两回事，不区分会被误判成同步坏了
