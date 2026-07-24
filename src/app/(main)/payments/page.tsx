@@ -613,7 +613,6 @@ export default function PaymentsPage() {
                   <TableRow>
                     <TableHead>供应商</TableHead>
                     <TableHead>订单号</TableHead>
-                    <TableHead>费用类别</TableHead>
                     <TableHead>付款方式</TableHead>
                     <TableHead className="text-right">金额</TableHead>
                     <TableHead className="text-right">预算</TableHead>
@@ -627,8 +626,7 @@ export default function PaymentsPage() {
                   {filtered.map(r => (
                     <TableRow key={r.id} className={r.over_budget ? 'bg-red-50/50' : ''}>
                       <TableCell className="font-medium">{r.supplier_name}</TableCell>
-                      <TableCell className="text-sm text-primary">{r.order_no || '-'}</TableCell>
-                      <TableCell><Badge variant="outline">{r.cost_category || '-'}</Badge></TableCell>
+                      <TableCell className="text-sm text-primary">{(r.budget_order_id && orderSyncMap[r.budget_order_id]?.internalNo) || r.order_no || '-'}</TableCell>
                       <TableCell className="text-sm">{channelLabel(r.payment_channel) || '-'}</TableCell>
                       <TableCell className="text-right font-semibold">
                         {r.currency} {r.amount.toLocaleString()}
