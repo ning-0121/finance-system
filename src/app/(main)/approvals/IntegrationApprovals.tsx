@@ -65,7 +65,13 @@ function fmtDate(v: unknown): string {
 }
 // 节拍器快照里会带 po_parse_snapshot(几 KB 的 AI 识别底档,嵌套对象)等大 blob,
 // 财务审批用不到,平铺出来只会把弹窗撑爆、把批准/驳回按钮挤到屏幕外。整行隐藏。
-const HIDDEN_KEYS = new Set(['po_parse_snapshot', 'po_parse_snapshot_at', 'styles', 'trims', 'measurements'])
+// 节拍器快照带的"内部元数据/风险标志/AI 底档"——财务审价用不到,平铺只会变乱码、把按钮挤走。整行隐藏。
+const HIDDEN_KEYS = new Set([
+  'po_parse_snapshot', 'po_parse_snapshot_at', 'styles', 'trims', 'measurements',
+  'auto_fix_applied', 'color_clash_risk', 'has_plus_size', 'high_stretch', 'light_color_risk',
+  'complex_print', 'tight_deadline', 'size_distribution', 'raw_text', 'ai_notes', 'quality_notes',
+  'packaging', 'garment_category', 'fabric_weight', 'material',
+])
 function fmtVal(k: string, v: unknown): string {
   if (v == null || v === '') return '—'
   if (k === 'step_key') return STEP_LABEL[v as string] || String(v)
@@ -76,9 +82,15 @@ function fmtVal(k: string, v: unknown): string {
 }
 function toPairs(obj: unknown): [string, string][] {
   if (obj == null) return []
+  // form_snapshot/detail 可能以 JSON 字符串存库 → 先尝试解析成对象,否则整坨截断显示
+  if (typeof obj === 'string') {
+    try { obj = JSON.parse(obj) } catch { const s = obj as string; return [['说明', s.length > 200 ? s.slice(0, 200) + '…' : s]] }
+  }
   if (typeof obj !== 'object') return [['说明', String(obj)]]
   return Object.entries(obj as Record<string, unknown>)
     .filter(([k, v]) => v != null && v !== '' && !HIDDEN_KEYS.has(k))
+    // 兜底:任何超长值(嵌套对象/大文本)一律隐藏,绝不让原始 blob 变乱码撑破弹窗
+    .filter(([, v]) => (typeof v === 'object' ? JSON.stringify(v) : String(v)).length <= 120)
     .map(([k, v]) => [KEY_LABEL[k] || k, fmtVal(k, v)] as [string, string])
 }
 
