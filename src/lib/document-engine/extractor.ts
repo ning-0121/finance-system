@@ -8,6 +8,7 @@ import {
   type DocCategory, type ExtractionResult,
 } from '@/lib/types/document'
 import Anthropic from '@anthropic-ai/sdk'
+import { createWithBudget } from '@/lib/ai/spend-budget'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' })
 
@@ -77,7 +78,7 @@ export async function extractWithVision(
       })
     }
 
-    const response = await client.messages.create({
+    const response = await createWithBudget(client, {
       model: 'claude-sonnet-4-6',
       max_tokens: 4000,
       system: systemBlocks,
@@ -95,7 +96,7 @@ export async function extractWithVision(
           { type: 'text', text: `请分析此文档。文件名: ${fileName}` },
         ],
       }],
-    })
+    }, 'doc_extract')
 
     const textBlock = response.content.find(b => b.type === 'text')
     const text = textBlock?.type === 'text' ? textBlock.text : ''

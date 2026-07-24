@@ -6,6 +6,7 @@
 // 预算落库由财务在 UI 调整确认后另行触发。
 // ============================================================
 import Anthropic from '@anthropic-ai/sdk'
+import { createWithBudget } from '@/lib/ai/spend-budget'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' })
 
@@ -173,12 +174,12 @@ export async function extractQuoteFromFile(
     const contentBlock: Anthropic.ContentBlockParam = mediaType === 'application/pdf'
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64Content } }
       : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Content } }
-    const res = await client.messages.create({
+    const res = await createWithBudget(client, {
       model: 'claude-sonnet-4-6',
       max_tokens: 4000,
       system: [{ type: 'text', text: QUOTE_PROMPT, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: `请提取此内部报价单。文件名: ${fileName}` }] }],
-    })
+    }, 'quote_extract_file')
     const tb = res.content.find(b => b.type === 'text')
     return parseQuoteJson(tb?.type === 'text' ? tb.text : '')
   } catch (e) {
@@ -192,12 +193,12 @@ export async function extractQuoteFromText(csvText: string, fileName: string): P
     return { success: false, error: 'ANTHROPIC_API_KEY 未配置', cost_lines: [] }
   }
   try {
-    const res = await client.messages.create({
+    const res = await createWithBudget(client, {
       model: 'claude-sonnet-4-6',
       max_tokens: 4000,
       system: [{ type: 'text', text: QUOTE_PROMPT, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: `以下是报价单表格内容(CSV,文件名 ${fileName}):\n\n${csvText.slice(0, 60000)}` }],
-    })
+    }, 'quote_extract_text')
     const tb = res.content.find(b => b.type === 'text')
     return parseQuoteJson(tb?.type === 'text' ? tb.text : '')
   } catch (e) {

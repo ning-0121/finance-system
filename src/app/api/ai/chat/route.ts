@@ -7,6 +7,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
 import Anthropic from '@anthropic-ai/sdk'
+import { createWithBudget } from '@/lib/ai/spend-budget'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' })
 
@@ -84,7 +85,7 @@ export async function POST(request: Request) {
     // 如果有 Anthropic API Key，调用 Claude
     if (process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_API_KEY.includes('your_')) {
       try {
-        const response = await client.messages.create({
+        const response = await createWithBudget(client, {
           model: 'claude-sonnet-4-6',
           max_tokens: 4000,
           // 两段 system：静态提示缓存，动态上下文不缓存
@@ -100,7 +101,7 @@ export async function POST(request: Request) {
             },
           ],
           messages: [{ role: 'user', content: message }],
-        })
+        }, 'finance_chat')
 
         const textBlock = response.content.find(b => b.type === 'text')
         const content = textBlock?.type === 'text' ? textBlock.text : '抱歉，无法生成回答。'

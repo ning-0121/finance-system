@@ -10,6 +10,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
 import Anthropic from '@anthropic-ai/sdk'
+import { assertDailyBudget, AiBudgetExceeded } from '@/lib/ai/spend-budget'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' })
 
@@ -82,6 +83,11 @@ export async function POST(request: Request) {
       params: requests[i],
     }))
 
+    // 日花费硬性封顶:超上限则拒绝提交新批次(次日自动恢复)
+    try { await assertDailyBudget() } catch (e) {
+      if (e instanceof AiBudgetExceeded) return NextResponse.json({ error: e.message }, { status: 429 })
+      throw e
+    }
     const batch = await client.messages.batches.create({ requests: batchRequests })
 
     return NextResponse.json({
