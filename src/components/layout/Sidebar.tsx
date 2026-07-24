@@ -25,10 +25,11 @@ import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canViewApprovalQueue, getRoleLabel } from '@/lib/auth/permissions'
 import { UserSwitcher } from '@/components/layout/UserSwitcher'
 import { useState, useEffect } from 'react'
-import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale, Shield, Lock, Clock, FlaskConical, ShieldCheck, Search as SearchIcon, Landmark } from 'lucide-react'
+import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale, Shield, Lock, Clock, FlaskConical, ShieldCheck, Search as SearchIcon, Landmark, LayoutGrid } from 'lucide-react'
 
 const baseNavigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
+  { name: '多标签工作台', href: '/workspace', icon: LayoutGrid },
   { name: '订单成本核算', href: '/orders', icon: Package },
   { name: '文档智能中心', href: '/documents', icon: FileText },
   { name: '费用归集', href: '/costs', icon: ShoppingCart },
