@@ -1306,19 +1306,63 @@ async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResu
     const { data: synced } = await supabase
       .from('synced_orders').select('budget_order_id').eq('id', order.id).maybeSingle()
     if (synced?.budget_order_id) {
-      // 审计 P1③:迟到金额提醒。绮陌先空头后补额/改额时,草稿已建会被幂等短路→金额永不回填、且无告警(低估收入)。
-      // 若草稿仍是 draft 且绮陌金额与草稿不一致,记一条 integration_logs 警告交财务决定;绝不自动改 draft 以外的单。
+      // B-第2刀(2026-07-24 同步带价):空壳草稿(收入=0)先建、后来节拍器补了成交价 → 自动回填收入
+      //   (+成本若带报价),财务只需核成本、提交审批。安全边界:只动 draft、只在收入=0 时回填,
+      //   绝不覆盖财务已填的数;已有收入但与新金额不一致 → 仅告警交财务决定(沿用原审计 P1③)。
       try {
         const incoming = Number(order.total_amount) || (Number(order.unit_price || 0) * Number(order.quantity || 0))
         const { data: bo } = await supabase.from('budget_orders').select('total_revenue, status').eq('id', synced.budget_order_id).maybeSingle()
-        if (bo && bo.status === 'draft' && incoming > 0 && Math.abs((Number(bo.total_revenue) || 0) - incoming) > 0.01) {
+        const currentRev = Number(bo?.total_revenue) || 0
+
+        if (bo && bo.status === 'draft' && currentRev === 0 && incoming > 0) {
+          // 从节拍器报价(若有)算成本明细,与建单路径同口径
+          const q = order.quotation
+          const fabric = Number(q?.fabric_amount || 0), accessory = Number(q?.accessory_amount || 0)
+          const processing = Number(q?.processing_amount || 0), forwarder = Number(q?.forwarder_amount || 0)
+          const container = Number(q?.container_amount || 0), logistics = Number(q?.logistics_amount || 0)
+          const hasQuotation = fabric + accessory + processing + forwarder + container + logistics > 0
+          const rate = Number(q?.exchange_rate || 0) || null
+          const totalCost = fabric + accessory + processing + forwarder + container + logistics
+          const revenueCny = (order.currency || 'USD') === 'CNY' ? incoming : (rate ? incoming * rate : 0)
+          const profit = revenueCny - totalCost
+          const margin = revenueCny > 0 ? Math.round((profit / revenueCny) * 10000) / 100 : 0
+
+          const patch: Record<string, unknown> = {
+            total_revenue: incoming, currency: order.currency || 'USD', exchange_rate: rate,
+            updated_at: new Date().toISOString(),
+          }
+          if (hasQuotation) {
+            patch.items = [{ _cost_breakdown: {
+              fabric, accessory, processing, forwarder, container, logistics, extras: q?.extras || [],
+              _currency: 'CNY', _revenue_input: incoming, _revenue_currency: order.currency || 'USD',
+              _rate: rate, _source: 'metronome_quotation', _quoted_at: q?._quoted_at || null,
+            } }]
+            patch.target_purchase_price = fabric + accessory
+            patch.estimated_freight = forwarder
+            patch.estimated_commission = processing
+            patch.total_cost = totalCost
+            patch.estimated_profit = profit
+            patch.estimated_margin = margin
+          }
+          const { error: fillErr } = await supabase.from('budget_orders').update(patch).eq('id', synced.budget_order_id)
+          if (!fillErr) {
+            await supabase.from('integration_logs').insert({
+              event_type: 'budget.revenue_filled', direction: 'inbound',
+              request_id: `rev-fill-${order.id}-${Date.now()}`, source: 'order-metronome', status: 'success',
+              payload_summary: `订单 ${order.order_no} 成交价回填财务空壳草稿:收入=${incoming}${hasQuotation ? `,成本=${totalCost}(带报价)` : '(待财务补成本)'}`,
+            })
+            await markSyncStatus(supabase, order.id, 'draft_filled', { budget_sync_error: null })
+            return { status: 'draft_filled', budget_order_id: synced.budget_order_id }
+          }
+          console.error('[webhook] 空壳草稿回填失败:', fillErr)
+        } else if (bo && bo.status === 'draft' && currentRev > 0 && incoming > 0 && Math.abs(currentRev - incoming) > 0.01) {
           await supabase.from('integration_logs').insert({
             event_type: 'order.amount_diff', direction: 'inbound',
             request_id: `amt-diff-${order.id}-${Date.now()}`, source: 'order-metronome', status: 'warning',
-            payload_summary: `订单 ${order.order_no} 绮陌金额=${incoming} ≠ 财务草稿=${bo.total_revenue}(草稿仍 draft)，请财务确认是否采纳新金额`,
+            payload_summary: `订单 ${order.order_no} 绮陌金额=${incoming} ≠ 财务草稿=${currentRev}(草稿仍 draft)，请财务确认是否采纳新金额`,
           })
         }
-      } catch (e) { console.error('[webhook] 金额 diff 检测失败:', e) }
+      } catch (e) { console.error('[webhook] 迟到金额处理失败:', e) }
       await markSyncStatus(supabase, order.id, 'draft_skipped', { budget_sync_error: null })
       return { status: 'draft_skipped', budget_order_id: synced.budget_order_id }
     }
