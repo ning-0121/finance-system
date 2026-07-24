@@ -790,7 +790,10 @@ export default function CostsPage() {
                         <TableCell className="text-sm max-w-[160px] truncate">{(item.budget_order_id && productNameMap[item.budget_order_id]) || '—'}</TableCell>
                         <TableCell className="max-w-[200px] truncate">{item.description}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">
-                          {item.detail_meta ? `${item.detail_meta.qty}${item.detail_meta.unit}×¥${item.detail_meta.unit_price}` : '-'}
+                          {/* 货代/物流等无数量×单价的费用:detail_meta 存在但字段为空 → 显示 —,不再渲染 undefined */}
+                          {item.detail_meta && Number.isFinite(item.detail_meta.qty) && Number.isFinite(item.detail_meta.unit_price)
+                            ? `${item.detail_meta.qty}${item.detail_meta.unit || ''}×¥${item.detail_meta.unit_price}`
+                            : '—'}
                         </TableCell>
                         <TableCell>
                           {item.budget_order_id ? (
