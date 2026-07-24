@@ -289,6 +289,9 @@ export default function PurchaseApprovalsPage() {
   const budgetTotal = r2(matchedBudget.reduce((s, l) => s + (l.amount || 0), 0))
   const poTotal = Number(sel?.total_amount) || 0
   const over = budgetTotal > 0 && poTotal > budgetTotal
+  // 明细行合计(采购部提交的逐料金额之和)—— 展示在明细表底部,便于财务核对是否与单头金额一致
+  const linesTotal = useMemo(() => r2(lines.reduce((s, l) => s + (Number(l.amount) || 0), 0)), [lines])
+  const linesVsHeader = poTotal > 0 && linesTotal > 0 ? r2(linesTotal - poTotal) : 0
 
   return (
     <div className="flex flex-col h-full">
@@ -629,6 +632,21 @@ export default function PurchaseApprovalsPage() {
                             </Fragment>
                           )
                         })}
+                        {/* 明细合计(采购部提交)—— 财务核对逐料金额之和,并与单头金额比对(2026-07-24) */}
+                        <TableRow className="border-t-2 bg-muted/30">
+                          <TableCell></TableCell>
+                          <TableCell colSpan={3} className="text-sm font-semibold">
+                            合计金额（{lines.length} 行）
+                            {Math.abs(linesVsHeader) > 0.01 && (
+                              <span className="ml-2 text-[11px] font-normal text-amber-600">
+                                与单头 {sel.currency} {money(poTotal)} 差 {linesVsHeader > 0 ? '+' : ''}{money(linesVsHeader)}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell></TableCell>
+                          <TableCell></TableCell>
+                          <TableCell className="text-right text-sm tabular-nums font-bold">{sel.currency} {money(linesTotal)}</TableCell>
+                        </TableRow>
                       </TableBody>
                     </Table>
                   )}
