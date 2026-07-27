@@ -45,7 +45,7 @@ export async function getMarketRate(
 export function resolveDisplayRate(
   currency: string | null | undefined,
   rate: number | null | undefined,
-  marketFallback: number,
+  marketFallback: number = FX_LAST_RESORT,   // 页面能预载市场汇率时传入;拿不到(纯 helper)则用文档常量
 ): number {
   if (!currency || currency.toUpperCase() === 'CNY') return 1
   const r = Number(rate)
@@ -58,7 +58,7 @@ export function toCnyDisplay(
   amount: number | null | undefined,
   currency: string | null | undefined,
   rate: number | null | undefined,
-  marketFallback: number,
+  marketFallback: number = FX_LAST_RESORT,
 ): number {
   return (Number(amount) || 0) * resolveDisplayRate(currency, rate, marketFallback)
 }

@@ -11,6 +11,7 @@ import {
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { getSupplierPayments } from '@/lib/supabase/queries-v2'
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { normalizeSupplierName } from '@/lib/utils'
 import { toast } from 'sonner'
 import { SupplierPayableDetail } from './SupplierPayableDetail'
@@ -113,7 +114,7 @@ export default function PayablesPage() {
           const orderLabel = boId ? (syncMap.get(boId) || quoteFallback || bo?.order_no || '') : ''
           const amt = Number(c.amount) || 0
           // CNY 行汇率恒按 1（防历史数据 exchange_rate≠1 被错乘），与全站口径一致
-          const rate = (c.currency as string) === 'CNY' ? 1 : (Number(c.exchange_rate) || 1)
+          const rate = resolveDisplayRate(c.currency as string, c.exchange_rate as number)  // 外币缺率→市场兜底常量,不再 ||1(P1)
           // 数量/单位/单价：优先真实列，缺失回退 source_id JSON
           let qty = c.quantity != null ? Number(c.quantity) : null
           let unit = (c.unit as string) || ''

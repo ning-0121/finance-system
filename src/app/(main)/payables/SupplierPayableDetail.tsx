@@ -20,6 +20,7 @@ import { Loader2, Package, ChevronRight, ChevronDown, Wallet } from 'lucide-reac
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { getSupplierPayments } from '@/lib/supabase/queries-v2'
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { normalizeSupplierName, escapeIlike } from '@/lib/utils'
 import type { SupplierPayment } from '@/lib/types'
 
@@ -110,7 +111,7 @@ export function SupplierPayableDetail({
             const bo = c.budget_orders as { order_no?: string; quote_no?: string } | null
             const quoteFallback = bo?.quote_no ? String(bo.quote_no).trim() : ''
             const orderLabel = boId ? (syncMap.get(boId) || quoteFallback || bo?.order_no || '') : ''
-            const rate = (c.currency as string) === 'CNY' ? 1 : (Number(c.exchange_rate) || 1)
+            const rate = resolveDisplayRate(c.currency as string, c.exchange_rate as number)  // 外币缺率→市场兜底常量,不再 ||1(P1)
             let qty = c.quantity != null ? Number(c.quantity) : null
             let unit = (c.unit as string) || ''
             let price = c.unit_price != null ? Number(c.unit_price) : null
