@@ -23,14 +23,21 @@ export async function GET() {
   const since = new Date(Date.now() - 7 * 864e5).toISOString()
 
   try {
-    // 1. 待审批(价格/取消/里程碑 + 采购单)
-    const [{ count: apprCount }, { count: poApprCount }] = await Promise.all([
+    // 1. 待审批(价格/取消/里程碑 + 采购单 + 预算单 + 订单作废)
+    //    此前只聚合 pending_approvals + fin_purchase_orders → 预算单待审、订单作废终审在铃铛里看不到(审计2026-07-27)
+    const [{ count: apprCount }, { count: poApprCount }, { count: budgetCount }, { count: voidCount }] = await Promise.all([
       db.from('pending_approvals').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
       db.from('fin_purchase_orders').select('id', { count: 'exact', head: true }).eq('fin_status', 'pending_approval').is('deleted_at', null),
+      db.from('budget_orders').select('id', { count: 'exact', head: true }).eq('status', 'pending_review').is('deleted_at', null),
+      db.from('order_void_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
     ])
-    const totalAppr = (apprCount || 0) + (poApprCount || 0)
+    const totalAppr = (apprCount || 0) + (poApprCount || 0) + (budgetCount || 0)
     if (totalAppr > 0) {
-      alerts.push({ id: 'pending-approvals', severity: 'warning', title: `${totalAppr} 项待财务审批`, message: '价格/取消/里程碑/采购单等,请及时批复(批准后绮陌方可推进)', href: '/approvals' })
+      alerts.push({ id: 'pending-approvals', severity: 'warning', title: `${totalAppr} 项待财务审批`, message: '价格/取消/里程碑/采购单/预算单等,请及时批复(批准后绮陌方可推进)', href: '/approvals' })
+    }
+    // 订单作废终审 —— 级联软删、影响面大,单列显式提醒(不与普通审批混在一条里)
+    if ((voidCount || 0) > 0) {
+      alerts.push({ id: 'void-approvals', severity: 'warning', title: `${voidCount} 项订单作废待终审`, message: '业务/节拍器提请作废订单,财务终审后级联软删。请到审批队列核对', href: '/approvals' })
     }
 
     // 2. 新到订单未建预算(业务上传但财务收不到 = 老问题的可见化)

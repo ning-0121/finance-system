@@ -88,18 +88,21 @@ export function Sidebar() {
     if (pathname.startsWith('/control-center')) setCcOpen(true)
   }, [pathname])
 
-  // 轮询待办数(60s):pending_approvals 待处理 + fin_purchase_orders 待审批
+  // 轮询待办数(60s):/approvals 角标 = pending_approvals + 预算单待审 + 订单作废终审;/purchase-approvals = 采购单待审
+  //   此前只算 pending_approvals + 采购单 → 预算单待审、订单作废在角标里漏报(审计2026-07-27)
   useEffect(() => {
     if (!user) return
     let alive = true
     const load = async () => {
       try {
         const sb = createClient()
-        const [a, p] = await Promise.all([
+        const [a, p, b, v] = await Promise.all([
           sb.from('pending_approvals').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
           sb.from('fin_purchase_orders').select('id', { count: 'exact', head: true }).eq('fin_status', 'pending_approval').is('deleted_at', null),
+          sb.from('budget_orders').select('id', { count: 'exact', head: true }).eq('status', 'pending_review').is('deleted_at', null),
+          sb.from('order_void_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
         ])
-        if (alive) setCounts({ approvals: a.count || 0, purchase: p.count || 0 })
+        if (alive) setCounts({ approvals: (a.count || 0) + (b.count || 0) + (v.count || 0), purchase: p.count || 0 })
       } catch { /* 忽略,不阻断导航 */ }
     }
     load()
