@@ -55,6 +55,7 @@ export interface SchedulablePayable extends PayableRecord {
   remaining: number  // 剩余可排
   poFinStatus?: string | null  // 关联采购单 fin_status(无关联采购单=undefined;查不到='missing')
   poUnapproved?: boolean       // P0-4:关联采购单非 approved(含查不到)→ 付款前只读警示,不拦截
+  dupWarn?: boolean            // P0-2:同 dedup_key(供应商+订单+金额+币种)有多条存活应付 → 疑似重复,软警示
 }
 
 async function actorId(): Promise<string | null> {
@@ -137,6 +138,17 @@ export async function getSchedulablePayables(currency?: string): Promise<Schedul
         p.poFinStatus = st.get(poId) ?? 'missing'   // 挂了采购单但财务查不到 = 无法确认审批
         p.poUnapproved = p.poFinStatus !== 'approved'
       }
+    }
+
+    // P0-2(审计 2026-07-27)软警示:同 dedup_key(供应商+订单+金额+币种)有多条存活应付 → 疑似重复应付,
+    // 排款时标红提示,由人确认(选老板拍板的软警示口径,不加硬 UNIQUE 以免误杀真实同额两笔)。读多写零。
+    const { data: allAlive } = await fetchAll<{ dedup_key: string | null }>((from, to) =>
+      supabase.from('payable_records').select('dedup_key').is('deleted_at', null).range(from, to))
+    const dupCount = new Map<string, number>()
+    for (const r of allAlive || []) { if (r.dedup_key) dupCount.set(r.dedup_key, (dupCount.get(r.dedup_key) || 0) + 1) }
+    for (const p of out) {
+      const k = (p as { dedup_key?: string | null }).dedup_key
+      if (k && (dupCount.get(k) || 0) > 1) p.dupWarn = true
     }
     return out
   } catch { return [] }
