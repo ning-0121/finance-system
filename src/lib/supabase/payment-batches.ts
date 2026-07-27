@@ -53,6 +53,8 @@ export interface PaymentBatchLine {
 export interface SchedulablePayable extends PayableRecord {
   reserved: number   // 已排(所有未关闭行)累计
   remaining: number  // 剩余可排
+  poFinStatus?: string | null  // 关联采购单 fin_status(无关联采购单=undefined;查不到='missing')
+  poUnapproved?: boolean       // P0-4:关联采购单非 approved(含查不到)→ 付款前只读警示,不拦截
 }
 
 async function actorId(): Promise<string | null> {
@@ -119,6 +121,22 @@ export async function getSchedulablePayables(currency?: string): Promise<Schedul
       const reserved = reservedMap.get(p.id) || 0
       const remaining = Number(p.amount) - Number(p.paid_amount || 0) - reserved
       if (remaining > 0.005) out.push({ ...p, reserved, remaining: Math.round(remaining * 100) / 100 })
+    }
+
+    // P0-4(审计 2026-07-27):付款前只读警示 —— 关联采购单非 approved 的 payable 标黄,不拦截。
+    // 付款链此前从不校验对应采购单是否已财务审批(可绕审批付款,违铁律);此处只读比对给人看,读多写零。
+    const poIds = [...new Set(out.map(p => p.detail?.purchase_order_id).filter(Boolean))] as string[]
+    if (poIds.length) {
+      const { data: pos } = await supabase.from('fin_purchase_orders')
+        .select('purchase_order_id, fin_status').in('purchase_order_id', poIds).is('deleted_at', null)
+      const st = new Map<string, string>()
+      for (const po of (pos || []) as { purchase_order_id: string; fin_status: string }[]) st.set(po.purchase_order_id, po.fin_status)
+      for (const p of out) {
+        const poId = p.detail?.purchase_order_id
+        if (!poId) continue
+        p.poFinStatus = st.get(poId) ?? 'missing'   // 挂了采购单但财务查不到 = 无法确认审批
+        p.poUnapproved = p.poFinStatus !== 'approved'
+      }
     }
     return out
   } catch { return [] }
