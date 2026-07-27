@@ -1247,12 +1247,22 @@ async function handleShipmentApprovalCancelled(data: Record<string, unknown>) {
 async function handleFileUpload(data: Record<string, unknown>) {
   const supabase = createServiceClient()
 
+  // 节拍器文档 id 形如 "ordoc-<uuid>",但 uploaded_documents.id / related_qimo_order_id 是 uuid 列。
+  // 提取其中的 uuid(无前缀则原样)。此前直接 upsert 前缀字符串 → "invalid input syntax for type uuid"
+  // 静默 failed(审计 2026-07-27:66 条 file.uploaded 全因此失败,收货/PO 附件同步不进来)。
+  // related_purchase_order_id 是 text 列(可为 PO 单号等非 uuid),不做提取。
+  const toUuid = (v: unknown): string | null => {
+    const s = v == null ? '' : String(v)
+    const m = s.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+    return m ? m[0] : (s || null)
+  }
+
   const docHint = (data.doc_hint as string) || null
   const relatedPo = data.purchase_order_id ? String(data.purchase_order_id) : null
   const { error } = await supabase
     .from('uploaded_documents')
     .upsert({
-      id: data.id as string,
+      id: toUuid(data.id),
       file_name: (data.file_name as string) || 'unnamed',
       file_type: (data.file_type as string) || 'image',
       file_size: data.file_size as number || null,
@@ -1261,7 +1271,7 @@ async function handleFileUpload(data: Record<string, unknown>) {
       extracted_fields: data.extracted_fields || {},
       matched_customer: (data.matched_customer as string) || null,
       related_purchase_order_id: relatedPo,
-      related_qimo_order_id: (data.order_id as string) || null,
+      related_qimo_order_id: toUuid(data.order_id),
       doc_hint: docHint,
       created_at: (data.created_at as string) || new Date().toISOString(),
     }, { onConflict: 'id' })
