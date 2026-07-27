@@ -12,8 +12,8 @@
 // 写回 budget_orders:
 //   - total_revenue:     若 currency=USD 则直接写USD；其它币种 ×FX 写本币
 //   - total_cost:        固定 RMB（与现有口径一致）
-//   - estimated_profit:  以 USD 计
-//   - estimated_margin:  百分比
+//   - estimated_profit:  以 CNY 计（与全站消费方一致;修前误写 USD,审计 2026-07-27 发现B）
+//   - estimated_margin:  百分比（比率,币种无关）
 // ============================================================
 
 import { NextResponse, type NextRequest } from 'next/server'
@@ -138,10 +138,13 @@ export async function POST(
       ? revenueUsd
       : new Decimal(revenueUsd).mul(orderRate).toDecimalPlaces(2).toNumber()
 
-    // estimated_profit 用 USD 计算（与利润中心展示一致）
+    // budget_orders.estimated_profit 列口径 = CNY(与预算创建/编辑页、export、AI、dashboard 全站一致)。
+    // 此前 recompute 误按 USD 写该列 → 与所有其它消费方冲突(审计 2026-07-27 发现B);改为写 CNY。
+    // profitUsd 保留:仅供利润中心自身的 USD 视图(summary.gross_profit_usd),不写入共享列。
     const profitUsd = new Decimal(revenueUsd).minus(new Decimal(costRmb).div(orderRate)).toDecimalPlaces(2).toNumber()
+    const profitCny = new Decimal(revenueUsd).mul(orderRate).minus(costRmb).toDecimalPlaces(2).toNumber()  // CNY收入 − CNY成本
     const margin = revenueUsd > 0
-      ? new Decimal(profitUsd).div(revenueUsd).mul(100).toDecimalPlaces(2).toNumber()
+      ? new Decimal(profitUsd).div(revenueUsd).mul(100).toDecimalPlaces(2).toNumber()  // 比率,币种无关
       : 0
 
     const before = {
@@ -153,7 +156,7 @@ export async function POST(
     const after = {
       total_revenue: targetRevenue,
       total_cost: costRmb,
-      estimated_profit: profitUsd,
+      estimated_profit: profitCny,   // 写入共享列的 CNY 值(预览与落库一致)
       estimated_margin: margin,
     }
 
@@ -190,7 +193,7 @@ export async function POST(
       .update({
         total_revenue: targetRevenue,
         total_cost: costRmb,
-        estimated_profit: profitUsd,
+        estimated_profit: profitCny,   // CNY 口径,与全站消费方一致(修 recompute 误写 USD)
         estimated_margin: margin,
         notes: newNotes,
         updated_at: new Date().toISOString(),
@@ -226,7 +229,7 @@ export async function POST(
     const sotResults = await Promise.all([
       sotWriteShadow({ ...sotCommon, field: 'total_revenue',     value: targetRevenue }),
       sotWriteShadow({ ...sotCommon, field: 'total_cost',        value: costRmb }),
-      sotWriteShadow({ ...sotCommon, field: 'estimated_profit',  value: profitUsd }),
+      sotWriteShadow({ ...sotCommon, field: 'estimated_profit',  value: profitCny }),
       sotWriteShadow({ ...sotCommon, field: 'estimated_margin',  value: margin }),
     ])
     const sotFailures = sotResults.filter(r => !r.ok)

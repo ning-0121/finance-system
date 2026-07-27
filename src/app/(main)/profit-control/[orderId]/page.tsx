@@ -736,7 +736,7 @@ export default function OrderProfitDetailPage({ params }: { params: Promise<{ or
                     {[
                       { label: '总收入', before: recomputePreview.before.total_revenue, after: recomputePreview.after.total_revenue, suffix: ` ${recomputePreview.summary.currency}`, fmt: 0 },
                       { label: '总成本', before: recomputePreview.before.total_cost, after: recomputePreview.after.total_cost, suffix: ' ¥', fmt: 0 },
-                      { label: '预估利润', before: recomputePreview.before.estimated_profit, after: recomputePreview.after.estimated_profit, suffix: ' USD', fmt: 0 },
+                      { label: '预估利润', before: recomputePreview.before.estimated_profit, after: recomputePreview.after.estimated_profit, suffix: ' ¥', fmt: 0 },
                       { label: '预估毛利率', before: recomputePreview.before.estimated_margin, after: recomputePreview.after.estimated_margin, suffix: '%', fmt: 2 },
                     ].map(row => {
                       const diff = row.after - row.before
