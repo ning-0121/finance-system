@@ -243,6 +243,11 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'payable.created':
       return handlePayableCreated(payload.data as Record<string, unknown>, payload.request_id)
 
+    // 应收创建(2026-07-27 契约):节拍器推打样费等【不挂订单总收入】的杂项应收 → 建独立应收
+    // misc_receivables(open);收款时置 received + 回传节拍器 collection.received 闭环。
+    case 'receivable.created':
+      return handleReceivableCreated(payload.data as Record<string, unknown>, payload.request_id)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
@@ -1162,6 +1167,48 @@ async function handlePayableCreated(data: Record<string, unknown>, _requestId: s
   }
 
   return result
+}
+
+// --- 应收创建(2026-07-27 契约):节拍器推打样费等【不挂订单总收入】的杂项应收 → 建独立应收 misc_receivables ---
+// 幂等:source_ref(优先 data.source_ref,退回 webhook request_id)。客户名解析 customer_id。
+// webhook 建 = created_by null(非人;收款时才记真实审批人,符合铁律)。
+async function handleReceivableCreated(data: Record<string, unknown>, requestId: string) {
+  const supabase = createServiceClient()
+  const sourceRef = String(data.source_ref || requestId || '')
+  if (!sourceRef) return { action: 'ignored', reason: 'receivable.created 缺幂等锚(source_ref/request_id)' }
+  const amount = Number(data.amount)
+  const customerName = String(data.customer_name || '').trim()
+  if (!(amount > 0)) return { action: 'ignored', reason: `receivable.created amount 非正(${data.amount}),跳过` }
+  if (!customerName) return { action: 'ignored', reason: 'receivable.created 无客户名,无法建应收' }
+
+  // 幂等:同 source_ref 已建则跳过(重投安全)
+  const { data: existing } = await supabase.from('misc_receivables')
+    .select('id').eq('source_ref', sourceRef).is('deleted_at', null).maybeSingle()
+  if (existing) return { action: 'ok', reason: `应收已存在(幂等) source_ref=${sourceRef}` }
+
+  // 客户解析(与 sync/预算填充同:get_or_create_customer 串行防 race)
+  let customerId: string | null = null
+  const { data: cust } = await supabase.rpc('get_or_create_customer' as never, {
+    p_name: customerName, p_currency: (data.currency as string) || 'CNY',
+  } as never) as { data: { id?: string } | null }
+  customerId = (cust?.id as string) ?? null
+
+  const { error } = await supabase.from('misc_receivables').insert({
+    source_ref: sourceRef,
+    kind: (data.kind as string) || 'sample_fee',
+    customer_name: customerName,
+    customer_id: customerId,
+    qimo_order_id: (data.qimo_order_id as string) || null,
+    order_no: (data.order_no as string) || null,
+    internal_order_no: (data.internal_order_no as string) || null,
+    amount,
+    currency: (data.currency as string) || 'CNY',
+    bearer: (data.bearer as string) || null,
+    status: 'open',
+    created_by: null,
+  })
+  if (error) throw new Error(`应收入账失败: ${error.message}`)
+  return { action: 'done', reason: `应收已建 ${customerName} · ${(data.kind as string) || 'sample_fee'} · ${amount}${(data.currency as string) || 'CNY'}` }
 }
 
 // --- 价格审批请求 ---
