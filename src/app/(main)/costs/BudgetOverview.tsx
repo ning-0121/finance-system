@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Loader2, Search, ChevronRight, ChevronDown } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 
 interface CostLike {
   budget_order_id: string | null
@@ -157,7 +158,7 @@ export function BudgetOverview({ costItems }: { costItems: CostLike[] }) {
     for (const c of costItems) {
       if (!c.budget_order_id) continue
       if (c.cost_type === 'tax_point') continue   // 票点不计预算执行(留作退税核算)
-      const rate = (c.currency || 'CNY') === 'CNY' ? 1 : (Number(c.exchange_rate) || 1)
+      const rate = resolveDisplayRate(c.currency, c.exchange_rate)  // 外币缺率→市场兜底常量,不再 ||1(P1)
       const cny = (Number(c.amount) || 0) * rate
       const e = m.get(c.budget_order_id) || { buckets: zeroBuckets(), total: 0 }
       e.buckets[bucketOf(c.cost_type)] += cny
