@@ -418,6 +418,11 @@ export default function PaymentBatchesPage() {
                               <AlertTriangle className="h-3 w-3 mr-0.5" />采购单{p.poFinStatus === 'missing' ? '查无' : '未审批'}
                             </Badge>
                           )}
+                          {p.dupWarn && (
+                            <Badge variant="secondary" className="bg-red-100 text-red-700 text-[10px] shrink-0 whitespace-nowrap" title="同供应商+订单+金额+币种存在多条存活应付,疑似重复,请核对后再排">
+                              <AlertTriangle className="h-3 w-3 mr-0.5" />疑似重复
+                            </Badge>
+                          )}
                         </div>
                         <div className="text-xs text-muted-foreground break-all">{p.description}{p.order_no ? ` · ${p.order_no}` : ''}{p.due_date ? ` · 到期 ${fmtDate(p.due_date)}` : ''}</div>
                       </TableCell>
