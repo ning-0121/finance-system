@@ -393,6 +393,17 @@ export default function SupplierReportPage() {
     const amt = Number(payAmount)
     if (!sup) { toast.error('请填写供应商'); return }
     if (!amt || amt <= 0) { toast.error('请输入有效付款金额'); return }
+    // P0-3 软警示(审计 2026-07-27):本次登记将使该供应商累计已付超过净应付额 → 二次确认,不拦截(人判断)。
+    // 手工对账付款不挂订单、不受排款 RPC 的净应付上限约束,此处补一道超付提醒防多付/重复付。
+    if (!force) {
+      const row = periodAwareLines.find(s => normalizeSupplierName(s.supplier) === sup)
+      if (row && amt > row.unpaid + 0.005) {
+        const over = Math.round((amt - row.unpaid) * 100) / 100
+        if (!confirm(`⚠ 超付提示\n\n「${sup}」当前净应付(未付)约 ¥${Math.round(row.unpaid).toLocaleString()}，本次登记 ¥${Math.round(amt).toLocaleString()}，将超付约 ¥${over.toLocaleString()}。\n\n确认这不是重复/多付、继续登记吗？`)) {
+          return
+        }
+      }
+    }
     setPaySaving(true)
     const { data, error, duplicate, blocked } = await createSupplierPayment({
       supplier_name: sup, amount: amt, paid_at: payDate || null, note: payNote.trim() || null, payment_ref: payRef.trim() || null, force,
@@ -591,7 +602,7 @@ export default function SupplierReportPage() {
         {!loading && filtered.length === 0 && allCostDetails.length > 0 && (
           <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-sm">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            <span>当前日期范围内没有费用记录（共 {allCostDetails.length} 条费用，跨多个时段）。点"全部"或调整日期看完整数据。</span>
+            <span>当前日期范围内没有费用记录（共 {allCostDetails.length} 条费用，跨多个时段）。点「全部」或调整日期看完整数据。</span>
           </div>
         )}
 
@@ -783,6 +794,22 @@ export default function SupplierReportPage() {
                 <Input type="date" value={payDate} onChange={e => setPayDate(e.target.value)} />
               </div>
             </div>
+            {(() => {
+              // P0-3 软警示:本次登记超过该供应商净应付额 → 标红提示(提交时会再确认一次)
+              const sup = normalizeSupplierName(paySupplier)
+              const row = sup ? periodAwareLines.find(s => normalizeSupplierName(s.supplier) === sup) : undefined
+              const amt = Number(payAmount)
+              if (!row || !amt || amt <= row.unpaid + 0.005) return null
+              const over = Math.round((amt - row.unpaid) * 100) / 100
+              return (
+                <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200" role="alert">
+                  <AlertTriangle className="h-4 w-4 text-red-600 mt-0.5 shrink-0" />
+                  <p className="text-xs text-red-700">
+                    <span className="font-medium">超付提示：</span>「{row.supplier}」当前净应付(未付)约 ¥{Math.round(row.unpaid).toLocaleString()}，本次登记 ¥{Math.round(amt).toLocaleString()} 将超付约 ¥{over.toLocaleString()}。请核对是否重复/多付。
+                  </p>
+                </div>
+              )
+            })()}
             <div className="space-y-2">
               <Label>付款凭证号 / 单据号 <span className="text-[11px] text-muted-foreground">（银行流水号/回单号/发票号，防重复付款）</span></Label>
               <Input placeholder="填了则同供应商同凭证号不可重复付款（强烈建议填）" value={payRef} onChange={e => setPayRef(e.target.value)} />
