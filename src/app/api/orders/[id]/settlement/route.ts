@@ -186,11 +186,14 @@ export async function POST(
       }).catch(err => console.error('[WeChat] 付款通知发送失败:', err))
     }
 
-    // 5. 出站回传节拍器：订单财务决算完成（审计 P1④，非阻塞；用 qimo_order_id 精确关联）
+    // 5. 出站回传节拍器：订单财务决算完成（审计 P1④；用 qimo_order_id 精确关联）
+    // ⚠ 必须 await：notifyFinanceProgress 内部在回传失败时才 await enqueueOutbox 落发件箱。
+    //   若此处 fire-and-forget,Serverless 可能在 outbox 写入前就回收 → 决算完成信号既没送达、
+    //   outbox 也无痕、cron 无从重试(集成审计 2026-07-27)。与其它所有出站口一致改为 await。
     try {
       const { data: bo } = await supabase.from('budget_orders').select('qimo_order_id').eq('id', budgetOrderId).maybeSingle()
       if (bo?.qimo_order_id) {
-        notifyFinanceProgress('settlement.closed', {
+        await notifyFinanceProgress('settlement.closed', {
           qimo_order_id: bo.qimo_order_id as string,
           order_no: orderNo,
           amount: settlement.total_actual || 0,
