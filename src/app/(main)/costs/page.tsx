@@ -25,6 +25,7 @@ import { getBudgetOrders } from '@/lib/supabase/queries'
 import { getSuppliers } from '@/lib/supabase/queries-v2'
 import { getFabricPriceReference, getProcessingPriceReference, type PriceReference } from '@/lib/supabase/price-history'
 import { normalizeSupplierName } from '@/lib/utils'
+import { toCnyDisplay } from '@/lib/accounting/fx'
 import { bizToday } from '@/lib/biz-date'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
@@ -263,7 +264,7 @@ export default function CostsPage() {
 
   // 统计：搜索时分类徽章/合计跟随搜索范围（如搜单号→该订单的费用合计），未搜索为全局。
   // 金额一律折人民币(¥口径)——此前原币直加,USD 费用被当人民币(审计 P1 混币)
-  const cnyOf = (c: CostRecord) => (Number(c.amount) || 0) * ((c.currency || 'CNY') === 'CNY' ? 1 : (Number(c.exchange_rate) || 1))
+  const cnyOf = (c: CostRecord) => toCnyDisplay(c.amount, c.currency, c.exchange_rate)  // 外币缺率→市场兜底常量,不再 ||1(P1)
   const searchedItems = costSearch ? costItems.filter(matchesSearch) : costItems
   const totalAmount = costItems.reduce((s, c) => s + cnyOf(c), 0)
   const searchedAmount = searchedItems.reduce((s, c) => s + cnyOf(c), 0)
@@ -1094,12 +1095,12 @@ export default function CostsPage() {
                 costItems={costItems}
                 editItemId={editItem?.id ?? null}
                 currentCostType={formType}
-                currentAmountCny={(Number(formAmount) || 0) * (formCurrency === 'CNY' ? 1 : (Number(formRate) || 1))}
+                currentAmountCny={toCnyDisplay(Number(formAmount), formCurrency, Number(formRate))}
               />
             )}
             {/* 历史比价：布料(品名+颜色)/加工费(款号) 实时参考价 */}
             {(formType === 'fabric' || formType === 'processing') && (priceRefLoading || (priceRef && priceRef.count > 0)) && (() => {
-              const curUnitCny = (Number(formUnitPrice) || 0) * (formCurrency === 'CNY' ? 1 : (Number(formRate) || 1))
+              const curUnitCny = toCnyDisplay(Number(formUnitPrice), formCurrency, Number(formRate))
               const overAvg = priceRef && priceRef.avgCny > 0 && curUnitCny > 0 && curUnitCny > priceRef.avgCny * 1.0001
               const overPct = overAvg && priceRef ? Math.round((curUnitCny / priceRef.avgCny - 1) * 100) : 0
               return (

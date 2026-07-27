@@ -15,6 +15,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Download, Search, FileText } from 'lucide-react'
 import { toast } from 'sonner'
 
+import { toCnyDisplay } from '@/lib/accounting/fx'
+
 interface CostLike {
   id: string
   budget_order_id: string | null
@@ -29,7 +31,7 @@ interface CostLike {
   created_at: string
 }
 
-const cnyOf = (c: CostLike) => (Number(c.amount) || 0) * ((c.currency || 'CNY') === 'CNY' ? 1 : (Number(c.exchange_rate) || 1))
+const cnyOf = (c: CostLike) => toCnyDisplay(c.amount, c.currency, c.exchange_rate)  // 外币缺率→市场兜底常量,不再 ||1(P1)
 const dateOf = (c: CostLike) => (c.delivery_date || c.created_at || '').slice(0, 10)
 const money = (n: number) => n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 

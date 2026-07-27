@@ -8,6 +8,7 @@
 import { useMemo } from 'react'
 import type { BudgetOrder } from '@/lib/types'
 import { COST_BUCKETS, bucketOfCostType, budgetBucketsFromOrder, zeroBuckets } from '@/lib/cost-buckets'
+import { toCnyDisplay } from '@/lib/accounting/fx'
 
 interface CostLike {
   id: string
@@ -19,7 +20,7 @@ interface CostLike {
 }
 
 const money = (n: number) => Math.round(n).toLocaleString('zh-CN')
-const cnyOf = (c: CostLike) => (Number(c.amount) || 0) * ((c.currency || 'CNY') === 'CNY' ? 1 : (Number(c.exchange_rate) || 1))
+const cnyOf = (c: CostLike) => toCnyDisplay(c.amount, c.currency, c.exchange_rate)  // 外币缺率→市场兜底常量,不再 ||1(P1)
 
 export function BudgetRefPanel({ order, costItems, editItemId, currentCostType, currentAmountCny }: {
   order: BudgetOrder | undefined
