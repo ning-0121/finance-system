@@ -4,6 +4,7 @@
 import { NextResponse } from 'next/server'
 import { requireAuth } from '@/lib/auth/api-guard'
 import { createServiceClient } from '@/lib/supabase/service'
+import { fetchPendingPurposeRequestsFromMetronome } from '@/lib/integration/client'
 
 export type FinanceAlert = {
   id: string
@@ -91,6 +92,23 @@ export async function GET() {
         href: '/control-center',
       })
     }
+
+    // 6. 节拍器·订单用途变更待审批(拉节拍器 API)。铃铛每 60s 轮询 → 短超时 4s + fail-open:
+    //    节拍器慢/不可达时跳过本项,绝不阻塞铃铛或影响其它告警(独立 try/catch)。
+    try {
+      const purposeRes = await Promise.race([
+        fetchPendingPurposeRequestsFromMetronome(),
+        new Promise<{ success: boolean; data?: Record<string, unknown>[] }>(resolve => setTimeout(() => resolve({ success: false }), 4000)),
+      ])
+      if (purposeRes.success && Array.isArray(purposeRes.data) && purposeRes.data.length > 0) {
+        alerts.push({
+          id: 'purpose-requests', severity: 'warning',
+          title: `${purposeRes.data.length} 项订单用途变更待审批`,
+          message: '业务提请自产/经销/委托变更,财务审批后回传节拍器执行。到审批队列处理',
+          href: '/approvals',
+        })
+      }
+    } catch { /* 拉节拍器失败 → fail-open,不影响其它告警 */ }
   } catch (e) {
     // 聚合失败也不让铃铛崩:返回已收集到的部分 + 一条自诊断
     alerts.push({ id: 'alerts-error', severity: 'info', title: '通知加载部分失败', message: e instanceof Error ? e.message : '未知错误', href: '/control-center' })
