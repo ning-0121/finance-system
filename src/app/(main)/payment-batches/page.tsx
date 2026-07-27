@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Loader2, Plus, CalendarClock, CheckCircle, Banknote, Trash2, ShieldCheck, X, Send, Lock } from 'lucide-react'
+import { Loader2, Plus, CalendarClock, CheckCircle, Banknote, Trash2, ShieldCheck, X, Send, Lock, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 import {
@@ -411,7 +411,14 @@ export default function PaymentBatchesPage() {
                   {pickables.map(p => (
                     <TableRow key={p.id}>
                       <TableCell>
-                        <div className="font-medium break-all">{p.supplier_name}</div>
+                        <div className="font-medium break-all flex items-center gap-1.5">
+                          {p.supplier_name}
+                          {p.poUnapproved && (
+                            <Badge variant="secondary" className="bg-amber-100 text-amber-700 text-[10px] shrink-0 whitespace-nowrap" title={`关联采购单 fin_status=${p.poFinStatus}`}>
+                              <AlertTriangle className="h-3 w-3 mr-0.5" />采购单{p.poFinStatus === 'missing' ? '查无' : '未审批'}
+                            </Badge>
+                          )}
+                        </div>
                         <div className="text-xs text-muted-foreground break-all">{p.description}{p.order_no ? ` · ${p.order_no}` : ''}{p.due_date ? ` · 到期 ${fmtDate(p.due_date)}` : ''}</div>
                       </TableCell>
                       <TableCell className="text-right whitespace-nowrap">{fmt(p.amount, p.currency)}</TableCell>
