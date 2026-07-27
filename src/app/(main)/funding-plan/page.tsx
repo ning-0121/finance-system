@@ -15,6 +15,7 @@ import {
   ChevronLeft, ChevronRight, Download, Loader2,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { getMarketRate, resolveDisplayRate } from '@/lib/accounting/fx'
 import type { BudgetOrder, PayableRecord } from '@/lib/types'
 import * as XLSX from 'xlsx'
 
@@ -72,7 +73,7 @@ function fmtDisplay(d: Date): string {
 }
 
 /** Inline buildReceivables logic (from receivables/page.tsx) */
-function buildARRows(orders: BudgetOrder[], weekStart: Date, weekEnd: Date): ARRow[] {
+function buildARRows(orders: BudgetOrder[], weekStart: Date, weekEnd: Date, marketRate: number): ARRow[] {
   const now = new Date()
   return orders
     .filter(o => {
@@ -101,8 +102,8 @@ function buildARRows(orders: BudgetOrder[], weekStart: Date, weekEnd: Date): ARR
       if (isPastDue) status = 'overdue'
       else if (isDueThisWeek) status = 'due_this_week'
 
-      // 折人民币(审计P1:此前原币直加进期末余额预测)
-      const cnyRate = o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 7)
+      // 折人民币(审计P1:此前原币直加进期末余额预测)。外币缺率兜底=市场汇率(P0,替代 ||7)
+      const cnyRate = resolveDisplayRate(o.currency, o.exchange_rate, marketRate)
       return {
         id: o.id,
         customer: o.customer?.company || '-',
@@ -119,7 +120,7 @@ function buildARRows(orders: BudgetOrder[], weekStart: Date, weekEnd: Date): ARR
     .filter((r): r is ARRow => r !== null)
 }
 
-function buildAPRows(records: PayableRecord[]): APRow[] {
+function buildAPRows(records: PayableRecord[], marketRate: number): APRow[] {
   return records
     .filter(r => r.payment_status !== 'paid' && r.payment_status !== 'cancelled')
     .map(r => {
@@ -135,7 +136,7 @@ function buildAPRows(records: PayableRecord[]): APRow[] {
         balance,
         dueDate: r.due_date,
         plannedAmount: balance,
-        cnyRate: (r.currency || 'CNY') === 'CNY' ? 1 : 7,  // 应付无自带汇率,外币按≈7参考折算
+        cnyRate: resolveDisplayRate(r.currency, null, marketRate),  // 应付外币按市场汇率参考折算(P0,替代写死 7)
       } satisfies APRow
     })
     .filter((r): r is APRow => r !== null)
@@ -174,6 +175,7 @@ export default function FundingPlanPage() {
     setLoading(true)
     try {
       const supabase = createClient()
+      const { rate: marketRate } = await getMarketRate(supabase)  // 外币缺率兜底=exchange_rates 最新市场汇率(P0)
 
       // AR: budget_orders
       const { data: ordersData } = await supabase
@@ -184,7 +186,7 @@ export default function FundingPlanPage() {
         .gt('total_revenue', 0)
 
       const orders = (ordersData || []) as BudgetOrder[]
-      const ar = buildARRows(orders, weekStart, weekEnd)
+      const ar = buildARRows(orders, weekStart, weekEnd, marketRate)
       setArRows(ar)
 
       // AP: payable_records
@@ -195,7 +197,7 @@ export default function FundingPlanPage() {
         .is('deleted_at', null)   // 审计P1:排除软删应付
 
       const apRecords = (apData || []) as PayableRecord[]
-      const ap = buildAPRows(apRecords)
+      const ap = buildAPRows(apRecords, marketRate)
       setApRows(ap)
 
       // Init planned amounts
