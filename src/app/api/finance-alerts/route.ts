@@ -72,6 +72,25 @@ export async function GET() {
     for (const d of diags || []) {
       alerts.push({ id: `diag-${d.id}`, severity: 'critical', title: `数据/GL 异常 · ${d.action || ''}`, message: String(d.error_detail || '').slice(0, 200), href: '/control-center' })
     }
+
+    // 5. 集成 inbox 积压:webhook 收到但未入账。pending=命中忽略分支(如收货未匹配采购行)留待人工核对;
+    //    failed=处理出错;卡住的 processing(>15min)。此前静默留在 fin_inbox_events、通知铃看不到(审计 2026-07-27)。
+    const staleProcessing = new Date(Date.now() - 15 * 60_000).toISOString()
+    const [{ count: inboxPending }, { count: inboxFailed }, { count: inboxStuck }] = await Promise.all([
+      db.from('fin_inbox_events').select('id', { count: 'exact', head: true }).eq('process_status', 'pending'),
+      db.from('fin_inbox_events').select('id', { count: 'exact', head: true }).eq('process_status', 'failed'),
+      db.from('fin_inbox_events').select('id', { count: 'exact', head: true }).eq('process_status', 'processing').lt('received_at', staleProcessing),
+    ])
+    const inboxBacklog = (inboxPending || 0) + (inboxFailed || 0) + (inboxStuck || 0)
+    if (inboxBacklog > 0) {
+      alerts.push({
+        id: 'inbox-backlog',
+        severity: (inboxFailed || 0) > 0 ? 'critical' : 'warning',
+        title: `${inboxBacklog} 条集成事件未入账`,
+        message: `节拍器推送已收到但未入账:${inboxPending || 0} 待核对(如收货未匹配采购行)/ ${inboxFailed || 0} 处理失败 / ${inboxStuck || 0} 卡住。可能有收货未核销应付等,请核对处理`,
+        href: '/control-center',
+      })
+    }
   } catch (e) {
     // 聚合失败也不让铃铛崩:返回已收集到的部分 + 一条自诊断
     alerts.push({ id: 'alerts-error', severity: 'info', title: '通知加载部分失败', message: e instanceof Error ? e.message : '未知错误', href: '/control-center' })
