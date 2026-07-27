@@ -28,6 +28,11 @@ interface PendingApproval {
   form_snapshot: unknown
   created_at: string
   source_created_at: string | null
+  // 已处理记录(status ∈ approved/rejected)才带以下留痕字段
+  status?: string
+  decider_name?: string | null
+  decision_note?: string | null
+  decided_at?: string | null
 }
 
 const TYPE_LABEL: Record<string, { label: string; color: string }> = {
@@ -106,11 +111,19 @@ interface OrderSnap { boNo: string | null; internalNo: string | null; qty: numbe
 const cny = (n: number) => `¥${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
 
 export function IntegrationApprovals({ userId, userName }: { userId: string; userName: string }) {
+  const [tab, setTab] = useState<'pending' | 'processed'>('pending')
   const [rows, setRows] = useState<PendingApproval[]>([])
   const [loading, setLoading] = useState(true)
+  const [processedRows, setProcessedRows] = useState<PendingApproval[]>([])   // 已处理(批准/驳回)历史
+  const [processedLoading, setProcessedLoading] = useState(false)
+  const [processedLoaded, setProcessedLoaded] = useState(false)
   const [sel, setSel] = useState<PendingApproval | null>(null)   // 打开详情+审批的行
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState<'approved' | 'rejected' | null>(null)
+  const [confirming, setConfirming] = useState<'approved' | 'rejected' | null>(null)  // 二次确认(防误触)
+  const [reopening, setReopening] = useState(false)              // 已处理→撤销重审:是否在填原因
+  const [reopenReason, setReopenReason] = useState('')
+  const [reopenBusy, setReopenBusy] = useState(false)
   const [snap, setSnap] = useState<OrderSnap | null>(null)       // 该订单快照 + 预算vs实际决算表
   const [snapLoading, setSnapLoading] = useState(false)
 
@@ -124,7 +137,21 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
     setLoading(false)
   }, [])
 
+  // 已处理审批(批准/驳回)——按处理时间倒序,财务可回看"批的是什么、谁批的"。近 200 条。
+  const loadProcessed = useCallback(async () => {
+    setProcessedLoading(true)
+    const sb = createClient()
+    const { data } = await sb.from('pending_approvals')
+      .select('id, approval_type, order_no, customer_name, requested_by_name, summary, detail, form_snapshot, created_at, source_created_at, status, decider_name, decision_note, decided_at')
+      .in('status', ['approved', 'rejected']).order('decided_at', { ascending: false }).limit(200)
+    setProcessedRows((data as PendingApproval[]) || [])
+    setProcessedLoading(false)
+    setProcessedLoaded(true)
+  }, [])
+
   useEffect(() => { load() }, [load])
+  // 切到「已处理」页首次加载(懒加载,避免默认多查一次)
+  useEffect(() => { if (tab === 'processed' && !processedLoaded) loadProcessed() }, [tab, processedLoaded, loadProcessed])
 
   // 打开某审批 → 拉该 QM 订单的快照(内部单号/款号/数量)+ 预算 vs 实际 决算表,财务凭此判(尤其加工费确认)
   useEffect(() => {
@@ -167,7 +194,8 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
     return () => { alive = false }
   }, [sel])
 
-  const open = (r: PendingApproval) => { setSel(r); setNote('') }
+  const open = (r: PendingApproval) => { setSel(r); setNote(''); setConfirming(null); setReopening(false); setReopenReason('') }
+  const isProcessed = !!sel?.status && sel.status !== 'pending'
 
   const decide = async (action: 'approved' | 'rejected') => {
     if (!sel) return
@@ -190,11 +218,34 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
       toast[json.callback_sent ? 'success' : 'warning'](
         `已${action === 'approved' ? '批准' : '驳回'}` + (json.callback_sent ? '，已通知节拍器' : '，但回传节拍器失败(已入 outbox 重试)')
       )
-      setSel(null); setNote('')
+      setSel(null); setNote(''); setConfirming(null)
       await load()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '操作失败')
     } finally { setBusy(null) }
+  }
+
+  // 撤销重审:已处理审批打回「待处理」,由正常流程重新决策(重新驳回会回传节拍器更正)
+  const doReopen = async () => {
+    if (!sel) return
+    if (!reopenReason.trim()) { toast.error('请填写撤销原因'); return }
+    setReopenBusy(true)
+    try {
+      const res = await fetch('/api/integration/reopen', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approval_id: sel.id, reason: reopenReason.trim() }),
+      })
+      const json = await res.json()
+      if (!res.ok) { toast.error(json.error || `HTTP ${res.status}`); setReopenBusy(false); return }
+      toast.success('已撤销,打回「待处理」', { description: '请在待处理重新决策;重新驳回会回传节拍器更正。' })
+      const reopenedId = sel.id
+      setSel(null); setReopening(false); setReopenReason('')
+      setProcessedRows(prev => prev.filter(r => r.id !== reopenedId))  // 从已处理列表移除
+      await load()          // 刷新待处理
+      setTab('pending')     // 跳回待处理,让财务看到它回来了
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '撤销失败')
+    } finally { setReopenBusy(false) }
   }
 
   const detailPairs = sel ? toPairs(sel.detail) : []
@@ -203,18 +254,36 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base flex items-center gap-2">
-          集成审批（来自节拍器）
-          {rows.length > 0 && <Badge className="bg-amber-100 text-amber-700">{rows.length}</Badge>}
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">价格 / 延期 / 取消订单 / 里程碑 / 出货 —— 点行查看详情,财务批/驳后自动回传节拍器执行。</p>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            集成审批（来自节拍器）
+            {rows.length > 0 && <Badge className="bg-amber-100 text-amber-700">{rows.length}</Badge>}
+          </CardTitle>
+          {/* 待处理 / 已处理 切换:误批后可到「已处理」回看并找回记录 */}
+          <div className="flex items-center gap-0.5 rounded-lg border p-0.5 text-xs shrink-0">
+            <button
+              onClick={() => setTab('pending')}
+              className={`px-2.5 py-1 rounded-md transition-colors ${tab === 'pending' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
+            >待处理</button>
+            <button
+              onClick={() => setTab('processed')}
+              className={`px-2.5 py-1 rounded-md transition-colors ${tab === 'processed' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
+            >已处理</button>
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {tab === 'pending'
+            ? '价格 / 延期 / 取消订单 / 里程碑 / 出货 —— 点行查看详情,财务批/驳后自动回传节拍器执行。'
+            : '已批准/已驳回的历史记录（近 200 条,按处理时间倒序）。点行查看当时的审批详情与决策留痕。'}
+        </p>
       </CardHeader>
       <CardContent className="p-0 overflow-x-auto">
-        {loading ? (
+        {(tab === 'pending' ? loading : processedLoading) ? (
           <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
-        ) : rows.length === 0 ? (
+        ) : (tab === 'pending' ? rows : processedRows).length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">
-            <Inbox className="h-10 w-10 mx-auto mb-2 opacity-30" /><p className="text-sm">暂无待处理的集成审批</p>
+            <Inbox className="h-10 w-10 mx-auto mb-2 opacity-30" />
+            <p className="text-sm">{tab === 'pending' ? '暂无待处理的集成审批' : '暂无已处理的审批记录'}</p>
           </div>
         ) : (
           <Table>
@@ -222,11 +291,22 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
               <TableHead>类型</TableHead>
               <TableHead>订单</TableHead>
               <TableHead>摘要</TableHead>
-              <TableHead>申请人</TableHead>
-              <TableHead className="text-center">操作</TableHead>
+              {tab === 'pending' ? (
+                <>
+                  <TableHead>申请人</TableHead>
+                  <TableHead className="text-center">操作</TableHead>
+                </>
+              ) : (
+                <>
+                  <TableHead>结果</TableHead>
+                  <TableHead>审批人</TableHead>
+                  <TableHead>处理时间</TableHead>
+                  <TableHead className="text-center">操作</TableHead>
+                </>
+              )}
             </TableRow></TableHeader>
             <TableBody>
-              {rows.map(r => (
+              {(tab === 'pending' ? rows : processedRows).map(r => (
                 <TableRow key={r.id} className="cursor-pointer hover:bg-muted/40" onClick={() => open(r)}>
                   <TableCell><Badge className={TYPE_LABEL[r.approval_type]?.color} variant="secondary">{TYPE_LABEL[r.approval_type]?.label || r.approval_type}</Badge></TableCell>
                   <TableCell className="text-sm">
@@ -234,14 +314,35 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
                     <div className="text-xs text-muted-foreground">{r.customer_name || ''}</div>
                   </TableCell>
                   <TableCell className="text-sm max-w-xs"><span className="line-clamp-2">{r.summary}</span></TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{r.requested_by_name || '-'}</TableCell>
-                  <TableCell>
-                    <div className="flex items-center justify-center">
-                      <Button size="sm" variant="outline" onClick={e => { e.stopPropagation(); open(r) }}>
-                        <Eye className="h-3.5 w-3.5 mr-1" />查看并审批
-                      </Button>
-                    </div>
-                  </TableCell>
+                  {tab === 'pending' ? (
+                    <>
+                      <TableCell className="text-sm text-muted-foreground">{r.requested_by_name || '-'}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center justify-center">
+                          <Button size="sm" variant="outline" onClick={e => { e.stopPropagation(); open(r) }}>
+                            <Eye className="h-3.5 w-3.5 mr-1" />查看并审批
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </>
+                  ) : (
+                    <>
+                      <TableCell>
+                        {r.status === 'approved'
+                          ? <Badge variant="secondary" className="bg-green-100 text-green-700"><CheckCircle className="h-3 w-3 mr-0.5" />已批准</Badge>
+                          : <Badge variant="secondary" className="bg-red-100 text-red-700"><XCircle className="h-3 w-3 mr-0.5" />已驳回</Badge>}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{r.decider_name || '—'}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{r.decided_at ? fmtDate(r.decided_at) : '—'}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center justify-center">
+                          <Button size="sm" variant="outline" onClick={e => { e.stopPropagation(); open(r) }}>
+                            <Eye className="h-3.5 w-3.5 mr-1" />查看
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -347,18 +448,81 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
                     </div>
                   )}
                 </div>
-                {/* 审批意见 */}
-                <Textarea rows={2} value={note} onChange={e => setNote(e.target.value)}
-                  placeholder="审批意见（驳回必填,会回传节拍器给申请人）" />
-                <p className="text-[11px] text-muted-foreground">结果回传节拍器：批准→节拍器执行；驳回→拦下并显示原因。</p>
+                {/* 审批意见（待处理）/ 决策留痕（已处理·只读） */}
+                {isProcessed ? (
+                  <>
+                    <div className={`rounded-lg border p-3 text-sm ${sel.status === 'approved' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                      <div className="flex items-center gap-1.5 font-medium">
+                        {sel.status === 'approved'
+                          ? <><CheckCircle className="h-4 w-4 text-green-600" /><span className="text-green-700">已批准</span></>
+                          : <><XCircle className="h-4 w-4 text-red-600" /><span className="text-red-700">已驳回</span></>}
+                      </div>
+                      <div className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
+                        <div>审批人：<span className="text-foreground">{sel.decider_name || '—'}</span></div>
+                        <div>处理时间：<span className="text-foreground">{sel.decided_at ? fmtDate(sel.decided_at) : '—'}</span></div>
+                        <div>审批意见：<span className="text-foreground">{sel.decision_note || '—'}</span></div>
+                      </div>
+                    </div>
+                    {reopening && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+                        <p className="text-xs font-medium text-amber-800">撤销重审 —— 打回「待处理」重新决策</p>
+                        <Textarea rows={2} value={reopenReason} onChange={e => setReopenReason(e.target.value)}
+                          placeholder="撤销原因（必填,将留痕:谁撤销、原决策、原因）" />
+                        <p className="text-[11px] text-amber-700">
+                          撤销只改财务侧状态、不直接回传节拍器;请在「待处理」重新决策,重新驳回时才会把更正回传节拍器。
+                          ⚠ 此单此前已回传节拍器,若节拍器不支持接收改判,需人工在节拍器侧同步撤销。
+                        </p>
+                      </div>
+                    )}
+                  </>
+                ) : confirming ? (
+                  <div className="rounded-lg border p-3 text-sm space-y-1">
+                    <p className="font-medium">确认{confirming === 'approved' ? '批准' : '驳回'} {sel.order_no}？</p>
+                    <p className="text-xs text-muted-foreground">客户：{sel.customer_name || '—'}</p>
+                    {confirming === 'approved'
+                      ? <p className="text-xs text-amber-700">⚠ 批准会立即回传节拍器执行(下采购/放行),请确认无误。</p>
+                      : <p className="text-xs text-muted-foreground">驳回原因:{note.trim() || '(未填)'}</p>}
+                  </div>
+                ) : (
+                  <>
+                    <Textarea rows={2} value={note} onChange={e => setNote(e.target.value)}
+                      placeholder="审批意见（驳回必填,会回传节拍器给申请人）" />
+                    <p className="text-[11px] text-muted-foreground">结果回传节拍器：批准→节拍器执行；驳回→拦下并显示原因。点批准/驳回后需再确认一步。</p>
+                  </>
+                )}
               </div>
               <DialogFooter className="gap-2 shrink-0 border-t p-6 pt-3">
-                <Button variant="destructive" disabled={!!busy} onClick={() => decide('rejected')}>
-                  {busy === 'rejected' ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <XCircle className="h-4 w-4 mr-1" />}驳回
-                </Button>
-                <Button disabled={!!busy} onClick={() => decide('approved')}>
-                  {busy === 'approved' ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}批准
-                </Button>
+                {isProcessed ? (
+                  reopening ? (
+                    <>
+                      <Button variant="outline" disabled={reopenBusy} onClick={() => { setReopening(false); setReopenReason('') }}>取消</Button>
+                      <Button variant="destructive" disabled={reopenBusy} onClick={doReopen}>
+                        {reopenBusy ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}确认撤销,打回待审
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button variant="outline" onClick={() => setSel(null)}>关闭</Button>
+                      <Button variant="destructive" onClick={() => setReopening(true)}>撤销重审</Button>
+                    </>
+                  )
+                ) : confirming ? (
+                  <>
+                    <Button variant="outline" disabled={!!busy} onClick={() => setConfirming(null)}>取消</Button>
+                    <Button variant={confirming === 'rejected' ? 'destructive' : 'default'} disabled={!!busy} onClick={() => decide(confirming)}>
+                      {busy ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}确认{confirming === 'approved' ? '批准' : '驳回'}
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button variant="destructive" disabled={!!busy} onClick={() => { if (!note.trim()) { toast.error('驳回请填写原因'); return } setConfirming('rejected') }}>
+                      <XCircle className="h-4 w-4 mr-1" />驳回
+                    </Button>
+                    <Button disabled={!!busy} onClick={() => setConfirming('approved')}>
+                      <CheckCircle className="h-4 w-4 mr-1" />批准
+                    </Button>
+                  </>
+                )}
               </DialogFooter>
             </>
           )}
