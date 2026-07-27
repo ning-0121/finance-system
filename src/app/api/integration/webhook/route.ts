@@ -698,7 +698,9 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
   const revenueInput = Number(bo?.total_revenue) || 0
   const revenueCny = rate != null ? r2(revenueInput * (currency === 'CNY' ? 1 : rate)) : null
   const profit = revenueCny != null ? r2(revenueCny - totalCost) : null
-  const margin = profit != null && revenueCny ? r2((profit / revenueCny) * 100) : null
+  // revenueCny=0(如金额缺失自动建的 draft)时 margin 用 0,不写 null —— 否则 estimated_margin NOT NULL 违约
+  // (审计 2026-07-27:5 条 order.budget_updated 因此 failed;与兄弟路径 :575 的 `: 0` 口径统一)
+  const margin = profit != null && revenueCny ? r2((profit / revenueCny) * 100) : (profit != null ? 0 : null)
   const cb = {
     ...(prevCb || {}),                                    // 保留 _revenue_* 等元字段与未涉及键
     fabric, accessory, processing,
