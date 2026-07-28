@@ -10,6 +10,7 @@ import { createClient } from '@/lib/supabase/server'
 import { requireAuth } from '@/lib/auth/api-guard'
 import { syncFxRate } from '@/lib/engines/fx-sync'
 import { simulateExchangeRateImpact } from '@/lib/profit-calculator'
+import { FX_LAST_RESORT } from '@/lib/accounting/fx'
 import { z } from 'zod'
 
 const UpdateRateSchema = z.object({
@@ -43,7 +44,7 @@ export async function GET() {
       .limit(10)
 
     // Wave 3-D P2-E7: 表为空仍 fallback（业务可降级），但显式标 fallback=true
-    const currentRate = rates?.[0]?.rate || 7.15
+    const currentRate = rates?.[0]?.rate || FX_LAST_RESORT   // 表空兜底,统一常量(替代散落的 7.15)
     return NextResponse.json({
       current_rate: currentRate,
       history: rates || [],

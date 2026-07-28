@@ -19,6 +19,7 @@ import {
 import { getBudgetOrdersLite, getProfitSummary, getAlerts, getMonthlyProfitData, getPendingRiskEvents, getPendingDocumentActions, getTrustScoreSummary, type BudgetOrderLite } from '@/lib/supabase/queries'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
+import { toCnyDisplay } from '@/lib/accounting/fx'
 import type { Alert, ProfitSummary, BudgetOrderStatus } from '@/lib/types'
 
 export default function DashboardPage() {
@@ -108,7 +109,7 @@ export default function DashboardPage() {
     switch (key) {
       case 'revenue': {
         // 折人民币后排序/展示，避免美元单按面值与人民币单混排（1万美元 ≠ 1万人民币）
-        const revCny = (o: BudgetOrderLite) => (o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 7)) * (Number(o.total_revenue) || 0)
+        const revCny = (o: BudgetOrderLite) => toCnyDisplay(o.total_revenue, o.currency, o.exchange_rate)  // 外币缺率→市场兜底常量,不再 ||7(P2)
         return { title: '营收分析（折人民币）', items: [...orders].sort((a, b) => revCny(b) - revCny(a)).slice(0, 5).map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `¥ ${Math.round(revCny(o)).toLocaleString()}` })) }
       }
       case 'profit': return { title: '利润分析', items: [...topProfit, ...bottomProfit].map(o => ({ label: `${o.order_no} · ${o.customer?.company || ''}`, value: `¥ ${o.estimated_profit.toLocaleString()} (${o.estimated_margin}%)` })) }

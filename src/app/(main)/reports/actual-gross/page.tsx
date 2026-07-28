@@ -13,6 +13,7 @@ import { Loader2, Download, Search, FileSpreadsheet, Eye } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { getBudgetOrders, getBudgetOrderById } from '@/lib/supabase/queries'
 import type { BudgetOrder } from '@/lib/types'
 import {
@@ -251,7 +252,7 @@ export default function ActualGrossReportPage() {
         costs?.forEach(r => {
           const id = r.budget_order_id
           // CNY 行汇率恒按 1，防历史数据 exchange_rate≠1 被二次折算
-          const rate = (r.currency || 'CNY') === 'CNY' ? 1 : (Number(r.exchange_rate) || 1)
+          const rate = resolveDisplayRate(r.currency, r.exchange_rate)  // 外币缺率→市场兜底常量,不再 ||1(P1)
           const cny = (Number(r.amount) || 0) * rate
           costByOrder.set(id, (costByOrder.get(id) || 0) + cny)
         })
