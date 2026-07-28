@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/table'
 import { DollarSign, AlertTriangle, Search, Loader2, CheckCircle2, Pencil, Download, X, Plus, Link2, ChevronDown, ChevronRight, Trash2, Inbox, Upload, Image as ImageIcon } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { uploadAttachment, openAttachment, attachmentName } from '@/lib/supabase/storage'
 import { getBudgetOrders, writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
 import { getReceivablePayments, getReceivableAllocations, createReceivablePayment, allocateReceipt, unallocateReceipt, voidReceivablePayment, correctReceivableRate, editReceivablePayment } from '@/lib/supabase/queries-v2'
@@ -110,7 +111,7 @@ function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, a
       const agingDays = isPastDue ? Math.floor((now.getTime() - dueDate.getTime()) / 86400000) : 0
 
       const amount = Number(o.total_revenue) || 0
-      const rate = o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 1)
+      const rate = resolveDisplayRate(o.currency, o.exchange_rate as number)  // 外币缺率→市场兜底常量,不再 ||1(P1)
       // 真实已收：优先回款分配合计(权威)；无分配的历史订单回退 ar_received_amount projection
       const allocCny = allocatedByOrder.get(o.id)
       const hasLedger = allocCny != null
