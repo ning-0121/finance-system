@@ -35,6 +35,7 @@ const baseNavigation = [
   { name: '费用归集', href: '/costs', icon: ShoppingCart },
   { name: '采购审批', href: '/purchase-approvals', icon: ShieldCheck },
   { name: '应收账款', href: '/receivables', icon: CreditCard },
+  { name: '杂项应收', href: '/receivables/misc', icon: CreditCard },
   { name: '应付账款', href: '/payables', icon: CreditCard },
   { name: '汇总报表', href: '/reports', icon: ScrollText },
   { name: '出口退税', href: '/tax-refund', icon: FileText },
