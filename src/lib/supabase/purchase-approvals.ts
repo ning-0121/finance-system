@@ -18,6 +18,7 @@ export interface PendingPO {
   requires_approval: boolean | null
   internal_order_no?: string | null   // 内部/工厂单号(order_refs → synced_orders.style_no),#2 分组键
   qm_order_no?: string | null         // 节拍器订单号 QM-xxx
+  customer_name?: string | null       // 客户名(order_refs → synced_orders.customer_name),列表展示用
   order_deleted?: boolean             // 关联订单是否已删除/取消(全删则过滤出队列)
 }
 
@@ -67,15 +68,16 @@ export async function getPendingPurchaseApprovals(): Promise<PendingPO[]> {
     // 直接 .in('id', [...]) 会 22P02 400 → 外层 catch 吞成 []→整个审批队列凭空消失(验证 2026-07-09 实测发现)。
     const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
     const refs = [...new Set(pos.flatMap(p => normalizeOrderRefs(p.order_refs).map(r => r.id)))].filter(isUuid)
-    const orderMap: Record<string, { qm: string | null; internal: string | null; deleted: boolean }> = {}
+    const orderMap: Record<string, { qm: string | null; internal: string | null; customer: string | null; deleted: boolean }> = {}
     if (refs.length) {
       const { data: so } = await sb.from('synced_orders')
-        .select('id, order_no, style_no, lifecycle_status').in('id', refs)
+        .select('id, order_no, style_no, customer_name, lifecycle_status').in('id', refs)
       for (const s of (so as Record<string, unknown>[] | null) || []) {
         const life = String(s.lifecycle_status || '')
         orderMap[String(s.id)] = {
           qm: (s.order_no as string) || null,
           internal: (s.style_no as string) || null,
+          customer: (s.customer_name as string) || null,
           deleted: ['deleted', 'cancelled', '已取消', '已删除'].includes(life),
         }
       }
@@ -90,6 +92,8 @@ export async function getPendingPurchaseApprovals(): Promise<PendingPO[]> {
           || infos.map(i => i.internal).find(Boolean) || null,
         qm_order_no: nrefs.map(r => r.order_no).find(Boolean)
           || infos.map(i => i.qm).find(Boolean) || null,
+        customer_name: nrefs.map(r => r.customer_name).find(Boolean)
+          || infos.map(i => i.customer).find(Boolean) || null,
         // 仅当所有关联订单都已删/取消才算废单(部分关联仍在则保留,避免误藏)
         order_deleted: infos.length > 0 && infos.every(i => i.deleted),
       }
