@@ -29,6 +29,7 @@ import {
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
 import { FinanceWorkflowGuide } from '@/components/orders/FinanceWorkflowGuide'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { canViewApprovalQueue } from '@/lib/auth/permissions'
 import { OrderVoidDialog } from './OrderVoidDialog'
 import { OrderPoDocsPanel } from './OrderPoDocsPanel'
@@ -153,7 +154,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               } catch { /* source_id 非 JSON，忽略 */ }
             }
             const cur = (row.currency as string) || 'CNY'
-            const rate = cur === 'CNY' ? 1 : (Number(row.exchange_rate) || 1)
+            const rate = resolveDisplayRate(cur, row.exchange_rate as number)  // 外币缺率→市场兜底常量,不再 ||1(P1)
             const amountCny = Math.round((Number(row.amount) || 0) * rate * 100) / 100
             ;(map[key] ||= []).push({ name: (row.description as string) || '', qty: qty ?? 0, unit, unit_price: price ?? 0, amount: amountCny })
           }
@@ -1270,11 +1271,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               {(() => {
                 const costLines = Object.values(costDetail).flat()
                 const costItemsTotal = costLines.reduce((s, l) => s + (Number(l.amount) || 0), 0)
-                const orderRate = order.currency === 'CNY' ? 1 : (order.exchange_rate || 1)
+                const orderRate = resolveDisplayRate(order.currency, order.exchange_rate)  // 外币缺率→市场兜底常量,不再 ||1(P1)
                 const invRows = (actualInvoices || []).filter(i => !i.deleted_at && i.status !== 'rejected')
                 const invoiceTotal = invRows.reduce((s, i) => {
                   const cur = String(i.currency || 'CNY')
-                  const rate = cur === 'CNY' ? 1 : (Number(i.exchange_rate) || orderRate || 1)
+                  const rate = resolveDisplayRate(cur, Number(i.exchange_rate) || orderRate)  // 明细缺率→退回订单率→市场兜底,不再 ||1(P1)
                   return s + (Number(i.total_amount) || 0) * rate
                 }, 0)
                 if (costItemsTotal <= 0 && invoiceTotal <= 0) return null
