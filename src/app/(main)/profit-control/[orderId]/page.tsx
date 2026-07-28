@@ -22,6 +22,7 @@ import {
 import Link from 'next/link'
 import { toast } from 'sonner'
 import { RISK_CONFIG, type MarginRisk, type FXScenario } from '@/lib/profit-calculator'
+import { FX_LAST_RESORT } from '@/lib/accounting/fx'
 import type { RecommendationSeverity } from '@/lib/profit-recommendation-engine'
 import { FieldSourceBadge } from '@/components/sot/FieldSourceBadge'
 
@@ -161,7 +162,7 @@ export default function OrderProfitDetailPage({ params }: { params: Promise<{ or
       setFxScenarios(d.fx_scenarios || [])
       setRecommendations(d.recommendations || [])
       // Pre-fill exchange rate in form
-      setForm(f => ({ ...f, exchange_rate: d.order?.exchange_rate || 7.15 }))
+      setForm(f => ({ ...f, exchange_rate: d.order?.exchange_rate || FX_LAST_RESORT }))  // 表单默认率统一常量(替代 7.15)
     } catch (e) {
       toast.error(`加载失败: ${e instanceof Error ? e.message : '未知'}`)
     } finally {
