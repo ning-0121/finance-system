@@ -25,7 +25,7 @@ import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canViewApprovalQueue, getRoleLabel } from '@/lib/auth/permissions'
 import { UserSwitcher } from '@/components/layout/UserSwitcher'
 import { useState, useEffect } from 'react'
-import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale, Shield, Lock, Clock, FlaskConical, ShieldCheck, Search as SearchIcon, Landmark, LayoutGrid } from 'lucide-react'
+import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale, Shield, Lock, Clock, FlaskConical, ShieldCheck, Search as SearchIcon, Landmark, LayoutGrid, Ship } from 'lucide-react'
 
 const baseNavigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
@@ -39,6 +39,7 @@ const baseNavigation = [
   { name: '杂项应收', href: '/receivables/misc', icon: CreditCard },
   { name: '应付账款', href: '/payables', icon: CreditCard },
   { name: '汇总报表', href: '/reports', icon: ScrollText },
+  { name: '出运档案', href: '/shipments', icon: Ship },
   { name: '出口退税', href: '/tax-refund', icon: FileText },
   { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
   { name: '周排款（付款执行）', href: '/payment-batches', icon: Calendar },

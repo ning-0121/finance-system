@@ -248,6 +248,11 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'receivable.created':
       return handleReceivableCreated(payload.data as Record<string, unknown>, payload.request_id)
 
+    // 出运档案(功能2,2026-07-28):一票=一张提单,订单↔票多对多。节拍器出运时推
+    // 提单/CI 文件 + 关联订单 → shipments/shipment_orders + uploaded_documents(挂 related_shipment_id)。
+    case 'shipment.recorded':
+      return handleShipmentRecorded(payload.data as Record<string, unknown>, payload.request_id)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
@@ -1209,6 +1214,111 @@ async function handleReceivableCreated(data: Record<string, unknown>, requestId:
   })
   if (error) throw new Error(`应收入账失败: ${error.message}`)
   return { action: 'done', reason: `应收已建 ${customerName} · ${(data.kind as string) || 'sample_fee'} · ${amount}${(data.currency as string) || 'CNY'}` }
+}
+
+// --- 出运档案(功能2,2026-07-28):一票=一张提单,订单↔票多对多 ---
+// 节拍器出运时推:票头(bl_no/ci_no/港口/ETD)+ orders[](关联订单,可多个)+ attachments[](提单/CI 文件)。
+// 幂等:source_ref(节拍器 shipment id,退回 request_id);重推 = 更新票头 + 补链接/附件(不重复)。
+async function handleShipmentRecorded(data: Record<string, unknown>, requestId: string) {
+  const supabase = createServiceClient()
+  const toUuid = (v: unknown): string | null => {
+    const s = v == null ? '' : String(v)
+    const m = s.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+    return m ? m[0] : null
+  }
+  const sourceRef = String(data.source_ref || data.shipment_id || requestId || '')
+  if (!sourceRef) return { action: 'ignored', reason: 'shipment.recorded 缺幂等锚(source_ref/shipment_id/request_id)' }
+
+  // 1) 票头 upsert(按 source_ref 幂等;重推更新)
+  const head = {
+    source_ref: sourceRef,
+    bl_no: (data.bl_no as string) || null,
+    ci_no: (data.ci_no as string) || null,
+    shipping_port: (data.shipping_port as string) || null,
+    destination_port: (data.destination_port as string) || null,
+    etd: (data.etd as string) || null,
+    carton_count: data.carton_count != null ? Number(data.carton_count) : null,
+    status: ['shipped', 'arrived', 'closed', 'cancelled'].includes(String(data.status)) ? String(data.status) : 'shipped',
+    notes: (data.notes as string) || null,
+    updated_at: new Date().toISOString(),
+  }
+  const { data: exist } = await supabase.from('shipments').select('id').eq('source_ref', sourceRef).is('deleted_at', null).maybeSingle()
+  let shipmentId: string
+  if (exist) {
+    const { error } = await supabase.from('shipments').update(head).eq('id', (exist as { id: string }).id)
+    if (error) throw new Error(`出运票头更新失败: ${error.message}`)
+    shipmentId = (exist as { id: string }).id
+  } else {
+    const { data: created, error } = await supabase.from('shipments').insert(head).select('id').single()
+    if (error || !created) throw new Error(`出运票头入库失败: ${error?.message || 'unknown'}`)
+    shipmentId = created.id as string
+  }
+
+  // 2) 关联订单(多对多)。解析 budget_order_id:qimo uuid → synced_orders.id;退回 order_no 匹配。
+  const orders = Array.isArray(data.orders) ? (data.orders as Record<string, unknown>[]) : []
+  let linked = 0
+  for (const o of orders) {
+    const qimoId = toUuid(o.qimo_order_id ?? o.id)
+    const orderNo = (o.order_no as string) || null
+    if (!qimoId && !orderNo) continue
+    let so: { id?: string; order_no?: string; style_no?: string; budget_order_id?: string } | null = null
+    if (qimoId) {
+      const { data: s } = await supabase.from('synced_orders').select('id, order_no, style_no, budget_order_id').eq('id', qimoId).maybeSingle()
+      so = s
+    }
+    if (!so && orderNo) {
+      const { data: s } = await supabase.from('synced_orders').select('id, order_no, style_no, budget_order_id').eq('order_no', orderNo).maybeSingle()
+      so = s
+    }
+    // 已链接则跳过(qimo id 或 order_no 任一匹配即视为已存在)
+    const { data: dup } = await supabase.from('shipment_orders').select('id')
+      .eq('shipment_id', shipmentId)
+      .or([qimoId || so?.id ? `qimo_order_id.eq.${qimoId || so?.id}` : '', orderNo ? `order_no.eq.${orderNo}` : ''].filter(Boolean).join(','))
+      .limit(1)
+    if (dup && dup.length > 0) continue
+    const { error } = await supabase.from('shipment_orders').insert({
+      shipment_id: shipmentId,
+      qimo_order_id: qimoId || (so?.id ?? null),
+      order_no: orderNo || so?.order_no || null,
+      internal_order_no: (o.internal_order_no as string) || so?.style_no || null,
+      budget_order_id: so?.budget_order_id ?? null,
+    })
+    if (!error) linked++
+  }
+
+  // 3) 附件(提单/CI 等)→ uploaded_documents 挂 related_shipment_id。按 (shipment, file_url) 幂等。
+  const atts = Array.isArray(data.attachments) ? (data.attachments as Record<string, unknown>[]) : []
+  let added = 0
+  const normFileType = (t: unknown, name: unknown): string => {
+    const s = `${String(t || '')} ${String(name || '')}`.toLowerCase()
+    if (/pdf/.test(s)) return 'pdf'
+    if (/xls|excel|csv/.test(s)) return 'excel'
+    if (/doc|word/.test(s)) return 'word'
+    return 'image'
+  }
+  for (const a of atts) {
+    const url = (a.file_url as string) || null
+    if (!url) continue
+    const { data: dupDoc } = await supabase.from('uploaded_documents').select('id')
+      .eq('related_shipment_id', shipmentId).eq('file_url', url).limit(1)
+    if (dupDoc && dupDoc.length > 0) continue
+    const row: Record<string, unknown> = {
+      file_name: (a.file_name as string) || 'unnamed',
+      file_type: normFileType(a.file_type, a.file_name),
+      file_size: a.file_size != null ? Number(a.file_size) : null,
+      file_url: url,
+      status: 'confirmed',                       // 出运单据是事实文件,不走识别确认流
+      doc_hint: (a.doc_hint as string) || 'bl',  // bl=提单 / ci=商业发票
+      related_shipment_id: shipmentId,
+      extracted_fields: {},
+    }
+    const attId = toUuid(a.id)
+    if (attId) row.id = attId                    // 节拍器带稳定 id 则用之(重推同文件不重复)
+    const { error } = await supabase.from('uploaded_documents').upsert(row, attId ? { onConflict: 'id' } : undefined)
+    if (!error) added++
+  }
+
+  return { action: 'done', reason: `出运档案 ${head.bl_no || sourceRef}:订单链接+${linked},附件+${added}(共${orders.length}单/${atts.length}件)` }
 }
 
 // --- 价格审批请求 ---
