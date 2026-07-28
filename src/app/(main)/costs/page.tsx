@@ -25,7 +25,7 @@ import { getBudgetOrders } from '@/lib/supabase/queries'
 import { getSuppliers } from '@/lib/supabase/queries-v2'
 import { getFabricPriceReference, getProcessingPriceReference, type PriceReference } from '@/lib/supabase/price-history'
 import { normalizeSupplierName } from '@/lib/utils'
-import { toCnyDisplay } from '@/lib/accounting/fx'
+import { toCnyDisplay, FX_LAST_RESORT } from '@/lib/accounting/fx'
 import { bizToday } from '@/lib/biz-date'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
@@ -1129,7 +1129,7 @@ export default function CostsPage() {
                   const cur = v || 'USD'
                   setFormCurrency(cur)
                   if (cur === 'CNY') setFormRate('1')
-                  else if (cur === 'USD') setFormRate('6.9')
+                  else if (cur === 'USD') setFormRate(String(FX_LAST_RESORT))  // USD 表单默认率统一常量(替代 6.9)
                 }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>

@@ -608,7 +608,7 @@ export default function ReceivablesPage() {
     setMatchSaving(true)
     // 传入本次匹配的原币额(= 匹配¥ / 该回款结汇汇率)，让 allocation 落原币——
     // 否则 ar 已收原币会按订单预算汇率反推失真(与快捷登记/汇率修正口径不一致)。
-    const mRate = matchReceipt.currency === 'CNY' ? 1 : (Number(matchReceipt.exchange_rate) || 1)
+    const mRate = resolveDisplayRate(matchReceipt.currency, matchReceipt.exchange_rate as number)  // 回款结汇率(正常都有);缺则市场兜底,不再 ||1
     const amountOriginal = r2(amt / mRate)
     const { error } = await allocateReceipt({ receipt_id: matchReceipt.id, budget_order_id: matchOrderId, amount_cny: amt, amount_original: amountOriginal })
     setMatchSaving(false)

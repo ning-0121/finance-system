@@ -172,7 +172,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
             invoice_date: null,
             total_amount: Number(orderData.ar_received_amount) || 0,
             currency: orderData.currency || 'CNY',
-            exchange_rate: orderData.currency === 'CNY' ? 1 : (Number(orderData.exchange_rate) || 1),
+            exchange_rate: resolveDisplayRate(orderData.currency, orderData.exchange_rate as number),  // 展示快照,外币缺率→市场兜底,不再 ||1
             supplier_name: orderData.customer?.company || null,
             invoice_no: '历史登记已收（无流水明细）',
           }]
