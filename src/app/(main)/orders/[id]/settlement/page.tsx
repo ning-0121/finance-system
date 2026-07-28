@@ -22,6 +22,7 @@ import { ArrowLeft, Plus, Loader2, Package, TrendingUp, TrendingDown, CheckCircl
 import { toast } from 'sonner'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { getBudgetOrderById, getSettlementByBudgetId } from '@/lib/supabase/queries'
 import { generateOrderSettlement, getOrderSettlement, getSubDocuments, getInventoryReturns } from '@/lib/supabase/queries-v2'
 import { toChineseUppercase } from '@/lib/excel/chinese-amount'
@@ -280,7 +281,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
     const actual: Record<string, { amount: number; items: Map<string, Item> }> = {}
     for (const e of invoiceExpenses) {
       const key = CT2CAT[e.cost_type] || 'logistics'
-      const rate = e.currency === 'CNY' ? 1 : (Number(e.exchange_rate) || 1)
+      const rate = resolveDisplayRate(e.currency, e.exchange_rate)  // 外币缺率→市场兜底常量,不再 ||1(P1)
       const amt = (Number(e.amount) || 0) * rate
       const slot = (actual[key] ||= { amount: 0, items: new Map() })
       slot.amount += amt
