@@ -322,6 +322,7 @@ export default function PurchaseApprovalsPage() {
                   const total = items.reduce((s, p) => s + (Number(p.total_amount) || 0), 0)
                   const cur = items[0]?.currency || 'RMB'
                   const qm = items.find(p => p.qm_order_no)?.qm_order_no
+                  const customer = items.find(p => p.customer_name)?.customer_name
                   const open = collapsed[key] !== true
                   return (
                     <div key={key} className="rounded-lg border overflow-hidden">
@@ -331,6 +332,7 @@ export default function PurchaseApprovalsPage() {
                           <div className="font-semibold text-sm flex items-center gap-1">
                             {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
                             <span className="truncate">订单 {key}</span>
+                            {customer && <span className="shrink-0 text-[11px] font-normal text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded">{customer}</span>}
                           </div>
                           {qm && qm !== key && <div className="text-[11px] text-muted-foreground ml-[18px]">{qm}</div>}
                         </div>
