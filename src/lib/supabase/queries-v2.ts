@@ -50,7 +50,12 @@ export async function createReceivablePayment(p: {
   try {
     const supabase = createClient()
     const { data: userData } = await supabase.auth.getUser()
-    const rate = p.currency && p.currency !== 'CNY' ? (Number(p.exchange_rate) || 1) : 1
+    // 审计 2026-07-28 P1-2:外币缺率此前 ||1 静默按 1:1 折 CNY 入账(与 20260727 RPC 护栏双标)。
+    // 改为拒绝——所有合法调用方(快捷登记/登记弹窗)都已在 UI 校验并传正汇率。
+    if (p.currency && p.currency !== 'CNY' && !(Number(p.exchange_rate) > 0)) {
+      return { data: null, error: `外币回款(${p.currency})缺结汇汇率,拒绝按 1:1 入账;请填写本次结汇汇率` }
+    }
+    const rate = p.currency && p.currency !== 'CNY' ? Number(p.exchange_rate) : 1
     const amountCny = Math.round((Number(p.amount_original) || 0) * rate * 100) / 100
     const { data, error } = await supabase.from('receivable_payments').insert({
       customer_id: p.customer_id || null,
