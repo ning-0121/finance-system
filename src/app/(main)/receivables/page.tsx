@@ -549,8 +549,10 @@ export default function ReceivablesPage() {
     const amt = Number(regForm.amount)
     if (!regForm.customer.trim()) { toast.error('请先搜索并选择订单（或填写客户）'); return }
     if (!amt || amt <= 0) { toast.error('请输入有效金额'); return }
+    // 外币必须带有效结汇汇率(与快捷登记同校验;此前 ||1 静默按 1:1,审计 2026-07-28 P1-2)
+    const effRate = regForm.currency === 'CNY' ? 1 : (Number(regForm.rate) || 0)
+    if (regForm.currency !== 'CNY' && effRate <= 0) { toast.error('外币回款请输入有效的结汇汇率'); return }
     setRegSaving(true)
-    const effRate = regForm.currency === 'CNY' ? 1 : Number(regForm.rate) || 1
     const { data: pay, error } = await createReceivablePayment({
       customer_name: regForm.customer.trim(), budget_order_id: regOrderId || null,
       amount_original: amt, currency: regForm.currency, exchange_rate: effRate,

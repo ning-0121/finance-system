@@ -108,7 +108,15 @@ async function buildSpecForItem(db: DB, item: QueueItem): Promise<JournalSpec | 
         .select('cost_type, amount, currency, exchange_rate')
         .eq('budget_order_id', item.source_id).is('deleted_at', null)
       if (ci && ci.length > 0) {
-        const cnyOf = (r: Record<string, unknown>) => (Number(r.amount) || 0) * (((r.currency as string) || 'CNY') === 'CNY' ? 1 : (Number(r.exchange_rate) || 1))
+        // 审计 2026-07-28 P1-1:此前外币缺率 ||1 → 按 1:1 写进总账,绕过 MISSING_RATE 铁闸。
+        // 改为与 builder 同语义:外币必须有正汇率,缺率抛 MISSING_RATE 挂起(异常中心可见,补率后重过账)。
+        const cnyOf = (r: Record<string, unknown>) => {
+          const cur = ((r.currency as string) || 'CNY').toUpperCase()
+          if (cur === 'CNY' || cur === 'RMB') return Number(r.amount) || 0
+          const rate = Number(r.exchange_rate)
+          if (!(rate > 0)) throw new GlPostingError('MISSING_RATE', `成本结转:费用行为外币(${cur})但缺汇率,拒绝按 1:1 入账;请在费用归集补汇率后重过账`)
+          return (Number(r.amount) || 0) * rate
+        }
         const b = { fabric: 0, accessory: 0, processing: 0, forwarder: 0, container: 0, logistics: 0 }
         for (const r of ci as Record<string, unknown>[]) {
           if (r.cost_type === 'tax_point') continue   // 票点不结转主营业务成本(留作退税核算)
