@@ -4,7 +4,10 @@
 // 原则：宁可保守，不要出错
 // ============================================================
 
-import { createClient } from '@/lib/supabase/client'
+// 本引擎只被服务端 /api/documents/execute 调用(requireRole 财务 + 真身 actor 在路由层把关)。
+// 此前误用浏览器 client → 服务端上下文=anon,全靠文档表 RLS 全开才写得进(审计 2026-07-28 P0-1);
+// 收紧 uploaded_documents/document_actions RLS 后必须走 service client(与回款 RPC 同一先例)。
+import { createServiceClient as createClient } from '@/lib/supabase/service'
 import { getActionsForCategory, canExecuteAction, type ActionConfig } from './action-registry'
 import { assessSafety, SAFETY_LEVEL_CONFIG, type SafetyLevel } from './safety'
 import { topologicalSort, checkDependencies, updateTrustScore } from './dependency-resolver'
