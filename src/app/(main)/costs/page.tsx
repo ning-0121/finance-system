@@ -448,7 +448,7 @@ export default function CostsPage() {
         unit: (formQty || formUnitPrice) ? (formUnit || null) : null,
         unit_price: (formQty || formUnitPrice) ? unitPriceNum : null,
         color: formColor.trim() || null,
-        roll_count: formRollCount ? Number(formRollCount) : null,
+        roll_count: formType === 'accessory' ? null : (formRollCount ? Number(formRollCount) : null),  // 辅料无匹数(字段隐藏,防切类型残留)
         delivery_date: formDeliveryDate || null,
       }
 
@@ -530,7 +530,7 @@ export default function CostsPage() {
             unit: (line.qty || line.unitPrice) ? (line.unit || null) : null,
             unit_price: (line.qty || line.unitPrice) ? lineUnitPrice : null,
             color: line.color?.trim() || null,
-            roll_count: line.roll ? Number(line.roll) : null,
+            roll_count: formType === 'accessory' ? null : (line.roll ? Number(line.roll) : null),
             delivery_date: formDeliveryDate || null,
             created_by: createdBy,
           }).select('*, budget_orders(order_no)').single()
@@ -938,7 +938,7 @@ export default function CostsPage() {
             )}
             {entryMode === 'shared' && !editItem && (
               <div className="rounded-lg border p-3 space-y-2 max-h-[220px] overflow-y-auto">
-                <Label className="text-xs text-muted-foreground">勾选多个订单，总金额将按各订单明细「件数」合计占比分配（件数均为 0 时平均分配）。仅排除"已拒绝"状态。</Label>
+                <Label className="text-xs text-muted-foreground">勾选多个订单，总金额将按各订单明细「件数」合计占比分配（件数均为 0 时平均分配）。仅排除「已拒绝」状态。</Label>
                 <div className="space-y-1">
                   {orders.filter(o => o.status !== 'rejected').map(o => {
                     const checked = sharedOrderIds.includes(o.id)
@@ -1045,15 +1045,31 @@ export default function CostsPage() {
                 <p className="text-[11px] text-amber-600">「{formSupplier.trim()}」不在供应商画像中，仍可录入；建议先到供应商画像建档以统一名称（避免对账拆行）</p>
               )}
             </div>
+            {/* 辅料:品名/规格(品名→description=列表品名列;规格存 color 文本列);面料等:颜色/匹数 照旧 */}
             <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-1">
-                <Label className="text-xs">颜色（可选）</Label>
-                <Input placeholder="如：黑色 / 海军蓝" value={formColor} onChange={e => setFormColor(e.target.value)} />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">匹数（可选）</Label>
-                <Input type="number" step="0.01" placeholder="0" value={formRollCount} onChange={e => setFormRollCount(e.target.value)} />
-              </div>
+              {formType === 'accessory' ? (
+                <>
+                  <div className="space-y-1">
+                    <Label className="text-xs">品名（可选）</Label>
+                    <Input placeholder="如：纸箱 / 拉链 / 吊牌" value={formDesc} onChange={e => setFormDesc(e.target.value)} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">规格（可选）</Label>
+                    <Input placeholder="如：5层特硬 / 20cm" value={formColor} onChange={e => setFormColor(e.target.value)} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-1">
+                    <Label className="text-xs">颜色（可选）</Label>
+                    <Input placeholder="如：黑色 / 海军蓝" value={formColor} onChange={e => setFormColor(e.target.value)} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">匹数（可选）</Label>
+                    <Input type="number" step="0.01" placeholder="0" value={formRollCount} onChange={e => setFormRollCount(e.target.value)} />
+                  </div>
+                </>
+              )}
               <div className="space-y-1">
                 <Label className="text-xs font-semibold">送货日期 *</Label>
                 <Input type="date" value={formDeliveryDate} onChange={e => setFormDeliveryDate(e.target.value)} />
@@ -1157,13 +1173,15 @@ export default function CostsPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
-                    <Label className="text-[10px]">颜色</Label>
-                    <Input placeholder="如：黑色" value={line.color} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], color: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
+                    <Label className="text-[10px]">{formType === 'accessory' ? '规格' : '颜色'}</Label>
+                    <Input placeholder={formType === 'accessory' ? '如：5层特硬 / 20cm' : '如：黑色'} value={line.color} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], color: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
                   </div>
-                  <div className="space-y-1">
-                    <Label className="text-[10px]">匹数</Label>
-                    <Input type="number" step="0.01" placeholder="0" value={line.roll} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], roll: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
-                  </div>
+                  {formType !== 'accessory' && (
+                    <div className="space-y-1">
+                      <Label className="text-[10px]">匹数</Label>
+                      <Input type="number" step="0.01" placeholder="0" value={line.roll} onChange={e => { const n = [...extraLines]; n[idx] = { ...n[idx], roll: e.target.value }; setExtraLines(n) }} className="text-xs h-8" />
+                    </div>
+                  )}
                 </div>
                 <div className="grid grid-cols-4 gap-2">
                   <div className="space-y-1">
@@ -1203,10 +1221,13 @@ export default function CostsPage() {
               + 添加更多品目（同一供应商）
             </Button>
             )}
-            <div className="space-y-2">
-              <Label>备注（可选）</Label>
-              <Textarea placeholder="例：拉链、面料尾款、染色费；或其他说明" value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={2} />
-            </div>
+            {/* 辅料时品名已前置(同绑 description),不再重复显示备注框 */}
+            {formType !== 'accessory' && (
+              <div className="space-y-2">
+                <Label>备注（可选）</Label>
+                <Textarea placeholder="例：拉链、面料尾款、染色费；或其他说明" value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={2} />
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <input type="checkbox" id="formPaid" checked={formPaid} onChange={e => setFormPaid(e.target.checked)} className="rounded" />
               <Label htmlFor="formPaid" className="text-sm cursor-pointer">已付款</Label>
