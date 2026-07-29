@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { CheckCircle, XCircle, Loader2, Inbox, Eye, ExternalLink } from 'lucide-react'
+import { CheckCircle, XCircle, Loader2, Inbox, Eye, ExternalLink, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
 
@@ -107,7 +107,7 @@ const CT2BUCKET: Record<string, string> = {
 const BUDGET_KEYS: [string, string][] = [['fabric', '面料'], ['accessory', '辅料'], ['processing', '加工费'], ['forwarder', '货代费'], ['container', '装柜费'], ['logistics', '物流费']]
 // 审批环节 → 该环节最该看的决算桶(高亮)。加工费确认→加工费,收款→无,出运→货代/装柜…
 const STEP_FOCUS: Record<string, string> = { processing_fee_confirmed: '加工费', finance_shipment_approval: '货代费', price_confirmed: '面料' }
-interface OrderSnap { boNo: string | null; internalNo: string | null; qty: number; qtyUnit: string; rows: { label: string; budget: number; actual: number }[] }
+interface OrderSnap { boNo: string | null; internalNo: string | null; qty: number; qtyUnit: string; unitPrice: number | null; totalAmount: number | null; rows: { label: string; budget: number; actual: number }[] }
 const cny = (n: number) => `¥${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
 
 export function IntegrationApprovals({ userId, userName }: { userId: string; userName: string }) {
@@ -162,10 +162,11 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
       try {
         const sb = createClient()
         const { data: so } = await sb.from('synced_orders')
-          .select('style_no, quantity, quantity_unit, budget_order_id').eq('order_no', sel.order_no).limit(1).maybeSingle()
-        const s = so as { style_no?: string; quantity?: number; quantity_unit?: string; budget_order_id?: string } | null
+          .select('style_no, quantity, quantity_unit, unit_price, total_amount, budget_order_id').eq('order_no', sel.order_no).limit(1).maybeSingle()
+        const s = so as { style_no?: string; quantity?: number; quantity_unit?: string; unit_price?: number; total_amount?: number; budget_order_id?: string } | null
+        const priceInfo = { unitPrice: s?.unit_price != null ? Number(s.unit_price) : null, totalAmount: s?.total_amount != null ? Number(s.total_amount) : null }
         if (!s?.budget_order_id) {
-          if (alive) setSnap({ boNo: null, internalNo: s?.style_no ?? null, qty: Number(s?.quantity) || 0, qtyUnit: s?.quantity_unit || '', rows: [] })
+          if (alive) setSnap({ boNo: null, internalNo: s?.style_no ?? null, qty: Number(s?.quantity) || 0, qtyUnit: s?.quantity_unit || '', ...priceInfo, rows: [] })
           return
         }
         const [{ data: bo }, { data: ci }] = await Promise.all([
@@ -187,7 +188,7 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
           if (actual === 0 && (fill[label] || 0) > 0) actual = fill[label]
           return { label, budget, actual }
         }).filter(r => r.budget > 0 || r.actual > 0)
-        if (alive) setSnap({ boNo: (bo as { order_no?: string } | null)?.order_no ?? null, internalNo: s.style_no ?? null, qty: Number(s.quantity) || 0, qtyUnit: s.quantity_unit || '', rows })
+        if (alive) setSnap({ boNo: (bo as { order_no?: string } | null)?.order_no ?? null, internalNo: s.style_no ?? null, qty: Number(s.quantity) || 0, qtyUnit: s.quantity_unit || '', ...priceInfo, rows })
       } catch { if (alive) setSnap(null) }
       finally { if (alive) setSnapLoading(false) }
     })()
@@ -378,6 +379,22 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
                   <div className="flex justify-between gap-2"><span className="text-muted-foreground">提交时间</span><span>{fmtDate(sel.source_created_at || sel.created_at)}</span></div>
                   {snap?.internalNo && <div className="flex justify-between gap-2"><span className="text-muted-foreground">内部单号/款号</span><span className="font-medium">{snap.internalNo}</span></div>}
                   {snap && snap.qty > 0 && <div className="flex justify-between gap-2"><span className="text-muted-foreground">数量</span><span>{snap.qty.toLocaleString()} {snap.qtyUnit}</span></div>}
+                  {/* 数量口径警示(2026-07-29):节拍器套装单曾把「折合件数」当 quantity 推来(单位仍写「套」)→
+                      数量翻倍、单价校验对不上(价格审批差异的来源之一)。只读比对,不自动换算。 */}
+                  {(() => {
+                    if (!snap) return null
+                    const q = Number(snap.qty), up = Number(snap.unitPrice), ta = Number(snap.totalAmount)
+                    if (!(q > 0 && up > 0 && ta > 0)) return null
+                    const calc = up * q
+                    if (Math.abs(calc - ta) / ta <= 0.01) return null
+                    const impliedQty = Math.round(ta / up)
+                    return (
+                      <div className="flex items-start gap-1.5 rounded bg-amber-50 border border-amber-200 p-2 text-[11px] text-amber-800">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <span>数量与金额口径不符:{up} × {q.toLocaleString()} = {Math.round(calc).toLocaleString()},总额却是 {Math.round(ta).toLocaleString()}(倒推数量约 {impliedQty.toLocaleString()} {snap.qtyUnit})。疑似「折合件数」当数量推送,请核对后由节拍器重推。</span>
+                      </div>
+                    )
+                  })()}
                   {snap?.boNo && <div className="flex justify-between gap-2"><span className="text-muted-foreground">财务预算单</span><span className="font-mono text-xs">{snap.boNo}</span></div>}
                 </div>
 

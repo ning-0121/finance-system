@@ -89,7 +89,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     invoiceCount: 0, paidCount: 0,
   })
   const [activeTab, setActiveTab] = useState('budget')
-  const [syncedInfo, setSyncedInfo] = useState<{ orderNo: string; internalNo: string; quantity: number; quantityUnit: string } | null>(null)
+  const [syncedInfo, setSyncedInfo] = useState<{ orderNo: string; internalNo: string; quantity: number; quantityUnit: string; unitPrice: number | null; totalAmount: number | null } | null>(null)
   const [attachments, setAttachments] = useState<{ id: string; file_name: string; file_type: string; file_url: string | null; created_at: string }[]>([])
   // F2:绮陌(节拍器)侧附件——按需从节拍器签名端点拉取(含即时签名 URL),不落库
   const [qimoAtts, setQimoAtts] = useState<{ id: string; file_name: string; file_type: string | null; mime_type: string | null; file_size: number | null; url: string | null; created_at: string }[]>([])
@@ -110,10 +110,15 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         const supabase = createClient()
         // synced_orders 可能有多条(如 510 / 510B revision);按 created_at 稳定取最早一条展示表头,
         // 并收集全部 synced id 供附件精确匹配。
-        const { data: syncedRows } = await supabase.from('synced_orders').select('id, order_no, style_no, quantity, quantity_unit').eq('budget_order_id', id).order('created_at', { ascending: true })
+        const { data: syncedRows } = await supabase.from('synced_orders').select('id, order_no, style_no, quantity, quantity_unit, unit_price, total_amount').eq('budget_order_id', id).order('created_at', { ascending: true })
         const synced = syncedRows || []
         if (synced.length) {
-          setSyncedInfo({ orderNo: synced[0].order_no as string, internalNo: synced[0].style_no as string || '', quantity: synced[0].quantity as number || 0, quantityUnit: synced[0].quantity_unit as string || '件' })
+          setSyncedInfo({
+            orderNo: synced[0].order_no as string, internalNo: synced[0].style_no as string || '',
+            quantity: synced[0].quantity as number || 0, quantityUnit: synced[0].quantity_unit as string || '件',
+            unitPrice: synced[0].unit_price != null ? Number(synced[0].unit_price) : null,
+            totalAmount: synced[0].total_amount != null ? Number(synced[0].total_amount) : null,
+          })
           // F2:按需拉取绮陌侧该订单附件(节拍器签名端点→即时签名 URL)。best-effort,失败不影响页面。
           const qmNo = synced[0].order_no as string
           if (qmNo) {
@@ -841,6 +846,24 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       <div className="flex justify-between"><span className="text-muted-foreground">内部单号</span><span className="font-bold text-primary">{syncedInfo.internalNo}</span></div>
                       <div className="flex justify-between"><span className="text-muted-foreground">节拍器号</span><span className="font-mono text-xs">{syncedInfo.orderNo}</span></div>
                       {syncedInfo.quantity > 0 && <div className="flex justify-between"><span className="text-muted-foreground">数量</span><span className="font-medium">{syncedInfo.quantity.toLocaleString()} {syncedInfo.quantityUnit}</span></div>}
+                      {/* 数量口径警示(2026-07-29):节拍器套装订单曾把「折合件数」当 quantity 推来(单位仍写「套」),
+                          财务原样收 → 数量翻倍、单价校验/毛利全偏。此处只读比对 单价×数量 vs 总额,不一致即提示,绝不自动换算。 */}
+                      {(() => {
+                        const q = Number(syncedInfo.quantity), up = Number(syncedInfo.unitPrice), ta = Number(syncedInfo.totalAmount)
+                        if (!(q > 0 && up > 0 && ta > 0)) return null
+                        const calc = up * q
+                        if (Math.abs(calc - ta) / ta <= 0.01) return null
+                        const impliedQty = Math.round(ta / up)
+                        return (
+                          <div className="flex items-start gap-1.5 rounded bg-amber-50 border border-amber-200 p-2 text-[11px] text-amber-800">
+                            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                            <span>
+                              数量与金额口径不符:单价 {up} × 数量 {q.toLocaleString()} = {Math.round(calc).toLocaleString()},但总额为 {Math.round(ta).toLocaleString()}
+                              (按总额倒推数量约 {impliedQty.toLocaleString()} {syncedInfo.quantityUnit})。疑似节拍器把「折合件数」当数量推送,请与业务核对后由节拍器重推。
+                            </span>
+                          </div>
+                        )
+                      })()}
                       <Separator />
                     </>
                   )}
