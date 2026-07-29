@@ -327,7 +327,7 @@ export function SupplierPayableDetail({
                     <TableHead className="whitespace-nowrap">日期</TableHead>
                     <TableHead>内部订单号</TableHead>
                     <TableHead className="min-w-[120px]">品名</TableHead>
-                    <TableHead>颜色</TableHead>
+                    <TableHead>颜色/规格</TableHead>
                     <TableHead className="text-right">匹数</TableHead>
                     <TableHead className="text-right">数量</TableHead>
                     <TableHead className="text-right">单价</TableHead>
@@ -414,7 +414,7 @@ export function SupplierPayableDetail({
                     <TableHead className="whitespace-nowrap">日期</TableHead>
                     <TableHead>内部订单号</TableHead>
                     <TableHead className="min-w-[120px]">品名</TableHead>
-                    <TableHead>颜色</TableHead>
+                    <TableHead>颜色/规格</TableHead>
                     <TableHead className="text-right">匹数</TableHead>
                     <TableHead className="text-right">数量</TableHead>
                     <TableHead className="text-right">单价</TableHead>

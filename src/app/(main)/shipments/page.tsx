@@ -31,7 +31,7 @@ interface LinkRow {
   internal_order_no: string | null
   budget_order_id: string | null
 }
-interface DocRow { id: string; file_name: string; doc_hint: string | null; file_url: string | null; related_shipment_id?: string | null; related_qimo_order_id?: string | null }
+interface DocRow { id: string; file_name: string; doc_hint: string | null; file_url: string | null; related_shipment_id?: string | null; related_qimo_order_id?: string | null; matched_order_id?: string | null; doc_category?: string | null }
 
 const HINT_LABEL: Record<string, { label: string; cls: string }> = {
   bl: { label: '提单', cls: 'bg-indigo-100 text-indigo-700' },
@@ -73,14 +73,20 @@ export default function ShipmentsPage() {
 
       const boIds = [...new Set(linkRows.map(l => l.budget_order_id).filter(Boolean))] as string[]
       const qimoIds = [...new Set(linkRows.map(l => l.qimo_order_id).filter(Boolean))] as string[]
-      const [{ data: st }, { data: pd }] = await Promise.all([
+      const keys = [...new Set([...qimoIds, ...boIds])]
+      const [{ data: st }, { data: pd }, { data: pd2 }] = await Promise.all([
         boIds.length ? sb.from('order_settlements').select('budget_order_id, status').in('budget_order_id', boIds) : Promise.resolve({ data: [] }),
         qimoIds.length ? sb.from('uploaded_documents').select('id, file_name, doc_hint, file_url, related_qimo_order_id').in('related_qimo_order_id', qimoIds).eq('doc_hint', 'po') : Promise.resolve({ data: [] }),
+        // 历史客户PO(财务上传/AI识别流)挂在 matched_order_id、无 doc_hint —— union 补上,否则恒显示"无PO附件"(审计 P2)
+        keys.length ? sb.from('uploaded_documents').select('id, file_name, doc_hint, file_url, related_qimo_order_id, matched_order_id, doc_category').in('matched_order_id', keys) : Promise.resolve({ data: [] }),
       ])
       const sm: Record<string, string> = {}
       for (const r of (st as { budget_order_id: string; status: string }[] | null) || []) sm[r.budget_order_id] = r.status
       setSettleMap(sm)
-      setPoDocs((pd as DocRow[]) || [])
+      const histPo = ((pd2 as DocRow[]) || []).filter(d => d.doc_hint === 'po' || d.doc_category === 'customer_po')
+      const merged = new Map<string, DocRow>()
+      for (const d of [...(((pd as DocRow[]) || [])), ...histPo]) merged.set(d.id, d)
+      setPoDocs([...merged.values()])
     } finally { setLoading(false) }
   }, [])
   useEffect(() => { load() }, [load])
@@ -168,7 +174,9 @@ export default function ShipmentsPage() {
                     ) : (
                       <div className="space-y-1.5">
                         {ords.map(o => {
-                          const pos = poDocs.filter(d => d.related_qimo_order_id && d.related_qimo_order_id === o.qimo_order_id)
+                          const pos = poDocs.filter(d =>
+                            (d.related_qimo_order_id && d.related_qimo_order_id === o.qimo_order_id) ||
+                            (d.matched_order_id && (d.matched_order_id === o.qimo_order_id || (o.budget_order_id && d.matched_order_id === o.budget_order_id))))
                           const settle = o.budget_order_id ? settleMap[o.budget_order_id] : undefined
                           return (
                             <div key={`${o.shipment_id}-${o.qimo_order_id || o.order_no}`} className="flex flex-wrap items-center gap-2 text-xs">

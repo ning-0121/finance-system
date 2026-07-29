@@ -21,16 +21,21 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // 未配集成密钥必失败,直接亮红(此前会打出恒 401 却返回 200,cron 面板永远绿,兜底形同虚设)
+  if (!process.env.INTEGRATION_API_KEY) {
+    return NextResponse.json({ ok: false, error: 'INTEGRATION_API_KEY 未配置,同步兜底无法执行' }, { status: 500 })
+  }
   try {
     // 触发既有 sync 端点(x-api-key = 机器通道,sync 内部 createdBy 记 null,不冒用登录人)。
     // 用 cron 请求的 host 构造绝对 URL → 始终打到同一部署,无需硬编码域名。
     const url = new URL('/api/integration/sync', request.url)
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'x-api-key': process.env.INTEGRATION_API_KEY || '' },
+      headers: { 'x-api-key': process.env.INTEGRATION_API_KEY },
     })
     const sync = await res.json().catch(() => ({}))
-    return NextResponse.json({ ok: res.ok, sync })
+    // 失败透传非 200(审计 P2:此前恒 200,Vercel cron 面板永远绿、断链无人知)
+    return NextResponse.json({ ok: res.ok, sync }, { status: res.ok ? 200 : 502 })
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : 'unknown' }, { status: 500 })
   }

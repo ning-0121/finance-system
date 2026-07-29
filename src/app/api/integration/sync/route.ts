@@ -18,6 +18,8 @@ type MetOrder = {
   payment_terms: string | null; notes: string | null; created_at: string; updated_at: string
 }
 
+export const maxDuration = 300   // 全量拉取对账可能较久(cron 兜底调用),默认时长会被掐断
+
 export async function POST(request: Request) {
 
   // 鉴权门：UI 按钮走登录会话；机器调用走 x-api-key（与 webhook 同一密钥）。
