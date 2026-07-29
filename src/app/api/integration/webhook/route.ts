@@ -1313,8 +1313,22 @@ async function handleShipmentRecorded(data: Record<string, unknown>, requestId: 
       extracted_fields: {},
     }
     const attId = toUuid(a.id)
-    if (attId) row.id = attId                    // 节拍器带稳定 id 则用之(重推同文件不重复)
-    const { error } = await supabase.from('uploaded_documents').upsert(row, attId ? { onConflict: 'id' } : undefined)
+    // P1-3(审计 2026-07-28):带稳定 id 且已存在 → 只补缺票挂载,绝不整行覆盖——
+    // 此前 onConflict:'id' 会改写既存文档的 status/doc_hint/识别结果,还会把共用文件从别的票抢走。
+    if (attId) {
+      const { data: ex } = await supabase.from('uploaded_documents')
+        .select('id, related_shipment_id').eq('id', attId).maybeSingle()
+      if (ex) {
+        if (!(ex as { related_shipment_id?: string | null }).related_shipment_id) {
+          const { error: linkErr } = await supabase.from('uploaded_documents')
+            .update({ related_shipment_id: shipmentId }).eq('id', attId).is('related_shipment_id', null)
+          if (!linkErr) added++
+        }
+        continue
+      }
+      row.id = attId                             // 不存在 → 用稳定 id 新建(重推幂等)
+    }
+    const { error } = await supabase.from('uploaded_documents').insert(row)
     if (!error) added++
   }
 
@@ -1418,10 +1432,35 @@ async function handleFileUpload(data: Record<string, unknown>) {
 
   const docHint = (data.doc_hint as string) || null
   const relatedPo = data.purchase_order_id ? String(data.purchase_order_id) : null
+  const docId = toUuid(data.id)
+
+  // P1-3(审计 2026-07-28):已存在的文档【只刷新文件本体 + 补缺关联】,绝不整行覆盖——
+  // 此前 onConflict:'id' 重推会把财务已确认的 status 打回 pending、清空 extracted_fields、覆盖 created_at,
+  // 甚至能改写任意既存 uuid 的归属(文档劫持面)。
+  if (docId) {
+    const { data: ex } = await supabase.from('uploaded_documents')
+      .select('id, related_qimo_order_id, related_purchase_order_id, doc_hint')
+      .eq('id', docId).maybeSingle()
+    if (ex) {
+      const patch: Record<string, unknown> = {
+        file_name: (data.file_name as string) || 'unnamed',
+        file_type: (data.file_type as string) || 'image',
+        file_size: data.file_size as number || null,
+        file_url: data.file_url as string || null,
+      }
+      if (!ex.related_qimo_order_id && toUuid(data.order_id)) patch.related_qimo_order_id = toUuid(data.order_id)
+      if (!ex.related_purchase_order_id && relatedPo) patch.related_purchase_order_id = relatedPo
+      if (!ex.doc_hint && docHint) patch.doc_hint = docHint
+      const { error: updErr } = await supabase.from('uploaded_documents').update(patch).eq('id', docId)
+      if (updErr) throw new Error(`File sync failed: ${updErr.message}`)
+      return { action: 'file_synced', file_name: data.file_name, related_po: relatedPo, doc_hint: docHint, merged: true }
+    }
+  }
+
   const { error } = await supabase
     .from('uploaded_documents')
     .upsert({
-      id: toUuid(data.id),
+      id: docId,
       file_name: (data.file_name as string) || 'unnamed',
       file_type: (data.file_type as string) || 'image',
       file_size: data.file_size as number || null,

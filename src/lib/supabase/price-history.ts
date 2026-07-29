@@ -6,6 +6,7 @@
 // 只读查询，不改任何金额。单价统一折人民币比较（CNY 行恒 1）。
 // ============================================================
 import { createClient } from './client'
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 
 export interface PriceRefItem {
   supplier: string
@@ -25,7 +26,8 @@ export interface PriceReference {
 }
 
 const norm = (s: string | null | undefined) => (s || '').normalize('NFKC').replace(/\s+/g, '').trim()
-const cnyRate = (currency: string | null, rate: number | null) => (currency || 'CNY') === 'CNY' ? 1 : (Number(rate) || 1)
+// 外币缺率→市场兜底常量,不再 ||1(审计 2026-07-28:新代码把已收敛的 recurring class 用了回来)
+const cnyRate = (currency: string | null, rate: number | null) => resolveDisplayRate(currency, rate)
 
 function summarize(rows: { supplier?: string; unit_price?: number; currency?: string; exchange_rate?: number; unit?: string; created_at?: string; budget_orders?: { order_no?: string } | null }[], excludeId?: string): PriceReference {
   const items: PriceRefItem[] = rows
@@ -127,7 +129,9 @@ export async function getProductPriceHistory(keyword: string): Promise<ProductPr
   // 1) 匹配款号的 synced_orders(ilike 粗筛 → norm 精确,避免大小写/空格漏聚合)
   const { data: so } = await supabase.from('synced_orders')
     .select('id, order_no, style_no, po_number, unit_price, quantity, currency, customer_name, budget_order_id, source_created_at')
-    .ilike('style_no', `%${keyword.trim().slice(0, 30)}%`).limit(1000)
+    .ilike('style_no', `%${keyword.trim().slice(0, 30)}%`)
+    .order('source_created_at', { ascending: false }).order('id', { ascending: true })   // 稳定排序(P1-6:拆单取行不再随缘)
+    .limit(1000)
   const matched = (so || []).filter(s => norm(s.style_no as string) === key && s.budget_order_id)
   if (matched.length === 0) return { keyword, count: 0, rows: [] }
   const boIds = [...new Set(matched.map(s => s.budget_order_id as string))]
@@ -149,13 +153,18 @@ export async function getProductPriceHistory(keyword: string): Promise<ProductPr
     }
   }
 
-  // 4) 一订单一行(按 budget_order_id 去重,取首个 synced 行)
-  const seen = new Set<string>()
-  const rows: ProductPriceRow[] = []
+  // 4) 一订单一行(按 budget_order_id 分组)。拆单/多 synced 行时:优先取【带单价】的行(P1-6,不再随缘);
+  //    数量与兜底单价的分母用组内数量合计(拆单行数量偏小会把兜底单价虚高)。
+  const byBo = new Map<string, typeof matched>()
   for (const s of matched) {
     const boId = s.budget_order_id as string
-    if (seen.has(boId)) continue
-    seen.add(boId)
+    if (!byBo.has(boId)) byBo.set(boId, [])
+    byBo.get(boId)!.push(s)
+  }
+  const rows: ProductPriceRow[] = []
+  for (const [boId, group] of byBo) {
+    const s = group.find(g => g.unit_price != null) || group[0]
+    const qtySum = group.reduce((t, g) => t + (Number(g.quantity) || 0), 0)
     const bo = boMap.get(boId)
     rows.push({
       budgetOrderId: boId,
@@ -165,9 +174,9 @@ export async function getProductPriceHistory(keyword: string): Promise<ProductPr
       orderDate: (bo?.order_date as string) || (s.source_created_at ? String(s.source_created_at).slice(0, 10) : null),
       currency: (s.currency as string) || 'CNY',
       poUnitPrice: s.unit_price != null ? Number(s.unit_price)
-        : (bo?.total_revenue != null && Number(s.quantity) > 0
-            ? Math.round((Number(bo.total_revenue) / Number(s.quantity)) * 100) / 100 : null),  // PO单价缺→总收入÷数量兜底
-      quantity: s.quantity != null ? Number(s.quantity) : null,
+        : (bo?.total_revenue != null && qtySum > 0
+            ? Math.round((Number(bo.total_revenue) / qtySum) * 100) / 100 : null),  // PO单价缺→总收入÷组内数量合计兜底
+      quantity: qtySum > 0 ? qtySum : (s.quantity != null ? Number(s.quantity) : null),
       processingCny: procByOrder.get(boId) ?? null,
       margin: bo?.estimated_margin != null ? Number(bo.estimated_margin) : null,
     })

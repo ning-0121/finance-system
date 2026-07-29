@@ -37,7 +37,17 @@ export default function ProductPricePage() {
 
   const rows = result?.rows || []
   const withPrice = rows.filter(r => r.poUnitPrice != null)
-  const avgPrice = withPrice.length ? withPrice.reduce((s, r) => s + (r.poUnitPrice || 0), 0) / withPrice.length : null
+  // 平均PO单价按币种分组(P1-6:此前 USD 与 ¥ 直接混均,且不带币种符号——报价决策头牌数字不能错)
+  const avgByCur = new Map<string, { sum: number; n: number }>()
+  for (const r of withPrice) {
+    const c = r.currency || 'CNY'
+    const e = avgByCur.get(c) || { sum: 0, n: 0 }
+    e.sum += r.poUnitPrice || 0; e.n++
+    avgByCur.set(c, e)
+  }
+  const avgPriceText = [...avgByCur.entries()]
+    .map(([c, e]) => `${c === 'CNY' ? '¥' : c + ' '}${(Math.round((e.sum / e.n) * 100) / 100).toLocaleString()}`)
+    .join(' · ') || null
   const withMargin = rows.filter(r => r.margin != null)
   const avgMargin = withMargin.length ? withMargin.reduce((s, r) => s + (r.margin || 0), 0) / withMargin.length : null
 
@@ -57,7 +67,7 @@ export default function ProductPricePage() {
           <>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">款号「{result.keyword}」订单数</p><p className="text-xl font-bold">{result.count}</p></CardContent></Card>
-              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">平均客户PO单价</p><p className="text-xl font-bold">{avgPrice != null ? money(Math.round(avgPrice * 100) / 100) : '—'}</p></CardContent></Card>
+              <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">平均客户PO单价(分币种)</p><p className="text-xl font-bold">{avgPriceText || '—'}</p></CardContent></Card>
               <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">平均利润率</p><p className="text-xl font-bold">{avgMargin != null ? `${Math.round(avgMargin * 10) / 10}%` : '—'}</p></CardContent></Card>
             </div>
 
