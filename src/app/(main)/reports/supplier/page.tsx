@@ -255,6 +255,20 @@ export default function SupplierReportPage() {
       .sort((a, b) => b.unpaid - a.unpaid)
   }, [allCostDetails, payments, dateStart, dateEnd, status, lines, corrections])
 
+  // P1-5(审计 2026-07-28):超付判断基准=【全量】净应付(不筛日期)。periodAwareLines 是期间口径:
+  // 筛日期后拿它比会误报(补旧账被当超付)、漏报(期外已有预付时真超付不弹)。快照模式内存无明细→空 Map(提交时另查)。
+  const fullUnpaidBySupplier = useMemo(() => {
+    const m = new Map<string, number>()
+    if (allCostDetails.length === 0) return m
+    const corrTotal = new Map<string, number>()
+    for (const c of corrections) if ((c.field as string) === 'total' && c.supplier) corrTotal.set(normalizeSupplierName(String(c.supplier)), Number(c.new_value))
+    const cost = new Map<string, number>()
+    for (const d of allCostDetails) cost.set(d.supplier, (cost.get(d.supplier) || 0) + d.amount)
+    for (const [sup, t] of cost) m.set(sup, corrTotal.get(sup) ?? t)
+    for (const p of payments) m.set(p.supplier_name, (m.get(p.supplier_name) || 0) - (Number(p.amount) || 0))
+    return m
+  }, [allCostDetails, payments, corrections])
+
   const filtered = periodAwareLines.filter(s => !search || s.supplier.toLowerCase().includes(search.toLowerCase()))
   const totalAll = filtered.reduce((s, d) => s + d.total, 0)
   const unpaidAll = filtered.reduce((s, d) => s + d.unpaid, 0)
@@ -396,10 +410,21 @@ export default function SupplierReportPage() {
     // P0-3 软警示(审计 2026-07-27):本次登记将使该供应商累计已付超过净应付额 → 二次确认,不拦截(人判断)。
     // 手工对账付款不挂订单、不受排款 RPC 的净应付上限约束,此处补一道超付提醒防多付/重复付。
     if (!force) {
-      const row = periodAwareLines.find(s => normalizeSupplierName(s.supplier) === sup)
-      if (row && amt > row.unpaid + 0.005) {
-        const over = Math.round((amt - row.unpaid) * 100) / 100
-        if (!confirm(`⚠ 超付提示\n\n「${sup}」当前净应付(未付)约 ¥${Math.round(row.unpaid).toLocaleString()}，本次登记 ¥${Math.round(amt).toLocaleString()}，将超付约 ¥${over.toLocaleString()}。\n\n确认这不是重复/多付、继续登记吗？`)) {
+      // 基准=全量净应付(P1-5):草稿态用内存全量口径;快照态用快照行总额 −【最新】付款(防连续登记不累计)
+      let unpaidBase: number | null = null
+      if (fullUnpaidBySupplier.size > 0) {
+        unpaidBase = fullUnpaidBySupplier.has(sup) ? Math.round((fullUnpaidBySupplier.get(sup) || 0) * 100) / 100 : null
+      } else {
+        const snapLine = lines.find(l => normalizeSupplierName(l.supplier) === sup)
+        if (snapLine) {
+          const freshPays = await getSupplierPayments()
+          const paid = freshPays.filter(p => normalizeSupplierName(p.supplier_name) === sup).reduce((s, p) => s + (Number(p.amount) || 0), 0)
+          unpaidBase = Math.round((Number(snapLine.total) - paid) * 100) / 100
+        }
+      }
+      if (unpaidBase != null && amt > unpaidBase + 0.005) {
+        const over = Math.round((amt - unpaidBase) * 100) / 100
+        if (!confirm(`⚠ 超付提示\n\n「${sup}」当前净应付(未付,全量口径)约 ¥${Math.round(unpaidBase).toLocaleString()}，本次登记 ¥${Math.round(amt).toLocaleString()}，将超付约 ¥${over.toLocaleString()}。\n\n确认这不是重复/多付、继续登记吗？`)) {
           return
         }
       }
@@ -797,15 +822,17 @@ export default function SupplierReportPage() {
             {(() => {
               // P0-3 软警示:本次登记超过该供应商净应付额 → 标红提示(提交时会再确认一次)
               const sup = normalizeSupplierName(paySupplier)
-              const row = sup ? periodAwareLines.find(s => normalizeSupplierName(s.supplier) === sup) : undefined
               const amt = Number(payAmount)
-              if (!row || !amt || amt <= row.unpaid + 0.005) return null
-              const over = Math.round((amt - row.unpaid) * 100) / 100
+              // 基准=全量净应付(P1-5,不受日期筛选影响);快照模式退回快照行(提交时会按最新付款再确认)
+              const snapRow = sup ? lines.find(s => normalizeSupplierName(s.supplier) === sup) : undefined
+              const unpaidBase = sup ? (fullUnpaidBySupplier.size > 0 ? fullUnpaidBySupplier.get(sup) : snapRow?.unpaid) : undefined
+              if (unpaidBase == null || !amt || amt <= unpaidBase + 0.005) return null
+              const over = Math.round((amt - unpaidBase) * 100) / 100
               return (
                 <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200" role="alert">
                   <AlertTriangle className="h-4 w-4 text-red-600 mt-0.5 shrink-0" />
                   <p className="text-xs text-red-700">
-                    <span className="font-medium">超付提示：</span>「{row.supplier}」当前净应付(未付)约 ¥{Math.round(row.unpaid).toLocaleString()}，本次登记 ¥{Math.round(amt).toLocaleString()} 将超付约 ¥{over.toLocaleString()}。请核对是否重复/多付。
+                    <span className="font-medium">超付提示：</span>「{paySupplier.trim()}」当前净应付(未付,全量口径)约 ¥{Math.round(unpaidBase).toLocaleString()}，本次登记 ¥{Math.round(amt).toLocaleString()} 将超付约 ¥{over.toLocaleString()}。请核对是否重复/多付。
                   </p>
                 </div>
               )

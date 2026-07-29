@@ -60,7 +60,21 @@ export async function POST(request: Request) {
       .eq('id', approval_id).in('status', ['approved', 'rejected'])
       .select('id')
     if (updErr) return NextResponse.json({ error: `撤销失败: ${updErr.message}` }, { status: 500 })
-    if (!updated?.length) return NextResponse.json({ error: '该审批已被处理,请刷新后重试' }, { status: 409 })
+    if (!updated?.length) return NextResponse.json({ error: '该审批已被撤销或再次处理,请刷新查看最新状态' }, { status: 409 })
+
+    // P1-4(审计 2026-07-28):作废 outbox 里该审批的旧决策回传。否则「首批时回传失败入 outbox」的旧
+    // 批准/驳回会在撤销改判后被 cron 重投节拍器,把更正翻盘(request_id 不同,节拍器幂等拦不住)。
+    // 置 dead 留痕(不物理删);outbox 写是 service-role 专属(RLS 只读),故用 service client。失败不阻断撤销。
+    try {
+      const { createServiceClient } = await import('@/lib/supabase/service')
+      const staleIds = ['approved', 'rejected'].map(d => `fin-approval-${cur.approval_type}-${approval_id}-${d}`)
+      const { data: killed } = await createServiceClient().from('fin_outbound_outbox')
+        .update({ status: 'dead', last_error: `superseded: 撤销重审作废旧决策回传(by ${profile.name || user.id})` })
+        .eq('target', 'metronome').eq('event', 'approval.callback')
+        .in('request_id', staleIds).eq('status', 'failed')
+        .select('id')
+      if (killed?.length) console.log(`[reopen] 已作废 ${killed.length} 条旧决策回传(outbox)`)
+    } catch (e) { console.error('[reopen] outbox 清理失败(不阻断撤销):', e instanceof Error ? e.message : e) }
 
     // 审计留痕:原决策 + 撤销人真身 + 原因(非阻断:留痕失败只告警,不回滚已完成的撤销)
     const { error: logErr } = await supabase.from('integration_logs').insert({
