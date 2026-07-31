@@ -264,6 +264,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
     const cb = (order?.items as unknown as Record<string, unknown>[])?.[0]?._cost_breakdown as Record<string, unknown> | undefined
     const bnum = (k: string, fb: number) => (cb?.[k] != null ? Number(cb[k]) : fb)
     const cats = [
+      { key: 'finished_goods', label: '采购成品', budget: bnum('finished_goods', 0) },
       { key: 'fabric', label: '面料', budget: bnum('fabric', Number(order?.target_purchase_price) || 0) },
       { key: 'accessory', label: '辅料', budget: bnum('accessory', 0) },
       { key: 'processing', label: '加工费', budget: bnum('processing', Number(order?.estimated_commission) || 0) },
@@ -272,6 +273,7 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
       { key: 'logistics', label: '物流费', budget: bnum('logistics', Number(order?.other_costs) || 0) },
     ]
     const CT2CAT: Record<string, string> = {
+      finished_goods: 'finished_goods',
       fabric: 'fabric', accessory: 'accessory', processing: 'processing', commission: 'processing',
       freight: 'forwarder', container: 'container', customs: 'container', logistics: 'logistics',
       procurement: 'fabric', other: 'logistics',

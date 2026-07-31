@@ -137,6 +137,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         if (ci?.length) {
           // cost_type → 预算 6 类别键
           const CT2CAT: Record<string, string> = {
+            finished_goods: 'finished_goods',
             fabric: 'fabric', accessory: 'accessory', processing: 'processing', commission: 'processing',
             freight: 'forwarder', container: 'container', customs: 'container', logistics: 'logistics',
             procurement: 'fabric', other: 'logistics',
@@ -227,6 +228,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [editCurrencyMode, setEditCurrencyMode] = useState<'USD' | 'CNY'>('USD') // 收款币种
   const [editRate, setEditRate] = useState('')       // 结汇汇率
   const [editRevenue, setEditRevenue] = useState('')
+  const [editFinishedGoods, setEditFinishedGoods] = useState('') // 采购成品(经销单采购的成品)
   const [editFabric, setEditFabric] = useState('')      // 面料
   const [editAccessory, setEditAccessory] = useState('') // 辅料
   const [editProcessing, setEditProcessing] = useState('')// 加工费
@@ -351,6 +353,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           || cb._revenue_currency === 'CNY'
           || (cb._currency === 'CNY' && !cb._rate)
         setEditCurrencyMode(isCnyDirect ? 'CNY' : 'USD')
+        setEditFinishedGoods((cb.finished_goods || 0).toString())
         setEditFabric((cb.fabric || 0).toString())
         setEditAccessory((cb.accessory || 0).toString())
         setEditProcessing((cb.processing || 0).toString())
@@ -381,6 +384,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         // 无 _cost_breakdown 的历史订单：按订单自身币种设置模式（否则默认 USD，
         // CNY 单保存时会被错乘汇率且 currency 被改写为 USD）
         setEditCurrencyMode(order.currency === 'CNY' ? 'CNY' : 'USD')
+        setEditFinishedGoods('0')
         setEditFabric(order.target_purchase_price.toString())
         setEditAccessory('0')
         setEditProcessing(order.estimated_commission.toString())
@@ -413,6 +417,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate
     const revenueUsd = editCurrencyMode === 'CNY' ? revenueInput : revenueInput // DB stores the input value
     // 类别金额：有明细行时=明细之和，否则=直接填写的汇总值
+    const finishedGoods = catValue('finished_goods', editFinishedGoods)  // 采购成品(经销单)
     const fabric = catValue('fabric', editFabric)
     const accessory = catValue('accessory', editAccessory)
     const processing = catValue('processing', editProcessing)
@@ -441,11 +446,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       }
       if (cleaned.length > 0) linesData[k] = cleaned
     }
-    const totalCostCny = fabric + accessory + processing + forwarder + container + logistics + extrasTotal
+    const totalCostCny = finishedGoods + fabric + accessory + processing + forwarder + container + logistics + extrasTotal
     const profitCny = revenueCny - totalCostCny
     const margin = revenueCny > 0 ? Math.round((profitCny / revenueCny) * 10000) / 100 : 0
     // 映射到数据库字段
-    const purchase = fabric + accessory  // 面料+辅料合并到采购价
+    const purchase = finishedGoods + fabric + accessory  // 采购成品+面料+辅料合并到采购价
     const freight = forwarder            // 货代费→运费字段
     const commission = processing        // 加工费→佣金字段
     const customs = container            // 装柜费→报关费字段
@@ -455,7 +460,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
       const extrasData = editExtras.filter(e => e.name && Number(e.amount)).map(e => ({ name: e.name, amount: Number(e.amount) || 0 }))
-      const breakdownData = { fabric, accessory, processing, forwarder, container, logistics, extras: extrasData, lines: linesData, _currency: editCurrencyMode === 'CNY' ? 'CNY_DIRECT' : 'CNY', _revenue_input: revenueInput, _revenue_currency: editCurrencyMode, _rate: rate, _po_no: editPoNo.trim() || null }
+      const breakdownData = { finished_goods: finishedGoods, fabric, accessory, processing, forwarder, container, logistics, extras: extrasData, lines: linesData, _currency: editCurrencyMode === 'CNY' ? 'CNY_DIRECT' : 'CNY', _revenue_input: revenueInput, _revenue_currency: editCurrencyMode, _rate: rate, _po_no: editPoNo.trim() || null }
       // 收入款号行 → items 收入行(与节拍器 revenue_lines 同构:sku/product_name/qty/unit_price/amount)
       const revItemsData = cleanedRevLines.map(l => ({
         sku: l.sku || null, product_name: l.sku || '-', qty: l.qty, unit: syncedInfo?.quantityUnit || '件', unit_price: l.unit_price, amount: l.amount,
@@ -757,6 +762,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               const cbTop = (order.items as unknown as Record<string, unknown>[])?.[0]?._cost_breakdown as Record<string, number | string> | undefined
               if (!cbTop) return null
               const cats: { key: string; label: string }[] = [
+                { key: 'finished_goods', label: '采购成品' },
                 { key: 'fabric', label: '面料' },
                 { key: 'accessory', label: '辅料' },
                 { key: 'processing', label: '加工费' },
@@ -771,13 +777,16 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 accessory: Number(cbTop._actual_accessory) || 0,
                 processing: Number(cbTop._actual_processing) || 0,
               }
-              const rows = cats.map(c => {
-                const budget = Number(cbTop[c.key]) || 0
-                let actual = (costDetail[c.key] || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
-                let fromProc = false
-                if (actual === 0 && (actualBuy[c.key] || 0) > 0) { actual = actualBuy[c.key]; fromProc = true }
-                return { label: fromProc ? `${c.label}（采购填价）` : c.label, budget, actual, diff: actual - budget }
-              })
+              const rows = cats
+                // 采购成品仅经销单用:无预算无实际时不占行,避免自产单出现 ¥0 噪声行
+                .filter(c => c.key !== 'finished_goods' || (Number(cbTop[c.key]) || 0) !== 0 || (costDetail[c.key] || []).length > 0)
+                .map(c => {
+                  const budget = Number(cbTop[c.key]) || 0
+                  let actual = (costDetail[c.key] || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
+                  let fromProc = false
+                  if (actual === 0 && (actualBuy[c.key] || 0) > 0) { actual = actualBuy[c.key]; fromProc = true }
+                  return { label: fromProc ? `${c.label}（采购填价）` : c.label, budget, actual, diff: actual - budget }
+                })
               const extras = (cbTop.extras as unknown as { name: string; amount: number }[] | undefined) || []
               extras.forEach(e => rows.push({ label: e.name || '其他', budget: Number(e.amount) || 0, actual: 0, diff: -(Number(e.amount) || 0) }))
               const budgetTotal = order.total_cost || rows.reduce((s, r) => s + r.budget, 0)
@@ -891,6 +900,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       const revenueInput = hasRevLines ? revLinesTotal(editRevLines) : (Number(editRevenue) || 0)
                       const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate
                       const cats: { key: string; label: string; val: string; set: (v: string) => void }[] = [
+                        { key: 'finished_goods', label: '采购成品', val: editFinishedGoods, set: setEditFinishedGoods },
                         { key: 'fabric', label: '面料', val: editFabric, set: setEditFabric },
                         { key: 'accessory', label: '辅料', val: editAccessory, set: setEditAccessory },
                         { key: 'processing', label: '加工费', val: editProcessing, set: setEditProcessing },
@@ -1086,6 +1096,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                         {(() => {
                           const readLines = (cb as Record<string, unknown> | undefined)?.lines as Record<string, { name: string; qty: number; unit: string; unit_price: number; amount: number }[]> | undefined
                           const readCats: { key: string; label: string; fallback: number; bold?: boolean }[] = [
+                            { key: 'finished_goods', label: '采购成品', fallback: 0, bold: true },
                             { key: 'fabric', label: '面料', fallback: Number(order.target_purchase_price) || 0, bold: true },
                             { key: 'accessory', label: '辅料', fallback: 0 },
                             { key: 'processing', label: '加工费', fallback: Number(order.estimated_commission) || 0 },
@@ -1100,6 +1111,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                             const actual = costDetail[rc.key]
                             const showActual = !hasPlanned && Array.isArray(actual) && actual.length > 0
                             const catAmt = cb?.[rc.key] != null ? Number(cb[rc.key]) : rc.fallback
+                            // 采购成品仅经销单用:无金额无明细时不渲染,避免自产单出现 ¥0 行
+                            if (rc.key === 'finished_goods' && catAmt === 0 && !hasPlanned && !showActual) return null
                             // 实际归集行的合计（用于与预算分开显示，保证「明细加总=该数」）
                             const actualSum = showActual ? actual!.reduce((s, l) => s + (Number(l.amount) || 0), 0) : 0
                             return (

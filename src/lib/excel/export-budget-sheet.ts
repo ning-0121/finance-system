@@ -109,6 +109,7 @@ export function synthesizeCostItems(order: BudgetOrder): CostItemRow[] {
     if (n(key) > 0) rows.push({ description: label, amount: n(key) })
   }
 
+  emit('finished_goods', '采购成品')
   emit('fabric', '面料')
   emit('accessory', '辅料')
   emit('processing', '加工费')

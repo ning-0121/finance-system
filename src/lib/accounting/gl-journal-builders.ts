@@ -131,6 +131,7 @@ export interface CostOrderInput {
   order_date: string
   currency: string
   exchange_rate: number | null
+  finished_goods?: number   // 采购成品(经销单);老调用方可不传
   fabric: number
   accessory: number
   processing: number
@@ -198,6 +199,7 @@ export function buildCostRecognition(order: CostOrderInput): JournalSpec | null 
     const v = c(amt)
     if (v > 0) lines.push({ account_code: code, description: label, debit: v, credit: 0, order_id: order.id })
   }
+  push('540104', '采购成品成本', order.finished_goods || 0)
   push('540101', '面料成本', order.fabric)
   push('540102', '辅料成本', order.accessory)
   push('540103', '加工费', order.processing)

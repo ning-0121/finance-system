@@ -42,6 +42,8 @@ const UNIT_OPTIONS = ['件', '米', '千克', '个']
 const unitOptionsWith = (v?: string) => (v && !UNIT_OPTIONS.includes(v) ? [v, ...UNIT_OPTIONS] : UNIT_OPTIONS)
 
 const costTypeConfig: Record<CostType, { label: string; icon: typeof Ship; color: string }> = {
+  // 采购成品=经销单采购的成品(不核料),结转 GL 540104,与面料/辅料并列
+  finished_goods: { label: '采购成品', icon: Package, color: 'bg-indigo-100 text-indigo-700' },
   fabric: { label: '面料', icon: Package, color: 'bg-rose-100 text-rose-700' },
   accessory: { label: '辅料', icon: Package, color: 'bg-pink-100 text-pink-700' },
   processing: { label: '加工费', icon: Receipt, color: 'bg-orange-100 text-orange-700' },

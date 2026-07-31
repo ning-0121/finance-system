@@ -146,7 +146,7 @@ export interface VarianceItem {
 
 // 费用类型
 // tax_point(票点)=供应商开票费用：不计预算/决算/毛利/GL成本，留作出口退税核算；仍计应付与供应商对账
-export type CostType = 'fabric' | 'accessory' | 'processing' | 'freight' | 'container' | 'logistics' | 'commission' | 'customs' | 'procurement' | 'other' | 'tax_point'
+export type CostType = 'finished_goods' | 'fabric' | 'accessory' | 'processing' | 'freight' | 'container' | 'logistics' | 'commission' | 'customs' | 'procurement' | 'other' | 'tax_point'
 
 // 费用项
 export interface CostItem {
@@ -461,9 +461,11 @@ export interface PayableRecord {
   payee_bank: string | null      // 开户行
   amount: number
   currency: string
+  exchange_rate?: number | null   // 登记时结算汇率(迁移 20260710);外币折 CNY 优先用它,缺失才回退市场汇率
   budget_amount: number | null
   over_budget: boolean
   due_date: string | null
+  delivery_date?: string | null   // 送货日期(货实际到货日,迁移 20260711);与 due_date(账期日)区分
   payment_status: PaymentStatus
   approved_by: string | null
   approved_at: string | null

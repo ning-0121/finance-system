@@ -26,7 +26,7 @@ export default function OrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [search, setSearch] = useState('')
 
-  const [syncedMap, setSyncedMap] = useState<Record<string, { qmNo: string; internalNo: string; lifecycle?: string; customer?: string; qty?: number; unit?: string }>>({})
+  const [syncedMap, setSyncedMap] = useState<Record<string, { qmNo: string; internalNo: string; poNo?: string; lifecycle?: string; customer?: string; qty?: number; unit?: string }>>({})
   const [syncing, setSyncing] = useState(false)
 
   // 「新到订单」收件箱:业务上传 PO 建单后已同步到财务、但尚未建预算单的活订单。
@@ -53,13 +53,14 @@ export default function OrdersPage() {
       setOrders(data)
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
-      const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, order_no, style_no, lifecycle_status, customer_name, quantity, quantity_unit').not('budget_order_id', 'is', null)
+      const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, order_no, style_no, po_number, lifecycle_status, customer_name, quantity, quantity_unit').not('budget_order_id', 'is', null)
       if (synced) {
-        const map: Record<string, { qmNo: string; internalNo: string; lifecycle?: string; customer?: string; qty?: number; unit?: string }> = {}
+        const map: Record<string, { qmNo: string; internalNo: string; poNo?: string; lifecycle?: string; customer?: string; qty?: number; unit?: string }> = {}
         synced.forEach((s: Record<string, unknown>) => {
           if (s.budget_order_id) map[s.budget_order_id as string] = {
             qmNo: s.order_no as string || '',
             internalNo: s.style_no as string || '',
+            poNo: s.po_number as string || '',
             lifecycle: s.lifecycle_status as string || '',
             customer: s.customer_name as string || '',
             qty: s.quantity as number || 0,
@@ -185,7 +186,8 @@ export default function OrdersPage() {
         order.order_no.toLowerCase().includes(search.toLowerCase()) ||
         order.customer?.company?.toLowerCase().includes(search.toLowerCase()) ||
         (syncedMap[order.id]?.internalNo || '').toLowerCase().includes(search.toLowerCase()) ||
-        (syncedMap[order.id]?.qmNo || '').toLowerCase().includes(search.toLowerCase())
+        (syncedMap[order.id]?.qmNo || '').toLowerCase().includes(search.toLowerCase()) ||
+        (syncedMap[order.id]?.poNo || '').toLowerCase().includes(search.toLowerCase())
       return matchesStatus && matchesSearch
     })
     .sort((a, b) => {
@@ -226,7 +228,7 @@ export default function OrdersPage() {
           <div className="flex items-center gap-3 flex-1">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="搜索订单号、客户..." className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <Input placeholder="搜索 订单号 / 内部单号 / 节拍器号 / 客户PO号 / 客户..." className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
           </div>
           <div className="flex items-center gap-2">

@@ -451,6 +451,7 @@ export async function generateOrderSettlement(budgetOrderId: string): Promise<{ 
 
     // 订单级预算回填：与编辑页口径一致（estimated_commission=加工费、freight=运费、customs_fee=报关费、other_costs=其他）
     const orderLevelCosts: OrderLevelCost[] = [
+      { category: '采购成品', budgeted: 0, actual: 0, variance: 0 },
       { category: '面料', budgeted: 0, actual: 0, variance: 0 },
       { category: '辅料', budgeted: 0, actual: 0, variance: 0 },
       { category: '运费', budgeted: r2(toCny(budget?.estimated_freight, budget?.currency, budget?.exchange_rate)), actual: 0, variance: 0 },
@@ -462,6 +463,7 @@ export async function generateOrderSettlement(budgetOrderId: string): Promise<{ 
 
     // 填充订单级费用（cost_type 映射与订单详情/决算页 CT2CAT 对齐；金额逐条按自身币种折人民币）
     const costTypeMap: Record<string, string> = {
+      finished_goods: '采购成品',
       fabric: '面料', accessory: '辅料',
       freight: '运费', forwarder: '运费',
       commission: '加工费', processing: '加工费',
