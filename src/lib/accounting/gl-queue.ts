@@ -117,11 +117,12 @@ async function buildSpecForItem(db: DB, item: QueueItem): Promise<JournalSpec | 
           if (!(rate > 0)) throw new GlPostingError('MISSING_RATE', `成本结转:费用行为外币(${cur})但缺汇率,拒绝按 1:1 入账;请在费用归集补汇率后重过账`)
           return (Number(r.amount) || 0) * rate
         }
-        const b = { fabric: 0, accessory: 0, processing: 0, forwarder: 0, container: 0, logistics: 0 }
+        const b = { finished_goods: 0, fabric: 0, accessory: 0, processing: 0, forwarder: 0, container: 0, logistics: 0 }
         for (const r of ci as Record<string, unknown>[]) {
           if (r.cost_type === 'tax_point') continue   // 票点不结转主营业务成本(留作退税核算)
           const v = cnyOf(r)
           switch (r.cost_type) {
+            case 'finished_goods': b.finished_goods += v; break   // 采购成品(经销单)→540104
             case 'fabric': case 'procurement': b.fabric += v; break
             case 'accessory': b.accessory += v; break
             case 'processing': case 'commission': b.processing += v; break
@@ -133,18 +134,25 @@ async function buildSpecForItem(db: DB, item: QueueItem): Promise<JournalSpec | 
         return buildCostRecognition({
           id: o.id as string, order_no: o.order_no as string, order_date: o.order_date as string,
           currency: 'CNY', exchange_rate: 1,
+          finished_goods: b.finished_goods,
           fabric: b.fabric, accessory: b.accessory, processing: b.processing,
           forwarder: b.forwarder, container: b.container, logistics: b.logistics, extras: [],
         })
       }
       const cb = (o.items as unknown as Record<string, unknown>[])?.[0]?._cost_breakdown as Record<string, unknown> | undefined
-      const num = (k: string, fallback: number) => Number(cb?.[k]) || fallback
+      // 有 _cost_breakdown 就以桶为准(0 也是有效值,不再回退标量列);
+      // 只有完全没有 breakdown 的历史单才回退 budget_orders 标量列。
+      // ⚠ 关键(2026-07-30):target_purchase_price = 采购成品+面料+辅料(见订单页保存映射),
+      //   若对有 breakdown 的单仍用 `cb.fabric || target_purchase_price`,纯经销单(fabric=0)
+      //   会把已单列的采购成品再从 target_purchase_price 取一次 → 成本双计。
+      const num = (k: string, legacy: number) => cb ? (Number(cb[k]) || 0) : legacy
       const extras = (cb?.extras as { name: string; amount: number }[]) || []
       // _cost_breakdown 与 target_purchase_price 等预算列全站约定为 CNY——
       // 此前传订单币种/汇率导致 USD 单回退路径成本被再乘一次汇率(虚增约6.9倍,审计 P1)
       return buildCostRecognition({
         id: o.id as string, order_no: o.order_no as string, order_date: o.order_date as string,
         currency: 'CNY', exchange_rate: 1,
+        finished_goods: num('finished_goods', 0),
         fabric: num('fabric', Number(o.target_purchase_price) || 0),
         accessory: num('accessory', 0),
         processing: num('processing', Number(o.estimated_commission) || 0),

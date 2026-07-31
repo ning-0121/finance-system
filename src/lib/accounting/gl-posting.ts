@@ -177,17 +177,22 @@ export async function postCostRecognition(order: BudgetOrder) {
   const bd = (order.items as unknown as Record<string, unknown>[])?.[0]
   const cb = bd?._cost_breakdown as Record<string, number | string> | undefined
 
-  const fabric = Number(cb?.fabric) || order.target_purchase_price || 0
-  const accessory = Number(cb?.accessory) || 0
-  const processing = Number(cb?.processing) || order.estimated_commission || 0
-  const forwarder = Number(cb?.forwarder) || order.estimated_freight || 0
-  const container = Number(cb?.container) || order.estimated_customs_fee || 0
-  const logistics = Number(cb?.logistics) || order.other_costs || 0
+  // 有 _cost_breakdown 就以桶为准(0 也是有效值);无 breakdown 的历史单才回退标量列。
+  // ⚠ target_purchase_price = 采购成品+面料+辅料,对有 breakdown 的单回退会把采购成品双计。
+  const num = (k: string, legacy: number) => cb ? (Number(cb[k]) || 0) : legacy
+  const finishedGoods = num('finished_goods', 0)   // 采购成品(经销单)
+  const fabric = num('fabric', order.target_purchase_price || 0)
+  const accessory = num('accessory', 0)
+  const processing = num('processing', order.estimated_commission || 0)
+  const forwarder = num('forwarder', order.estimated_freight || 0)
+  const container = num('container', order.estimated_customs_fee || 0)
+  const logistics = num('logistics', order.other_costs || 0)
   const extras = (cb?.extras as unknown as { name: string; amount: number }[]) || []
   const extrasTotal = extras.reduce((s, e) => s + (e.amount || 0), 0)
 
   const lines: JournalLine[] = []
 
+  if (finishedGoods > 0) lines.push({ account_code: '540104', description: '采购成品成本', debit: finishedGoods, credit: 0, order_id: order.id })
   if (fabric > 0) lines.push({ account_code: '540101', description: '面料成本', debit: fabric, credit: 0, order_id: order.id })
   if (accessory > 0) lines.push({ account_code: '540102', description: '辅料成本', debit: accessory, credit: 0, order_id: order.id })
   if (processing > 0) lines.push({ account_code: '540103', description: '加工费', debit: processing, credit: 0, order_id: order.id })
@@ -198,7 +203,7 @@ export async function postCostRecognition(order: BudgetOrder) {
     if (e.amount > 0) lines.push({ account_code: '540204', description: e.name || '其他费用', debit: e.amount, credit: 0, order_id: order.id })
   })
 
-  const totalCost = fabric + accessory + processing + forwarder + container + logistics + extrasTotal
+  const totalCost = finishedGoods + fabric + accessory + processing + forwarder + container + logistics + extrasTotal
   if (totalCost > 0) {
     lines.push({ account_code: '2202', description: `应付-${order.order_no}`, debit: 0, credit: totalCost, order_id: order.id })
   }

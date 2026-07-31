@@ -90,6 +90,41 @@ describe('GL 凭证构造器', () => {
     expect(spec.provenance.relatedOrderId).toBe('o1')
   })
 
+  it('经销单采购成品 → 独立科目 540104，不并进面料 540101', () => {
+    const spec = buildCostRecognition({
+      id: 'o2', order_no: 'PO-2', order_date: '2026-07-30', currency: 'CNY', exchange_rate: 1,
+      finished_goods: 800, fabric: 0, accessory: 0, processing: 0,
+      forwarder: 40, container: 0, logistics: 0, extras: [],
+    })!
+    expect(isBalanced(spec)).toBe(true)
+    expect(spec.amountCny).toBe(840)
+    const fg = spec.lines.find(l => l.account_code === '540104')!
+    expect(fg.debit).toBe(800)
+    // 采购成品不得混进面料科目(经销单没有面料)
+    expect(spec.lines.find(l => l.account_code === '540101')).toBeUndefined()
+  })
+
+  it('采购成品 + 面料并存时各记各科目，合计不重不漏', () => {
+    const spec = buildCostRecognition({
+      id: 'o3', order_no: 'PO-3', order_date: '2026-07-30', currency: 'CNY', exchange_rate: 1,
+      finished_goods: 300, fabric: 500, accessory: 100, processing: 0,
+      forwarder: 0, container: 0, logistics: 0, extras: [],
+    })!
+    expect(isBalanced(spec)).toBe(true)
+    expect(spec.amountCny).toBe(900)
+    expect(spec.lines.find(l => l.account_code === '540104')!.debit).toBe(300)
+    expect(spec.lines.find(l => l.account_code === '540101')!.debit).toBe(500)
+  })
+
+  it('老调用方不传 finished_goods 时行为不变(向后兼容)', () => {
+    const spec = buildCostRecognition({
+      id: 'o4', order_no: 'PO-4', order_date: '2026-07-30', currency: 'CNY', exchange_rate: 1,
+      fabric: 500, accessory: 0, processing: 0, forwarder: 0, container: 0, logistics: 0, extras: [],
+    })!
+    expect(spec.amountCny).toBe(500)
+    expect(spec.lines.find(l => l.account_code === '540104')).toBeUndefined()
+  })
+
   it('回款差额=0 → null(幂等)；<0 → 红字冲销(借应收/贷银行)；>0 → 正向凭证', () => {
     const order = { ...usdOrder, currency: 'CNY', exchange_rate: 1 }
     expect(buildArReceipt({ order, amountCnyDelta: 0 })).toBeNull()
