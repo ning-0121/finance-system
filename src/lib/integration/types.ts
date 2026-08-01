@@ -78,6 +78,11 @@ export interface SyncedOrder {
   etd: string | null
   payment_terms: string | null
   style_no: string | null
+  // 内部单号(=工厂号/1022979 这类)。⚠️ 财务侧 synced_orders.style_no 存的是【内部单号】
+  // 而非款号 —— 全站「内部单号」列/搜索都读它(同步路由 /api/integration/sync 即按此写入)。
+  // 节拍器 payload 两个字段都可能带,落库时必须优先 internal_order_no,否则会把款号
+  // (如「S1553-B抽绳长裤」)写进内部单号列,覆盖掉同步写对的值。
+  internal_order_no?: string | null
   notes: string | null
   created_by: string
   created_at: string

@@ -900,7 +900,12 @@ async function handleOrderSync(order: SyncedOrder, event: string) {
       factory_name: order.factory_name,
       etd: order.etd,
       payment_terms: order.payment_terms,
-      style_no: order.style_no,
+      // ⚠️ synced_orders.style_no 存的是【内部单号】(全站「内部单号」列/搜索都读它),
+      //   同步路由 /api/integration/sync 就是按 o.internal_order_no 写的。
+      //   此前这里写 order.style_no(款号)→ 两个写入方语义打架、后写覆盖先写:
+      //   同步刚把 1022979 写对,一个 webhook 就把它盖成「S1553-B抽绳长裤」,
+      //   于是内部单号列时对时错、按内部单号搜不到(2026-08-01 生产实证)。
+      style_no: order.internal_order_no ?? order.style_no,
       notes: order.notes,
       source_created_by: order.created_by,
       source_created_at: order.created_at,
