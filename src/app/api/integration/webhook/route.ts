@@ -13,7 +13,7 @@ import {
 } from '@/lib/integration/security'
 import type { WebhookPayload, SyncedOrder, PriceApprovalRequest } from '@/lib/integration/types'
 import { createServiceClient } from '@/lib/supabase/service'
-import { preflightOrderVoid } from '@/lib/financial/order-void'
+import { reverseOrder } from '@/lib/integration/order-reversal'
 
 export async function POST(request: Request) {
   // 1. 速率限制
@@ -953,155 +953,11 @@ async function handleOrderStatusChange(order: SyncedOrder, event: string) {
   return { action: 'status_updated', order_no: order.order_no, status: order.lifecycle_status, event }
 }
 
-// --- 删单/取消 → 保守冲销（审计 C1）---
-// 保守口径(用户拍板):作废未确认的预算草稿(soft-delete) + 撤未决审批;已确认预算/
-// 应付/已过账凭证只记录待人工红冲,绝不自动改已入账数据。每步 try/catch,任一步失败
-// 不阻断其余、不抛出(避免单个 order.deleted 处理异常 500;warnings 随响应回给节拍器)。
+// --- 删单/取消 → 保守冲销 ---
+// 实现已抽到 @/lib/integration/order-reversal(reverseOrder),供 webhook 与定时同步共用。
+// 此前只在本文件内联,导致走定时同步刷成「已取消」的单不会级联作废(生产实证 1022978)。
 async function handleOrderReversal(order: SyncedOrder, event: string) {
-  const supabase = createServiceClient()
-  const now = new Date().toISOString()
-  const warnings: string[] = []
-  const actions: string[] = []
-
-  // 1. 镜像状态
-  try {
-    await supabase.from('synced_orders').update({
-      lifecycle_status: order.lifecycle_status || (event === 'order.deleted' ? 'deleted' : 'cancelled'),
-      source_updated_at: order.updated_at ?? null,
-      synced_at: now,
-    }).eq('id', order.id)
-    actions.push('镜像状态已更新')
-  } catch (e) { warnings.push(`镜像状态更新失败: ${e instanceof Error ? e.message : e}`) }
-
-  // 2. 关联预算
-  let budgetId: string | null = null
-  try {
-    const { data: so } = await supabase.from('synced_orders').select('budget_order_id').eq('id', order.id).maybeSingle()
-    budgetId = (so as { budget_order_id?: string } | null)?.budget_order_id ?? null
-  } catch { /* ignore */ }
-
-  if (budgetId) {
-    try {
-      const { data: bo } = await supabase.from('budget_orders').select('id, status, deleted_at').eq('id', budgetId).maybeSingle()
-      const b = bo as { status?: string; deleted_at?: string } | null
-      if (b && !b.deleted_at) {
-        if (b.status === 'draft') {
-          // 草稿从未确认 → soft-delete 作废（budget_orders 无 cancelled 状态;硬删守卫只拦物理 DELETE,UPDATE deleted_at 放行）
-          const { error } = await supabase.from('budget_orders')
-            .update({ deleted_at: now, delete_reason: `订单${event === 'order.deleted' ? '删除' : '取消'}自动冲销(节拍器同步)` })
-            .eq('id', budgetId).is('deleted_at', null).eq('status', 'draft')
-          if (error) warnings.push(`预算草稿作废失败,需人工处理: ${error.message}`)
-          else actions.push('预算草稿已作废(soft-delete)')
-        } else {
-          warnings.push(`预算单 ${budgetId} 状态=${b.status}(非草稿,含已确认数据),需人工红冲——未自动改账`)
-        }
-      }
-    } catch (e) { warnings.push(`预算处理异常: ${e instanceof Error ? e.message : e}`) }
-
-    // 应付:保守——不自动动,有则标记待人工
-    try {
-      const { data: pays } = await supabase.from('payable_records')
-        .select('id').eq('budget_order_id', budgetId).is('deleted_at', null).limit(1)
-      if (pays && pays.length) warnings.push('存在应付记录,需人工红冲——未自动改')
-    } catch { /* ignore */ }
-  }
-
-  // 2.6 已同步的采购单:订单删/取消 → 级联处理关联采购单(匹配 po_nos ∪ order_refs 含本订单 id)。
-  //   未决(pending/pending_approval)→ 自动 soft-delete 撤销(订单都没了,财务没得审;移出采购审批队列);
-  //   已批/已付(approved/paid)→ 仅警告需人工红冲,绝不自动动已入账/已出款。
-  // (fin_purchase_orders 不挂 budget_order_id,靠 order_refs 里的 synced_orders.id 关联。)
-  try {
-    const poNos = Array.isArray((order as unknown as { po_nos?: unknown[] }).po_nos)
-      ? ((order as unknown as { po_nos?: unknown[] }).po_nos as unknown[]).map(String).map(s => s.trim()).filter(Boolean)
-      : []
-    // 匹配关联采购单:po_no ∪ order_refs 含本订单 id。order_refs 两种历史格式都覆盖:
-    //   旧=["<uuid>"](字符串数组)、新(2026-07-09)=[{id,order_no,internal_order_no,...}](对象数组)。
-    // 分开查再按 id 去重(避免 .or 里塞 jsonb 对象字面量的转义脆弱性)。
-    type FPo = { id: string; po_no?: string; fin_status?: string }
-    const collected = new Map<string, FPo>()
-    const add = (arr: FPo[] | null) => { for (const p of arr || []) collected.set(p.id, p) }
-    if (poNos.length) {
-      const { data } = await supabase.from('fin_purchase_orders')
-        .select('id, po_no, fin_status').in('po_no', poNos).is('deleted_at', null)
-      add(data as FPo[] | null)
-    }
-    for (const pat of [[order.id] as unknown, [{ id: order.id }] as unknown]) {
-      const { data } = await supabase.from('fin_purchase_orders')
-        .select('id, po_no, fin_status').contains('order_refs', pat as never).is('deleted_at', null)
-      add(data as FPo[] | null)
-    }
-    const list = [...collected.values()]
-    const undecided = list.filter(p => p.fin_status === 'pending' || p.fin_status === 'pending_approval')
-    const decided = list.filter(p => p.fin_status === 'approved' || p.fin_status === 'paid')
-    if (undecided.length) {
-      // soft-delete 即移出采购审批队列(getPendingPurchaseApprovals 过滤 deleted_at is null);
-      // 不动 fin_status(CHECK 约束无 'cancelled';且语义上是"订单没了作废",非财务驳回),用 approval_note 留因。
-      const { error } = await supabase.from('fin_purchase_orders')
-        .update({ deleted_at: now, approval_note: `订单${event === 'order.deleted' ? '删除' : '取消'}自动撤销(节拍器同步)`, updated_at: now })
-        .in('id', undecided.map(p => p.id))
-      if (error) warnings.push(`采购单撤销失败,需人工: ${error.message}`)
-      else actions.push(`撤销 ${undecided.length} 张未决采购审批(${undecided.map(p => p.po_no).join('、')})`)
-    }
-    if (decided.length) {
-      warnings.push(`存在 ${decided.length} 张已批/已付采购单(${decided.map(p => p.po_no).join('、')}),订单已${event === 'order.deleted' ? '删除' : '取消'},其采购应付需人工红冲——未自动改`)
-    }
-  } catch (e) { warnings.push(`采购单级联处理异常: ${e instanceof Error ? e.message : e}`) }
-
-  // 3. 撤未决审批。⚠️ pending_approvals.status CHECK 不含 'cancelled'(会 23514 静默失败→审批撤不掉、积压堆积);
-  //    合法终态用 'expired'(2026-07-09 实测)。留因可追溯。
-  try {
-    const { data: expired, error: exErr } = await supabase.from('pending_approvals')
-      .update({ status: 'expired', decided_at: now, decider_name: '系统', decision_note: `订单${event === 'order.deleted' ? '删除' : '取消'}自动撤销未决审批(节拍器同步)` })
-      .eq('order_no', order.order_no).eq('status', 'pending').select('id')
-    if (exErr) warnings.push(`撤审批失败: ${exErr.message}`)
-    else if (expired && expired.length) actions.push(`撤销 ${expired.length} 条未决审批`)
-  } catch (e) { warnings.push(`撤审批失败: ${e instanceof Error ? e.message : e}`) }
-
-  // 3.5 兜底(问题2 · 切片4):订单被节拍器取消/删除,但仍含【已审批/已动钱】数据(🟡/🔴)→
-  //   不再只写 warning 让财务看不到,而是建一条 source=metronome 的作废申请进【作废审批队列】,
-  //   由财务终审(级联软删/驳回)。根治「取消审批被节拍器同步秒过期、财务永远看不到」#3。
-  //   仅 severity≠clean 才建(clean 单上面已保守作废);幂等——每单同时只一个 pending(唯一索引兜底)。
-  if (budgetId) {
-    try {
-      const report = await preflightOrderVoid(supabase, budgetId)
-      if (report.severity !== 'clean') {
-        const { data: exist } = await supabase.from('order_void_requests')
-          .select('id').eq('budget_order_id', budgetId).eq('status', 'pending').maybeSingle()
-        if (!exist) {
-          const { error: vErr } = await supabase.from('order_void_requests').insert({
-            budget_order_id: budgetId,
-            order_no: report.orderNo,
-            qm_order_no: report.qmOrderNo || order.order_no,
-            internal_no: report.internalNo,
-            source: 'metronome',
-            reason: `节拍器${event === 'order.deleted' ? '删除' : '取消'}订单,含已审批数据,待财务终审`,
-            severity: report.severity,
-            blockers: report.items,
-            status: 'pending',
-            requested_by_name: '节拍器',
-          })
-          if (vErr) warnings.push(`转作废队列失败,需人工: ${vErr.message}`)
-          else actions.push('已转财务作废队列待终审(含已审批数据)')
-        } else {
-          actions.push('作废申请已存在(幂等跳过)')
-        }
-      }
-    } catch (e) { warnings.push(`转作废队列失败: ${e instanceof Error ? e.message : e}`) }
-  }
-
-  // 4. 需人工处理 → 记审计日志(失败不阻断)
-  if (warnings.length) {
-    try {
-      await supabase.from('integration_logs').insert({
-        event_type: `${event}.manual_review`,
-        direction: 'inbound',
-        status: 'warning',
-        payload: { order_id: order.id, order_no: order.order_no, budget_order_id: budgetId, warnings },
-      } as never)
-    } catch { /* ignore */ }
-  }
-
-  return { action: 'order_reversed', event, order_no: order.order_no, actions, warnings }
+  return reverseOrder(createServiceClient(), order, event)
 }
 
 // --- 采购对账付款申请入账(2026-07-11 P2 财务侧)---

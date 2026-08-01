@@ -8,6 +8,8 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { verifyApiKey } from '@/lib/integration/security'
 import { fetchAllOrdersFromMetronome } from '@/lib/integration/client'
+import { reverseOrder, isDeadLifecycle } from '@/lib/integration/order-reversal'
+import type { SyncedOrder } from '@/lib/integration/types'
 
 // 节拍器订单镜像字段（签名 API 返回）
 type MetOrder = {
@@ -49,14 +51,16 @@ export async function POST(request: Request) {
     // 2. 读取已同步的订单（含 budget_order_id：用于识别"已同步但草稿未建成"的孤儿单）
     const { data: existingSynced } = await finance
       .from('synced_orders')
-      .select('id, order_no, style_no, budget_order_id')
+      .select('id, order_no, style_no, budget_order_id, lifecycle_status')
 
     const syncedMap = new Map<string, string>()
     const draftMissing = new Set<string>()   // 已同步但无预算草稿的 order_no
+    const prevLifecycle = new Map<string, string>()   // 上一轮镜像状态,用于识别「本轮变成死单」
     existingSynced?.forEach(s => {
       if (s.order_no) {
         syncedMap.set(s.order_no, s.id)
         if (!s.budget_order_id) draftMissing.add(s.order_no)
+        prevLifecycle.set(s.order_no, String(s.lifecycle_status || ''))
       }
     })
 
@@ -91,6 +95,31 @@ export async function POST(request: Request) {
           synced_at: new Date().toISOString(),
         }).eq('order_no', o.order_no)
         updatedCount++
+      }
+    }
+
+    // 4.5 死单级联(2026-08-01):节拍器把订单取消/删除,但没发(或漏发)webhook 时,
+    //   状态只能靠本同步刷进来。此前刷完就完了 —— 预算草稿/采购审批/未决审批全留着,
+    //   财务列表照常显示"已删除"的单(生产实证 1022978 QM-20260731-001:全程只有
+    //   order.created 一条事件,镜像 cancelled,草稿 BO-202608-0001 一直存活)。
+    //   现在复用 webhook 同一套保守冲销 reverseOrder(唯一实现,避免两条路径再次走偏)。
+    //   只对「本轮由活变死」的单跑一次:已经是死单的不重复跑(reverseOrder 内部虽幂等,
+    //   但每单要查若干表,全量重跑会拖慢定时任务)。
+    const reversals: string[] = []
+    for (const o of metronomeOrders) {
+      if (!syncedMap.has(o.order_no)) continue          // 新单在下面按 DEAD 守卫处理,不在这里冲销
+      if (!isDeadLifecycle(o.lifecycle_status)) continue
+      if (isDeadLifecycle(prevLifecycle.get(o.order_no))) continue   // 上轮已是死单 → 跳过
+      try {
+        const r = await reverseOrder(
+          finance,
+          { ...o, id: syncedMap.get(o.order_no)! } as unknown as SyncedOrder,
+          'sync.cancelled',
+        )
+        if (r.actions.length) reversals.push(`${o.order_no}: ${r.actions.join('、')}`)
+      } catch (e) {
+        // 单单失败不阻断整轮同步
+        reversals.push(`${o.order_no}: 冲销异常 ${e instanceof Error ? e.message : e}`)
       }
     }
 
@@ -129,9 +158,19 @@ export async function POST(request: Request) {
     }
 
     // 待建草稿 = 新订单 + 已同步但草稿缺失的孤儿单（自愈：草稿插入失败后重跑同步即可补建）
-    const needDraft = [...newOrders, ...orphanOrders]
+    // ⚠️ 死单守卫(2026-08-01):已取消/已删除的订单不建预算草稿 —— 否则同步会给"已经没了"的
+    //   订单凭空造一张草稿,财务列表里冒出个 ¥0 空壳单还删不掉(1022978 就是这么来的:
+    //   节拍器 7-31 建单、8-01 前取消,同步当孤儿单补建了 BO-202608-0001)。
+    //   webhook 建预算路径早有同款守卫(DEAD 列表),此处补齐,两条路径口径一致。
+    const deadSkipped = [...newOrders, ...orphanOrders].filter(o => isDeadLifecycle(o.lifecycle_status))
+    const needDraft = [...newOrders, ...orphanOrders].filter(o => !isDeadLifecycle(o.lifecycle_status))
     if (needDraft.length === 0) {
-      return NextResponse.json({ synced: 0, created: 0, updated: updatedCount, total: metronomeOrders.length, message: `已更新${updatedCount}个订单状态` })
+      return NextResponse.json({
+        synced: 0, created: 0, updated: updatedCount, total: metronomeOrders.length,
+        reversed: reversals.length, reversals,
+        dead_skipped: deadSkipped.length,
+        message: `已更新${updatedCount}个订单状态${reversals.length ? `,冲销${reversals.length}张死单` : ''}${deadSkipped.length ? `,跳过${deadSkipped.length}张死单不建草稿` : ''}`,
+      })
     }
 
     // 5. 为新订单/孤儿单创建budget_orders草稿
@@ -238,6 +277,10 @@ export async function POST(request: Request) {
       failed: createFailures.length,
       failures: createFailures.slice(0, 10),
       total: metronomeOrders.length,
+      // 死单处理明细:冲销了几张、跳过不建草稿几张(不静默,便于对账为什么数量对不上)
+      reversed: reversals.length,
+      reversals: reversals.slice(0, 20),
+      dead_skipped: deadSkipped.length,
       newOrders: needDraft.map(o => ({ order_no: o.order_no, internal: o.internal_order_no, customer: o.customer_name })),
     })
   } catch (error) {
