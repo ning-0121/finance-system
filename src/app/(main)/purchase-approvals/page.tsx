@@ -384,6 +384,24 @@ export default function PurchaseApprovalsPage() {
                     </div>
                   </div>
 
+                  {/* 重新提交:上次驳回的理由要摆在眼前,别让财务重复踩同一个坑 */}
+                  {(sel.approval_history?.length ?? 0) > 0 && (
+                    <div className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-xs text-orange-900 space-y-1.5">
+                      <div className="font-medium">
+                        🔁 这是第 {(sel.approval_history!.length) + 1} 次提交 —— 采购已按上次意见整改后重新送审
+                      </div>
+                      {sel.approval_history!.slice().reverse().map((h, i) => (
+                        <div key={i} className="pl-4 border-l-2 border-orange-300">
+                          第 {sel.approval_history!.length - i} 次:
+                          <span className="font-medium">{h.decision === 'rejected' ? '驳回' : '批准'}</span>
+                          {h.decided_at ? ` · ${fmtDate(h.decided_at)}` : ''}
+                          {h.note ? <span className="text-orange-800">「{h.note}」</span> : <span className="text-orange-700/70">（未填意见）</span>}
+                        </div>
+                      ))}
+                      <div className="text-orange-700/80">请重点核对上次提出的问题是否已改。</div>
+                    </div>
+                  )}
+
                   {/* 节拍器 payload 缺字段时诚实提示(供应商名/明细未回传时,财务无从核对) */}
                   {(!sel.supplier_name || (!linesLoading && lines.length === 0)) && (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 space-y-1">
