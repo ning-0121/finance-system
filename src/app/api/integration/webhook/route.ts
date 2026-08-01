@@ -260,8 +260,9 @@ async function handleWebhookEvent(payload: WebhookPayload) {
 
 // --- 采购单下单入账（V1.0 头；V1.1 lines 行数据预留） ---
 // 老板 2026-07-11:所有采购单一律须财务审批(取消 ¥5000 门槛)。placed / approval_requested
-//   两个事件都把本单落成「待审批」pending_approval;_requireApproval 形参仅留历史签名兼容,不再决定门槛。
-async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestId: string, _requireApproval = false) {
+//   两个事件都把本单落成「待审批」pending_approval;isApprovalRequest 标记事件是否为
+//   显式审批请求(approval_requested),用于区分「驳回后重新提交」与「已批单的例行重推」。
+async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestId: string, isApprovalRequest = false) {
   const supabase = createServiceClient()
   const poKey = String(data.purchase_order_id || data.po_no || '')
   if (!poKey) throw new Error('purchase_order 缺少 purchase_order_id/po_no')
@@ -271,13 +272,41 @@ async function handlePurchaseOrderPlaced(data: Record<string, unknown>, requestI
   //   (pending_approval/approved/rejected/registered/ignored)inbox 重投/重发一律不改状态,
   //   否则已批已下单的单凭空回到待审、留痕与状态自相矛盾。
   const { data: existing } = await supabase.from('fin_purchase_orders')
-    .select('fin_status, total_amount, supplier_name, currency').eq('purchase_order_id', poKey).maybeSingle()
-  const ex = existing as { fin_status?: string; total_amount?: number; supplier_name?: string; currency?: string } | null
+    .select('fin_status, total_amount, supplier_name, currency, approval_decided_by, approval_decided_at, approval_note, approval_history')
+    .eq('purchase_order_id', poKey).maybeSingle()
+  const ex = existing as {
+    fin_status?: string; total_amount?: number; supplier_name?: string; currency?: string
+    approval_decided_by?: string | null; approval_decided_at?: string | null
+    approval_note?: string | null; approval_history?: unknown[] | null
+  } | null
   const cur = ex?.fin_status || null
-  const gated = !cur || cur === 'pending'   // 新单或旧 pending → 送审批
+
+  // 驳回 → 整改 → 重新提交:必须重回审批队列(2026-07-31 生产实证 bug)。
+  //   此前 rejected 不在 gated 内,重提事件只更新金额/placed_at,fin_status 仍是 rejected,
+  //   而队列查的是 pending_approval → 采购看到「待审批」、财务永远看不到,单子卡死。
+  //   只认 approval_requested(显式审批请求)才重开;placed 的例行重推不动状态,
+  //   避免财务刚驳回、节拍器一次 resync 就把驳回抹掉。上游 request_id 唯一约束已挡重投。
+  const reopen = isApprovalRequest && cur === 'rejected'
+  const gated = !cur || cur === 'pending' || reopen
   const headExtra: Record<string, unknown> = gated
     ? { fin_status: 'pending_approval', requires_approval: true }
     : {}
+  if (reopen) {
+    // 归档上一次决定后再清空当前决定列 —— 直接覆盖会丢审批留痕(合规不允许)
+    const prior = Array.isArray(ex?.approval_history) ? ex!.approval_history! : []
+    headExtra.approval_history = [...prior, {
+      decision: 'rejected',
+      note: ex?.approval_note ?? null,
+      decided_by: ex?.approval_decided_by ?? null,
+      decided_at: ex?.approval_decided_at ?? null,
+      superseded_at: new Date().toISOString(),
+      superseded_by_request: requestId,
+    }]
+    headExtra.approval_decided_by = null
+    headExtra.approval_decided_at = null
+    headExtra.approval_note = null
+    headExtra.approval_callback_at = null
+  }
 
   // 采购批后改价防护(审计P1):已批准/已付/已登记的单,金额/供应商/币种是审批基准,
   //   节拍器 resync 不得静默覆盖(否则批的是A金额、付的是B金额,无再审批无告警)。

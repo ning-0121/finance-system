@@ -3,6 +3,16 @@ import { createClient } from './client'
 import { fetchAll } from './fetch-all'
 import { normalizeOrderRefs } from '@/lib/integration/order-refs'
 
+/** 一次被取代的审批决定(驳回→重提时归档) */
+export interface PoApprovalHistoryEntry {
+  decision: 'approved' | 'rejected'
+  note: string | null
+  decided_by: string | null
+  decided_at: string | null
+  superseded_at: string | null
+  superseded_by_request: string | null
+}
+
 export interface PendingPO {
   id: string
   purchase_order_id: string
@@ -16,6 +26,9 @@ export interface PendingPO {
   payment_terms: string | null
   order_refs: unknown
   requires_approval: boolean | null
+  // 历次审批决定归档(驳回→整改→重提时压入)。非空 = 这单是重新提交的,
+  // 财务重审时要能看到上次驳回理由,别重复踩同一个坑。
+  approval_history?: PoApprovalHistoryEntry[] | null
   internal_order_no?: string | null   // 内部/工厂单号(order_refs → synced_orders.style_no),#2 分组键
   qm_order_no?: string | null         // 节拍器订单号 QM-xxx
   customer_name?: string | null       // 客户名(order_refs → synced_orders.customer_name),列表展示用
@@ -57,7 +70,7 @@ export async function getPendingPurchaseApprovals(): Promise<PendingPO[]> {
     const sb = createClient()
     const { data } = await fetchAll<PendingPO>((from, to) =>
       sb.from('fin_purchase_orders')
-        .select('id, purchase_order_id, po_no, supplier_id, supplier_name, total_amount, currency, delivery_date, placed_at, payment_terms, order_refs, requires_approval')
+        .select('id, purchase_order_id, po_no, supplier_id, supplier_name, total_amount, currency, delivery_date, placed_at, payment_terms, order_refs, requires_approval, approval_history')
         .eq('fin_status', 'pending_approval').is('deleted_at', null)
         .order('placed_at', { ascending: true, nullsFirst: true }).order('id', { ascending: true }).range(from, to))
     const pos = data || []
