@@ -25,71 +25,122 @@ import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { canViewApprovalQueue, getRoleLabel } from '@/lib/auth/permissions'
 import { UserSwitcher } from '@/components/layout/UserSwitcher'
 import { useState, useEffect } from 'react'
-import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale, Shield, Lock, Clock, FlaskConical, ShieldCheck, Search as SearchIcon, Landmark, LayoutGrid, Ship } from 'lucide-react'
+import { ClipboardCheck, ScrollText, BookOpen, Calendar, Scale, Shield, Lock, Clock, FlaskConical, ShieldCheck, Search as SearchIcon, Landmark, LayoutGrid, Ship,
+  Wallet, Banknote, Receipt, PiggyBank, LineChart, AlertTriangle, Gauge, Tag, Boxes, IdCard, Percent, FileSpreadsheet } from 'lucide-react'
 
-const baseNavigation = [
+// ── 导航信息架构(2026-08-02 重构)────────────────────────────────────
+// 此前 34 项平铺 + 9 项控制中心 = 43 项一条直列,按功能上线先后堆叠,
+// 找一个入口要从头扫到尾;且「总账模块」只用一行代码注释分隔(渲染出来什么都没有)。
+// 现按【财务实际干活的顺序】分组:每天看的钉在顶部,其余按业务链路收进可折叠组。
+// 收起态仍平铺全部图标(靠 title 提示),不牺牲老用户的肌肉记忆。
+
+/** 钉在顶部——每天都要点的 */
+const pinnedNavigation = [
   { name: '工作台', href: '/dashboard', icon: Home },
   { name: '多标签工作台', href: '/workspace', icon: LayoutGrid },
-  { name: '订单成本核算', href: '/orders', icon: Package },
-  { name: '文档智能中心', href: '/documents', icon: FileText },
-  { name: '费用归集', href: '/costs', icon: ShoppingCart },
-  { name: '产品价格', href: '/product-price', icon: SearchIcon },
-  { name: '采购审批', href: '/purchase-approvals', icon: ShieldCheck },
-  { name: '应收账款', href: '/receivables', icon: CreditCard },
-  { name: '杂项应收', href: '/receivables/misc', icon: CreditCard },
-  { name: '应付账款', href: '/payables', icon: CreditCard },
-  { name: '汇总报表', href: '/reports', icon: ScrollText },
-  { name: '出运档案', href: '/shipments', icon: Ship },
-  { name: '出口退税', href: '/tax-refund', icon: FileText },
-  { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
-  { name: '周排款（付款执行）', href: '/payment-batches', icon: Calendar },
-  { name: '银行（日记账·对账）', href: '/bank', icon: BookOpen },
-  { name: '工资条发放', href: '/payroll', icon: Users },
-  { name: '客户画像', href: '/profiles/customers', icon: Users },
-  { name: '供应商画像', href: '/profiles/suppliers', icon: FileText },
-  { name: '收款信息维护', href: '/profiles/bank-info', icon: Landmark },
-  { name: '利润控制中心', href: '/profit-control', icon: TrendingUp },
-  { name: '财务驾驶舱', href: '/analytics', icon: BarChart3 },
-  { name: '风险地图', href: '/risks', icon: BarChart3 },
-  { name: '现金流预测', href: '/cashflow', icon: BarChart3 },
-  { name: '每周资金计划', href: '/funding-plan', icon: Calendar },
-  { name: '老板驾驶舱', href: '/dashboard/boss', icon: BarChart3 },
-  // 总账模块
-  { name: '科目表', href: '/gl/accounts', icon: BookOpen },
-  { name: '记账凭证', href: '/gl/journal', icon: FileText },
-  { name: '试算平衡表', href: '/gl/trial-balance', icon: Scale },
-  { name: '利润表', href: '/gl/profit-loss', icon: BarChart3 },
-  { name: '资产负债表', href: '/gl/balance-sheet', icon: Scale },
-  { name: '现金流量表', href: '/gl/cash-flow', icon: BarChart3 },
-  { name: '会计期间', href: '/gl/periods', icon: Calendar },
 ]
 
-const controlCenterItems = [
-  { name: '控制中心总览', href: '/control-center', icon: Shield },
-  // GL 复核：灰度过账闭环的最后一步（草稿凭证人工过账），必须有菜单入口
-  { name: '可信度中心', href: '/control-center/integrity', icon: ShieldCheck },
-  { name: 'GL 复核', href: '/control-center/gl-review', icon: ClipboardCheck },
-  { name: '月结中心', href: '/control-center/closing', icon: Calendar },
-  { name: '异常中心', href: '/control-center/audit', icon: SearchIcon },
-  { name: '冻结控制', href: '/control-center/freeze', icon: Lock },
-  { name: '时间线', href: '/control-center/timeline', icon: Clock },
-  { name: '沙盘模拟', href: '/control-center/simulation', icon: FlaskConical },
-  { name: '可信度', href: '/control-center/trust', icon: ShieldCheck },
+type NavItem = { name: string; href: string; icon: typeof Home }
+type NavGroup = { key: string; name: string; icon: typeof Home; items: NavItem[] }
+
+/**
+ * 业务链路分组。同一件事的入口必须挨在一起——
+ * 此前「付款审批与出纳 / 周排款 / 每周资金计划」散在列表三处,
+ * 「应收账款 / 杂项应收」中间隔着别的模块,财务要来回找。
+ */
+const navGroups: NavGroup[] = [
+  {
+    key: 'order', name: '订单与成本', icon: Package,
+    items: [
+      { name: '订单成本核算', href: '/orders', icon: Package },
+      { name: '费用归集', href: '/costs', icon: ShoppingCart },
+      { name: '产品价格', href: '/product-price', icon: Tag },
+      { name: '出运档案', href: '/shipments', icon: Ship },
+      { name: '文档智能中心', href: '/documents', icon: FileSpreadsheet },
+    ],
+  },
+  {
+    key: 'buy', name: '采购与付款', icon: Wallet,
+    items: [
+      { name: '采购审批', href: '/purchase-approvals', icon: ShieldCheck },
+      { name: '应付账款', href: '/payables', icon: Receipt },
+      { name: '付款审批与出纳', href: '/payments', icon: CheckSquare },
+      { name: '周排款（付款执行）', href: '/payment-batches', icon: Banknote },
+      { name: '每周资金计划', href: '/funding-plan', icon: Calendar },
+    ],
+  },
+  {
+    key: 'sell', name: '收款与银行', icon: PiggyBank,
+    items: [
+      { name: '应收账款', href: '/receivables', icon: CreditCard },
+      { name: '杂项应收', href: '/receivables/misc', icon: CreditCard },
+      { name: '银行（日记账·对账）', href: '/bank', icon: Landmark },
+      { name: '出口退税', href: '/tax-refund', icon: Percent },
+    ],
+  },
+  {
+    key: 'report', name: '报表与分析', icon: BarChart3,
+    items: [
+      { name: '汇总报表', href: '/reports', icon: ScrollText },
+      { name: '老板驾驶舱', href: '/dashboard/boss', icon: Gauge },
+      { name: '财务驾驶舱', href: '/analytics', icon: BarChart3 },
+      { name: '利润控制中心', href: '/profit-control', icon: TrendingUp },
+      { name: '现金流预测', href: '/cashflow', icon: LineChart },
+      { name: '风险地图', href: '/risks', icon: AlertTriangle },
+    ],
+  },
+  {
+    key: 'gl', name: '总账', icon: BookOpen,
+    items: [
+      { name: '科目表', href: '/gl/accounts', icon: BookOpen },
+      { name: '记账凭证', href: '/gl/journal', icon: FileText },
+      { name: '试算平衡表', href: '/gl/trial-balance', icon: Scale },
+      { name: '利润表', href: '/gl/profit-loss', icon: BarChart3 },
+      { name: '资产负债表', href: '/gl/balance-sheet', icon: Scale },
+      { name: '现金流量表', href: '/gl/cash-flow', icon: LineChart },
+      { name: '会计期间', href: '/gl/periods', icon: Calendar },
+    ],
+  },
+  {
+    key: 'master', name: '档案与主数据', icon: Boxes,
+    items: [
+      { name: '客户画像', href: '/profiles/customers', icon: Users },
+      { name: '供应商画像', href: '/profiles/suppliers', icon: Boxes },
+      { name: '收款信息维护', href: '/profiles/bank-info', icon: IdCard },
+      { name: '工资条发放', href: '/payroll', icon: Users },
+    ],
+  },
+  {
+    key: 'control', name: '控制中心', icon: Shield,
+    items: [
+      { name: '控制中心总览', href: '/control-center', icon: Shield },
+      // 「可信度中心 /integrity」与「可信度 /trust」原为两个几乎同名、同图标的入口,
+      // 财务分不清点哪个;改名点明各自职责(数据可信度体检 vs 对外可信度评分)。
+      { name: '数据可信度体检', href: '/control-center/integrity', icon: ShieldCheck },
+      { name: '可信度评分', href: '/control-center/trust', icon: Gauge },
+      { name: 'GL 复核', href: '/control-center/gl-review', icon: ClipboardCheck },
+      { name: '月结中心', href: '/control-center/closing', icon: Calendar },
+      { name: '异常中心', href: '/control-center/audit', icon: SearchIcon },
+      { name: '冻结控制', href: '/control-center/freeze', icon: Lock },
+      { name: '时间线', href: '/control-center/timeline', icon: Clock },
+      { name: '沙盘模拟', href: '/control-center/simulation', icon: FlaskConical },
+    ],
+  },
 ]
 
 export function Sidebar() {
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
-  const [ccOpen, setCcOpen] = useState(false)
+  // 展开哪些分组:默认全收,但「当前页所在的组」自动展开(否则刷新后找不到自己在哪)
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
+  const toggleGroup = (k: string) => setOpenGroups(p => ({ ...p, [k]: !p[k] }))
   const { user } = useCurrentUser()
   // 待办数(集成/订单审批 + 采购审批)——财务人在任何页面都能看到有多少待处理(此前完全无通知)
   const [counts, setCounts] = useState({ approvals: 0, purchase: 0 })
 
-  // 自动展开控制中心组（如果当前路径在组内）
-  useEffect(() => {
-    if (pathname.startsWith('/control-center')) setCcOpen(true)
-  }, [pathname])
+  // 组的自动展开改为渲染期推导(openGroups[key] ?? 组内含当前页),
+  // 不再用 effect 塞状态——避免「刷新后组是收的、要自己找」的老毛病。
 
   // 轮询待办数(60s):/approvals 角标 = pending_approvals + 预算单待审 + 订单作废终审;/purchase-approvals = 采购单待审
   //   此前只算 pending_approvals + 采购单 → 预算单待审、订单作废在角标里漏报(审计2026-07-27)
@@ -116,13 +167,12 @@ export function Sidebar() {
   const badgeFor = (href: string) => href === '/purchase-approvals' ? counts.purchase : href === '/approvals' ? counts.approvals : 0
 
   // 根据角色动态生成导航
-  const navigation = user && canViewApprovalQueue(user)
-    ? [
-        ...baseNavigation.slice(0, 2),
-        { name: '审批队列', href: '/approvals', icon: ClipboardCheck },
-        ...baseNavigation.slice(2),
-      ]
-    : baseNavigation
+  // 审批队列按角色挂在置顶区(有待办徽标,属于「每天要点的」)
+  const pinned = user && canViewApprovalQueue(user)
+    ? [...pinnedNavigation, { name: '审批队列', href: '/approvals', icon: ClipboardCheck }]
+    : pinnedNavigation
+  // 收起态:平铺全部图标,保住老用户的位置记忆(靠 title 提示名称)
+  const flatItems = [...pinned, ...navGroups.flatMap(g => g.items)]
 
   // Close mobile sidebar on route change
   useEffect(() => {
@@ -164,74 +214,91 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 py-2 px-2 space-y-0.5 overflow-y-auto">
-        {navigation.map((item) => {
-          const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
-          return (
-            <Link
-              key={item.name}
-              href={item.href}
-              className={cn(
-                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-primary/5 text-primary'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-              title={collapsed ? item.name : undefined}
-            >
-              <div className="relative shrink-0">
-                <item.icon className="h-4.5 w-4.5" aria-hidden="true" />
-                {collapsed && badgeFor(item.href) > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 h-2 w-2 rounded-full bg-amber-500" />
-                )}
-              </div>
-              {!collapsed && (
-                <>
+        {collapsed ? (
+          /* 收起态:平铺全部图标(保住位置记忆),名称走 title */
+          flatItems.map(item => {
+            const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
+            return (
+              <Link key={item.href} href={item.href} title={item.name}
+                className={cn('flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                  isActive ? 'bg-primary/5 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground')}>
+                <div className="relative shrink-0">
+                  <item.icon className="h-4.5 w-4.5" aria-hidden="true" />
+                  {badgeFor(item.href) > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 h-2 w-2 rounded-full bg-amber-500" />
+                  )}
+                </div>
+              </Link>
+            )
+          })
+        ) : (
+          <>
+            {/* 置顶:每天要点的 */}
+            {pinned.map(item => {
+              const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
+              return (
+                <Link key={item.href} href={item.href}
+                  className={cn('flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                    isActive ? 'bg-primary/5 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground')}>
+                  <item.icon className="h-4.5 w-4.5 shrink-0" aria-hidden="true" />
                   <span className="flex-1 truncate">{item.name}</span>
                   {badgeFor(item.href) > 0 && (
                     <span className="ml-auto flex h-5 min-w-[1.25rem] shrink-0 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-white">
                       {badgeFor(item.href)}
                     </span>
                   )}
-                </>
-              )}
-            </Link>
-          )
-        })}
+                </Link>
+              )
+            })}
 
-        {/* 控制中心 — 可折叠组 */}
-        <div className="mt-1 pt-1 border-t">
-          <button
-            onClick={() => setCcOpen(!ccOpen)}
-            className={cn(
-              'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium w-full transition-colors',
-              pathname.startsWith('/control-center') ? 'text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-            )}
-          >
-            <Shield className="h-4.5 w-4.5 shrink-0" />
-            {!collapsed && (
-              <>
-                <span className="flex-1 truncate text-left">控制中心</span>
-                <ChevronDown className={cn('h-3 w-3 transition-transform', ccOpen ? '' : '-rotate-90')} />
-              </>
-            )}
-          </button>
-          {ccOpen && !collapsed && (
-            <div className="ml-4 space-y-0.5">
-              {controlCenterItems.map(item => {
-                const isActive = pathname === item.href
-                return (
-                  <Link key={item.name} href={item.href} className={cn(
-                    'flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors',
-                    isActive ? 'bg-primary/5 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                  )}>
-                    <item.icon className="h-3.5 w-3.5 shrink-0" />
-                    <span className="truncate">{item.name}</span>
-                  </Link>
-                )
-              })}
-            </div>
-          )}
-        </div>
+            {/* 业务分组 */}
+            {navGroups.map(group => {
+              const hasActive = group.items.some(i => pathname === i.href || pathname.startsWith(i.href + '/'))
+              // 当前页所在组自动展开;用户手动切换后以手动状态为准
+              const open = openGroups[group.key] ?? hasActive
+              // 组内待办合计 → 收起时也能看见「这组里有事要办」
+              const groupBadge = group.items.reduce((a, i) => a + badgeFor(i.href), 0)
+              return (
+                <div key={group.key} className="pt-1">
+                  <button
+                    onClick={() => toggleGroup(group.key)}
+                    aria-expanded={open}
+                    className={cn('flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold uppercase tracking-wide w-full transition-colors',
+                      hasActive ? 'text-primary' : 'text-muted-foreground/70 hover:bg-muted hover:text-foreground')}>
+                    <group.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span className="flex-1 truncate text-left normal-case tracking-normal text-sm font-medium">{group.name}</span>
+                    {!open && groupBadge > 0 && (
+                      <span className="flex h-5 min-w-[1.25rem] shrink-0 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-white">
+                        {groupBadge}
+                      </span>
+                    )}
+                    <ChevronDown className={cn('h-3 w-3 shrink-0 transition-transform', open ? '' : '-rotate-90')} />
+                  </button>
+                  {open && (
+                    <div className="ml-3 pl-3 border-l space-y-0.5 mt-0.5">
+                      {group.items.map(item => {
+                        const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
+                        return (
+                          <Link key={item.href} href={item.href}
+                            className={cn('flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors',
+                              isActive ? 'bg-primary/5 text-primary font-medium' : 'text-muted-foreground hover:bg-muted hover:text-foreground')}>
+                            <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                            <span className="flex-1 truncate">{item.name}</span>
+                            {badgeFor(item.href) > 0 && (
+                              <span className="ml-auto flex h-5 min-w-[1.25rem] shrink-0 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-white">
+                                {badgeFor(item.href)}
+                              </span>
+                            )}
+                          </Link>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </>
+        )}
       </nav>
 
       {/* AI Assistant */}
