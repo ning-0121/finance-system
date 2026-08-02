@@ -18,6 +18,7 @@ import { toast } from 'sonner'
 import { exportBudgetOrdersToExcel } from '@/lib/excel'
 import { exportProfitAnalysisReport } from '@/lib/excel/export-professional'
 import { exportOrdersComprehensiveToExcel } from '@/lib/excel/export-orders-comprehensive'
+import { computeOrderProfit, effectiveProfit, effectiveMargin } from '@/lib/financial/order-profit'
 import type { BudgetOrder, BudgetOrderStatus } from '@/lib/types'
 
 export default function OrdersPage() {
@@ -163,14 +164,17 @@ export default function OrdersPage() {
     setCreatingBudget(null)
   }
 
-  // F3: 取一笔订单的"有效"利润 / 毛利率（已确认决算 → 用实际，否则用预估）
-  const getEffectiveProfit = (orderId: string, fallback: number) => {
-    const s = settlementMap[orderId]
-    return s && (s.status === 'confirmed' || s.status === 'locked') ? s.final_profit : fallback
+  // F3: 取一笔订单的"有效"利润 / 毛利率（已确认决算 → 用实际，否则按订单现算预估）
+  // 2026-08-02:预估不再直接读 estimated_profit 快照列 —— Excel 导入/节拍器同步等
+  // 路径只回填收入成本、没算利润,列里存 0,导致 478 张有收入有成本的单显示「利润 ¥0」。
+  // 改为现算(computeOrderProfit),快照列仅在现算不可用(如外币缺汇率)时兜底。
+  const getEffectiveProfit = (orderId: string, _fallback: number) => {
+    const o = orders.find(x => x.id === orderId)
+    return o ? effectiveProfit(o, settlementMap[orderId]) : _fallback
   }
-  const getEffectiveMargin = (orderId: string, fallback: number) => {
-    const s = settlementMap[orderId]
-    return s && (s.status === 'confirmed' || s.status === 'locked') ? s.final_margin : fallback
+  const getEffectiveMargin = (orderId: string, _fallback: number) => {
+    const o = orders.find(x => x.id === orderId)
+    return o ? effectiveMargin(o, settlementMap[orderId]) : _fallback
   }
 
   // 「待建预算」= 草稿且合同金额为 0 的空壳单(多为节拍器同步来、业务没定价 → 财务没法审 → 堰塞在草稿里)
@@ -406,8 +410,24 @@ export default function OrdersPage() {
                       {(() => {
                         const sett = settlementMap[order.id]
                         const isActual = sett && (sett.status === 'confirmed' || sett.status === 'locked')
-                        const profit = isActual ? sett.final_profit : order.estimated_profit
-                        const margin = isActual ? sett.final_margin : order.estimated_margin
+                        // 预估现算(见 lib/financial/order-profit):外币缺汇率时 usable=false,
+                        // 此时显示「缺汇率」而不是误导性的 ¥0 / 0%(此前 125 张外币缺率单就这么显示成 0)
+                        const calc = computeOrderProfit(order)
+                        if (!isActual && !calc.usable && calc.reason === 'missing_rate') {
+                          return (
+                            <>
+                              <TableCell className="text-right">
+                                <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 whitespace-nowrap"
+                                  title={`${order.currency} 订单未填结汇汇率,无法折算人民币利润。请进订单补汇率。`}>
+                                  缺汇率
+                                </span>
+                              </TableCell>
+                              <TableCell className="text-right text-xs text-muted-foreground">—</TableCell>
+                            </>
+                          )
+                        }
+                        const profit = isActual ? sett.final_profit : calc.profitCny
+                        const margin = isActual ? sett.final_margin : calc.marginPct
                         return (
                           <>
                             <TableCell className={`text-right font-semibold ${profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
