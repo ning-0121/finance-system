@@ -1,0 +1,50 @@
+组键(budget_order|supplier|cost_type|品名|金额),份数,订单号,订单status,id,金额,source_module,created_at
+51db5d65-d6b0-4741-b85f-80b3ca20ab3d | 凌云秀商标厂 | accessory | LU301-SET尺码标 | 240,2,BO-202604-0015,approved,00e6034f-30de-4165-82fe-aa3df2903ea0,240,excel-attach-2026-07,2026-07-04
+51db5d65-d6b0-4741-b85f-80b3ca20ab3d | 凌云秀商标厂 | accessory | LU301-SET尺码标 | 240,2,BO-202604-0015,approved,e3c76800-b90b-43fe-b7c5-1c3cdc8e0ce9,240,excel-attach-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 顺龙拉链 | processing | 喷漆费 | 50,4,522,draft,08ccaae9-0661-4314-9369-9da41116056e,50,excel-new-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 顺龙拉链 | processing | 喷漆费 | 50,4,522,draft,214b5e04-d078-4245-9482-cfa067e90a87,50,excel-new-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 顺龙拉链 | processing | 喷漆费 | 50,4,522,draft,51b9a64c-a9e1-4470-993b-98cfa0400b4c,50,excel-new-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 顺龙拉链 | processing | 喷漆费 | 50,4,522,draft,fe2bd4ba-2844-4995-b564-e2638ac6e64e,50,excel-new-2026-07,2026-07-04
+4c1d464a-a132-4b37-ada1-cc8cd00dfacf | 悦兴布行 | tax_point | 票点6% | 0,2,BO-202604-0021,draft,12f13c7d-1059-402a-a21c-cebdb6d5adea,0,excel-attach-2026-07,2026-07-04
+4c1d464a-a132-4b37-ada1-cc8cd00dfacf | 悦兴布行 | tax_point | 票点6% | 0,2,BO-202604-0021,draft,803daa3d-e8ca-42b7-b334-a4ed56ce5d36,0,excel-attach-2026-07,2026-07-04
+693f16d5-3625-4092-8334-e78c3b006a1d | 傲狐服饰 | processing | RS-63-1075（连体裤） | 8064,2,BO-202604-0057,approved,12f23b2b-4898-454c-9e2b-5ec0fbe5ecd4,8064,,2026-04-21
+693f16d5-3625-4092-8334-e78c3b006a1d | 傲狐服饰 | processing | RS-63-1075（连体裤） | 8064,2,BO-202604-0057,approved,1fe7df9e-bcbc-496a-9209-778ead6770ed,8064,,2026-04-15
+fa18d1c7-50a6-438b-b22b-b100104f93ae | 顺龙拉链 | accessory | 喷漆费 | 50,3,BO-202604-0005,approved,15ee1c78-8850-4493-8254-be9b47c31cbd,50,,2026-04-17
+fa18d1c7-50a6-438b-b22b-b100104f93ae | 顺龙拉链 | accessory | 喷漆费 | 50,3,BO-202604-0005,approved,b340dd71-6113-4cee-8eb5-c1ace488d7b4,50,,2026-04-20
+fa18d1c7-50a6-438b-b22b-b100104f93ae | 顺龙拉链 | accessory | 喷漆费 | 50,3,BO-202604-0005,approved,df2fda80-a3ca-4cd1-9a6f-949be064f707,50,,2026-04-17
+51db5d65-d6b0-4741-b85f-80b3ca20ab3d | 顺龙拉链 | accessory | 染色费 | 120,2,BO-202604-0015,approved,1a8deb1e-732e-4e55-bbf1-25c12d03819f,120,,2026-04-22
+51db5d65-d6b0-4741-b85f-80b3ca20ab3d | 顺龙拉链 | accessory | 染色费 | 120,2,BO-202604-0015,approved,c76de5d3-1059-437a-9f35-5c91a0b294dd,120,,2026-04-17
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 小陈制袋 | accessory | 中包袋50*45+8 | 92,2,522,draft,1f179478-e430-4648-91b0-210f5837d3f2,92,excel-new-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 小陈制袋 | accessory | 中包袋50*45+8 | 92,2,522,draft,c22accc0-6593-4b28-98a1-f3a182643256,92,excel-new-2026-07,2026-07-04
+693f16d5-3625-4092-8334-e78c3b006a1d | 傲狐服饰 | processing | RS-63-1078（连体短裤） | 6912,2,BO-202604-0057,approved,2f03c9e9-6c3d-454e-a5d5-3d82370378b8,6912,,2026-04-15
+693f16d5-3625-4092-8334-e78c3b006a1d | 傲狐服饰 | processing | RS-63-1078（连体短裤） | 6912,2,BO-202604-0057,approved,9efd649c-e859-41c6-9aa3-3ce386a0cad0,6912,,2026-04-21
+b4b29bde-63d8-48fe-81d9-057c1c90f3be | 宁波言晨国际物流有限公司 | freight | RAG(CI-61)货代费 | 2293.52,2,Invoice61（1022892订单）,draft,384569cc-1d9f-443b-8118-9f95bc2587af,2293.52,excel-new-2026-07,2026-07-04
+b4b29bde-63d8-48fe-81d9-057c1c90f3be | 宁波言晨国际物流有限公司 | freight | RAG(CI-61)货代费 | 2293.52,2,Invoice61（1022892订单）,draft,98c0ca0f-29cf-482a-a685-792af3ca81d2,2293.52,excel-new-2026-07,2026-07-04
+72402809-c357-4f4f-914a-a96d8bc1f773 | 葛坚吊卡 | accessory | OTOS 1506-T/B灰色吊牌 | 0,3,BO-202607-0048,draft,390ce8fd-aafd-450e-9e7b-db31e24336e1,0,excel-attach-2026-07,2026-07-04
+72402809-c357-4f4f-914a-a96d8bc1f773 | 葛坚吊卡 | accessory | OTOS 1506-T/B灰色吊牌 | 0,3,BO-202607-0048,draft,a5a3961a-473f-4116-8852-12d3f33f0601,0,excel-attach-2026-07,2026-07-04
+72402809-c357-4f4f-914a-a96d8bc1f773 | 葛坚吊卡 | accessory | OTOS 1506-T/B灰色吊牌 | 0,3,BO-202607-0048,draft,bebf8d76-27e5-431f-a752-5782c53a8453,0,excel-attach-2026-07,2026-07-04
+0dcdd4e3-1bcd-4b0d-96ff-27b25462bca8 | 顺龙拉链 | processing | 喷漆费 | 50,2,584,draft,468bceb1-c689-4b70-8cd8-3d251acc8e72,50,excel-new-2026-07,2026-07-04
+0dcdd4e3-1bcd-4b0d-96ff-27b25462bca8 | 顺龙拉链 | processing | 喷漆费 | 50,2,584,draft,8fc7cc8f-23a3-4c33-83c1-7a6530c63487,50,excel-new-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 顺龙拉链 | processing | 染色费 | 120,2,522,draft,4f8a947e-d37b-406f-b9b6-e87ad5597873,120,excel-new-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 顺龙拉链 | processing | 染色费 | 120,2,522,draft,d3f51501-8d85-409f-a619-18eff568832f,120,excel-new-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 中阳印刷 | accessory | 烫标 | 175.5,2,522,draft,63facfe3-bb7a-48ae-b94d-e6efd3090f2f,175.5,excel-new-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 中阳印刷 | accessory | 烫标 | 175.5,2,522,draft,b960c57b-7a37-472f-8667-6363d4797b8d,175.5,excel-new-2026-07,2026-07-04
+144394f1-a718-495f-8b5d-6f048fb6641c | 顺龙拉链 | processing | 喷漆费 | 50,3,1022827订单改成1022832订单,draft,645ce1d2-462a-4580-9665-0cf0ca6c3c16,50,excel-new-2026-07,2026-07-04
+144394f1-a718-495f-8b5d-6f048fb6641c | 顺龙拉链 | processing | 喷漆费 | 50,3,1022827订单改成1022832订单,draft,73c3ba65-6637-4a92-be9c-75f879c9e4c1,50,excel-new-2026-07,2026-07-04
+144394f1-a718-495f-8b5d-6f048fb6641c | 顺龙拉链 | processing | 喷漆费 | 50,3,1022827订单改成1022832订单,draft,86c39374-1e32-48dd-af67-94d1fa7e2fe9,50,excel-new-2026-07,2026-07-04
+72402809-c357-4f4f-914a-a96d8bc1f773 | 葛坚吊卡 | accessory | OTOS衣架卡 | 0,2,BO-202607-0048,draft,6fd96e07-5660-4fb6-8bf7-6c9018d78c24,0,excel-attach-2026-07,2026-07-04
+72402809-c357-4f4f-914a-a96d8bc1f773 | 葛坚吊卡 | accessory | OTOS衣架卡 | 0,2,BO-202607-0048,draft,fe8ca886-4dcb-40bc-b6a5-bdec17b98160,0,excel-attach-2026-07,2026-07-04
+241524c1-148b-4939-91bb-e7ed757657c7 | 顺龙拉链 | accessory | 染色费 | 120,2,BO-202604-0039,approved,8f252d00-303e-4fe9-ab62-f4139e12f152,120,,2026-04-27
+241524c1-148b-4939-91bb-e7ed757657c7 | 顺龙拉链 | accessory | 染色费 | 120,2,BO-202604-0039,approved,91ae038e-a2a3-479c-8e9d-ae1ded7f7185,120,,2026-04-27
+693f16d5-3625-4092-8334-e78c3b006a1d | 傲狐服饰 | processing | RS-63-1076（连衣裙） | 8179.2,2,BO-202604-0057,approved,9137d203-6700-4c7a-96f7-ece19df175ea,8179.2,,2026-04-21
+693f16d5-3625-4092-8334-e78c3b006a1d | 傲狐服饰 | processing | RS-63-1076（连衣裙） | 8179.2,2,BO-202604-0057,approved,b54d0558-0522-4fb3-b2f7-4e50cdb3188a,8179.2,,2026-04-15
+490ea787-89bb-4003-ad9b-162981d2ee38 | 顺龙拉链 | processing | 染色费 | 120,2,529订单,draft,9c05ba79-e8ad-4b54-9760-922d1ae52801,120,excel-new-2026-07,2026-07-04
+490ea787-89bb-4003-ad9b-162981d2ee38 | 顺龙拉链 | processing | 染色费 | 120,2,529订单,draft,def30aed-c37e-4a3b-a744-29cf089e311c,120,excel-new-2026-07,2026-07-04
+c2bc7e8d-121c-486a-88db-c9f7bc1df1f5 | 华六织带 | processing | 染色费 | 400,2,BO-202604-0055,approved,9c91a8b4-423b-4386-97db-e77a6654bc36,400,excel-attach-2026-07,2026-07-04
+c2bc7e8d-121c-486a-88db-c9f7bc1df1f5 | 华六织带 | processing | 染色费 | 400,2,BO-202604-0055,approved,adeba6d9-1923-4396-92e9-6117f23aa12b,400,excel-attach-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 华航布行 | fabric | Peppercorn棕咖色 | 0,2,522,draft,a83ce467-7a92-42bb-9f8d-59288c80c6f4,0,excel-new-2026-07,2026-07-04
+3dc51e47-69df-4a7d-a3ce-74fad13c08c9 | 华航布行 | fabric | Peppercorn棕咖色 | 0,2,522,draft,fbc04827-21c9-4b47-bfdf-d5e4afc2f0c7,0,excel-new-2026-07,2026-07-04
+693f16d5-3625-4092-8334-e78c3b006a1d | 傲狐服饰 | processing | RS-63-1077（连体短裤） | 6912,2,BO-202604-0057,approved,e2a0f84e-cc70-4318-a1bd-59ed8b363f64,6912,,2026-04-15
+693f16d5-3625-4092-8334-e78c3b006a1d | 傲狐服饰 | processing | RS-63-1077（连体短裤） | 6912,2,BO-202604-0057,approved,f075fa2d-351e-43f4-8e1b-b33a57f07dde,6912,,2026-04-21
+03c1d83e-d0b9-412f-9d55-373d0d06c507 | 荣辰纸箱 | accessory | 55*32*20纸箱 | 216.6,2,BO-202604-0010,draft,e458fcbf-c103-494f-a791-4b150f8aa770,216.6,excel-attach-2026-07,2026-07-04
+03c1d83e-d0b9-412f-9d55-373d0d06c507 | 荣辰纸箱 | accessory | 55*32*20纸箱 | 216.6,2,BO-202604-0010,draft,fb7ddecb-5ecc-4f64-b326-1827c08e8597,216.6,excel-attach-2026-07,2026-07-04

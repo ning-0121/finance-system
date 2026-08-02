@@ -37,6 +37,7 @@ import type { QuoteCostLineUI } from '@/lib/supabase/purchase-approvals'
 import { getBudgetOrderById, getSettlementByBudgetId, getApprovalLogs, updateBudgetOrderStatus, createApprovalLog, correctOrderRate } from '@/lib/supabase/queries'
 import { generateOrderSettlement } from '@/lib/supabase/queries-v2'
 import { validateBudgetEdit } from '@/lib/engines/validation-engine'
+import { sumCostBuckets, checkCostConsistency } from '@/lib/financial/cost-breakdown'
 import { runOrderSubmitGate, type GateResult } from '@/lib/engines/submit-gate-engine'
 import { getSubDocuments, getActualInvoices, getShippingDocuments, getOrderSettlement } from '@/lib/supabase/queries-v2'
 import type { BudgetOrder, BudgetOrderStatus, ApprovalLog, OrderSettlement } from '@/lib/types'
@@ -446,7 +447,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       }
       if (cleaned.length > 0) linesData[k] = cleaned
     }
-    const totalCostCny = finishedGoods + fabric + accessory + processing + forwarder + container + logistics + extrasTotal
+    // 总额 = 成本桶之和,走公共实现(与决算/GL 结转/Excel 导出同一口径)。
+    // 加桶只改 lib/financial/cost-breakdown.ts —— 此前桶清单散在 7+ 处各写一遍,
+    // 2026-07-30 加「采购成品」桶就得挨个改,漏一处该桶的钱就在那条路径上消失/双计。
+    const totalCostCny = sumCostBuckets({
+      finished_goods: finishedGoods, fabric, accessory, processing, forwarder, container, logistics,
+    }) + extrasTotal
     const profitCny = revenueCny - totalCostCny
     const margin = revenueCny > 0 ? Math.round((profitCny / revenueCny) * 10000) / 100 : 0
     // 映射到数据库字段
@@ -1092,6 +1098,27 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           <div className="flex justify-between"><span className="text-muted-foreground">收款方式</span><span className="font-medium text-green-600">人民币直收</span></div>
                         )}
                         <Separator />
+                        {/* 成本口径不一致只读警示:总额列(算利润用)与成本桶(此处展示)对不上时,
+                            把两个数并排摊开让财务判断,不自动改 —— 已审批订单的成本是审批基准,
+                            按铁律不允许被自动改写。生产实证 15 张 4 月已通过单存在此问题。 */}
+                        {(() => {
+                          const c = checkCostConsistency(order)
+                          if (!c.checkable || c.consistent) return null
+                          return (
+                            <div className="mb-2 rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-[11px] text-amber-900 space-y-1">
+                              <div className="font-semibold">⚠️ 成本口径不一致 —— 利润可能不准</div>
+                              <div className="flex justify-between"><span>下方明细合计(成本桶)</span><span className="font-mono">¥ {c.bucketTotal.toLocaleString()}</span></div>
+                              <div className="flex justify-between"><span>算利润用的总额</span><span className="font-mono">¥ {c.storedTotal.toLocaleString()}</span></div>
+                              <div className="flex justify-between font-semibold border-t border-amber-200 pt-1">
+                                <span>差额</span>
+                                <span className="font-mono">{c.diff > 0 ? '+' : ''}{c.diff.toLocaleString()}（{c.diff > 0 ? '利润偏高' : '利润偏低'}）</span>
+                              </div>
+                              <div className="text-amber-800/80">
+                                重新编辑并保存本单即可让两者归一;若本单已审批,请先确认哪个口径为准再改。
+                              </div>
+                            </div>
+                          )
+                        })()}
                         <p className="text-xs text-foreground font-semibold">成本明细 (CNY)</p>
                         {(() => {
                           const readLines = (cb as Record<string, unknown> | undefined)?.lines as Record<string, { name: string; qty: number; unit: string; unit_price: number; amount: number }[]> | undefined

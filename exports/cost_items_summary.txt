@@ -1,0 +1,23 @@
+cost_items 重复对照审计(只读) —— 生成于 2026-07-12T23:41:51
+cost_items 存活行数: 3474(全量含deleted 3520)
+
+【清单2 recon-fix重导入重复(跨不同budget_order)】 cost_items_recon_dup.csv
+  匹配组数(recon-fix行有对应excel-new同键存活且异订单): 142
+  数据行数(recon×exnew展开): 167
+  涉及 recon-fix 行金额合计: ¥2596202.4
+  涉及 excel-new 行金额合计: ¥3054402.29
+  与基准 ¥259万 比对: recon侧¥2596202.4 / exnew侧¥3054402.29
+
+【清单3a 精确重复】 cost_items_exact_dup.csv
+  重复组数: 22   数据行数: 49
+  组内全部行金额合计: ¥68529.64
+  多记金额(每组份数-1 × 金额): ¥34364.82
+  与基准 22组 比对: 实得 22 组
+  与基准 ¥3.4万 比对: 多记额¥34364.82
+
+【清单3b Excel与手工双记】 cost_items_cross_source_dup.csv
+  跨源重复组数: 4   数据行数: 8
+  多记金额(每组份数-1 × 金额): ¥4017
+
+说明: supplier规范化=去空白+小写;清单3b日期=delivery_date缺则created_at::date。
+      本清单只出对照与份数,软删哪条由财务在UI人工判定。
