@@ -12,6 +12,7 @@
 import { createClient } from '@/lib/supabase/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { isEntityFrozen } from '@/lib/engines/freeze-engine'
+import { resolveBucketAmounts } from '@/lib/financial/cost-breakdown'
 import { getGlConfig, shouldAutoPost, requiresReview } from './gl-config'
 import {
   GlPostingError, classifyGlError, isBalanced,
@@ -139,27 +140,16 @@ async function buildSpecForItem(db: DB, item: QueueItem): Promise<JournalSpec | 
           forwarder: b.forwarder, container: b.container, logistics: b.logistics, extras: [],
         })
       }
-      const cb = (o.items as unknown as Record<string, unknown>[])?.[0]?._cost_breakdown as Record<string, unknown> | undefined
-      // 有 _cost_breakdown 就以桶为准(0 也是有效值,不再回退标量列);
-      // 只有完全没有 breakdown 的历史单才回退 budget_orders 标量列。
-      // ⚠ 关键(2026-07-30):target_purchase_price = 采购成品+面料+辅料(见订单页保存映射),
-      //   若对有 breakdown 的单仍用 `cb.fabric || target_purchase_price`,纯经销单(fabric=0)
-      //   会把已单列的采购成品再从 target_purchase_price 取一次 → 成本双计。
-      const num = (k: string, legacy: number) => cb ? (Number(cb[k]) || 0) : legacy
-      const extras = (cb?.extras as { name: string; amount: number }[]) || []
+      // 逐桶取数(含「有桶就以桶为准、无桶才回退标量列」规则)统一走公共实现,
+      // 桶清单与回退映射只在 lib/financial/cost-breakdown 定义一次。
+      const rb = resolveBucketAmounts(o as Record<string, unknown>)
       // _cost_breakdown 与 target_purchase_price 等预算列全站约定为 CNY——
       // 此前传订单币种/汇率导致 USD 单回退路径成本被再乘一次汇率(虚增约6.9倍,审计 P1)
       return buildCostRecognition({
         id: o.id as string, order_no: o.order_no as string, order_date: o.order_date as string,
         currency: 'CNY', exchange_rate: 1,
-        finished_goods: num('finished_goods', 0),
-        fabric: num('fabric', Number(o.target_purchase_price) || 0),
-        accessory: num('accessory', 0),
-        processing: num('processing', Number(o.estimated_commission) || 0),
-        forwarder: num('forwarder', Number(o.estimated_freight) || 0),
-        container: num('container', Number(o.estimated_customs_fee) || 0),
-        logistics: num('logistics', Number(o.other_costs) || 0),
-        extras,
+        ...rb.buckets,
+        extras: rb.extras,
       })
     }
     case 'receipt_saved': {

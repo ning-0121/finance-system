@@ -6,6 +6,7 @@
 
 import * as XLSX from 'xlsx'
 import type { BudgetOrder, OrderItem } from '@/lib/types'
+import { COST_BUCKETS } from '@/lib/financial/cost-breakdown'
 
 // ── 公司信息 ─────────────────────────────────────────────────
 const COMPANY_CN = '义乌市绮陌服饰有限公司'
@@ -109,13 +110,8 @@ export function synthesizeCostItems(order: BudgetOrder): CostItemRow[] {
     if (n(key) > 0) rows.push({ description: label, amount: n(key) })
   }
 
-  emit('finished_goods', '采购成品')
-  emit('fabric', '面料')
-  emit('accessory', '辅料')
-  emit('processing', '加工费')
-  emit('forwarder', '货代费')
-  emit('container', '装柜费')
-  emit('logistics', '物流费')
+  // 桶清单来自 lib/financial/cost-breakdown(唯一定义,加桶只改那里)
+  for (const b of COST_BUCKETS) emit(b.key, b.label)
 
   const extras = breakdown['extras'] as { name: string; amount: number }[] | undefined
   if (Array.isArray(extras)) {

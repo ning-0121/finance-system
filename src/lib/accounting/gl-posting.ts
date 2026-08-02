@@ -5,6 +5,7 @@ import { fetchAll } from '@/lib/supabase/fetch-all'
 import { bizToday, bizDateOf } from '@/lib/biz-date'
 import type { BudgetOrder } from '@/lib/types'
 import { requireRate, sumAmounts, mulAmount } from './utils'
+import { COST_BUCKETS, EXTRAS_GL_ACCOUNT, resolveBucketAmounts } from '@/lib/financial/cost-breakdown'
 
 interface JournalLine {
   account_code: string
@@ -174,36 +175,19 @@ export async function postCostRecognition(order: BudgetOrder) {
   if (await alreadyPosted('settlement', order.id)) {
     return { journalId: null, voucherNo: null, skipped: true as const }
   }
-  const bd = (order.items as unknown as Record<string, unknown>[])?.[0]
-  const cb = bd?._cost_breakdown as Record<string, number | string> | undefined
-
-  // 有 _cost_breakdown 就以桶为准(0 也是有效值);无 breakdown 的历史单才回退标量列。
-  // ⚠ target_purchase_price = 采购成品+面料+辅料,对有 breakdown 的单回退会把采购成品双计。
-  const num = (k: string, legacy: number) => cb ? (Number(cb[k]) || 0) : legacy
-  const finishedGoods = num('finished_goods', 0)   // 采购成品(经销单)
-  const fabric = num('fabric', order.target_purchase_price || 0)
-  const accessory = num('accessory', 0)
-  const processing = num('processing', order.estimated_commission || 0)
-  const forwarder = num('forwarder', order.estimated_freight || 0)
-  const container = num('container', order.estimated_customs_fee || 0)
-  const logistics = num('logistics', order.other_costs || 0)
-  const extras = (cb?.extras as unknown as { name: string; amount: number }[]) || []
-  const extrasTotal = extras.reduce((s, e) => s + (e.amount || 0), 0)
+  // 逐桶取数 + 科目映射全部来自 lib/financial/cost-breakdown(唯一定义)。
+  // 加桶只改那个文件,这里自动跟上 —— 此前桶清单散在 7+ 处,漏改一处该桶的钱就消失/双计。
+  const { buckets, extras, total: totalCost } = resolveBucketAmounts(order as unknown as Record<string, unknown>)
 
   const lines: JournalLine[] = []
 
-  if (finishedGoods > 0) lines.push({ account_code: '540104', description: '采购成品成本', debit: finishedGoods, credit: 0, order_id: order.id })
-  if (fabric > 0) lines.push({ account_code: '540101', description: '面料成本', debit: fabric, credit: 0, order_id: order.id })
-  if (accessory > 0) lines.push({ account_code: '540102', description: '辅料成本', debit: accessory, credit: 0, order_id: order.id })
-  if (processing > 0) lines.push({ account_code: '540103', description: '加工费', debit: processing, credit: 0, order_id: order.id })
-  if (forwarder > 0) lines.push({ account_code: '540201', description: '货代费', debit: forwarder, credit: 0, order_id: order.id })
-  if (container > 0) lines.push({ account_code: '540202', description: '装柜费', debit: container, credit: 0, order_id: order.id })
-  if (logistics > 0) lines.push({ account_code: '540203', description: '物流费', debit: logistics, credit: 0, order_id: order.id })
+  for (const b of COST_BUCKETS) {
+    const v = buckets[b.key]
+    if (v > 0) lines.push({ account_code: b.gl, description: b.glDesc, debit: v, credit: 0, order_id: order.id })
+  }
   extras.forEach(e => {
-    if (e.amount > 0) lines.push({ account_code: '540204', description: e.name || '其他费用', debit: e.amount, credit: 0, order_id: order.id })
+    if (e.amount > 0) lines.push({ account_code: EXTRAS_GL_ACCOUNT, description: e.name || '其他费用', debit: e.amount, credit: 0, order_id: order.id })
   })
-
-  const totalCost = finishedGoods + fabric + accessory + processing + forwarder + container + logistics + extrasTotal
   if (totalCost > 0) {
     lines.push({ account_code: '2202', description: `应付-${order.order_no}`, debit: 0, credit: totalCost, order_id: order.id })
   }

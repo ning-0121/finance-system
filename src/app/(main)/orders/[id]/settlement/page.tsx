@@ -23,6 +23,7 @@ import { toast } from 'sonner'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { resolveDisplayRate } from '@/lib/accounting/fx'
+import { COST_BUCKETS } from '@/lib/financial/cost-breakdown'
 import { getBudgetOrderById, getSettlementByBudgetId } from '@/lib/supabase/queries'
 import { generateOrderSettlement, getOrderSettlement, getSubDocuments, getInventoryReturns } from '@/lib/supabase/queries-v2'
 import { toChineseUppercase } from '@/lib/excel/chinese-amount'
@@ -263,15 +264,12 @@ export default function SettlementPage({ params }: { params: Promise<{ id: strin
   const costComparison = useMemo(() => {
     const cb = (order?.items as unknown as Record<string, unknown>[])?.[0]?._cost_breakdown as Record<string, unknown> | undefined
     const bnum = (k: string, fb: number) => (cb?.[k] != null ? Number(cb[k]) : fb)
-    const cats = [
-      { key: 'finished_goods', label: '采购成品', budget: bnum('finished_goods', 0) },
-      { key: 'fabric', label: '面料', budget: bnum('fabric', Number(order?.target_purchase_price) || 0) },
-      { key: 'accessory', label: '辅料', budget: bnum('accessory', 0) },
-      { key: 'processing', label: '加工费', budget: bnum('processing', Number(order?.estimated_commission) || 0) },
-      { key: 'forwarder', label: '货代费', budget: bnum('forwarder', Number(order?.estimated_freight) || 0) },
-      { key: 'container', label: '装柜费', budget: bnum('container', Number(order?.estimated_customs_fee) || 0) },
-      { key: 'logistics', label: '物流费', budget: bnum('logistics', Number(order?.other_costs) || 0) },
-    ]
+    // 桶清单与回退映射来自 lib/financial/cost-breakdown(唯一定义,加桶只改那里)
+    const cats = COST_BUCKETS.map(b => ({
+      key: b.key as string,
+      label: b.label as string,
+      budget: bnum(b.key, b.legacy ? Number(order?.[b.legacy as keyof typeof order]) || 0 : 0),
+    }))
     const CT2CAT: Record<string, string> = {
       finished_goods: 'finished_goods',
       fabric: 'fabric', accessory: 'accessory', processing: 'processing', commission: 'processing',
