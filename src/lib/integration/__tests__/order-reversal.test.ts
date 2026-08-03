@@ -100,6 +100,21 @@ describe('reverseOrder —— 保守冲销口径', () => {
     expect(r.warnings.join()).toContain('人工红冲')
   })
 
+  it('预算作废后仍挂着费用归集 → 报警告等人工,不自动删改(审计 2026-08-03:21 行孤儿费用)', async () => {
+    const { client, updates } = makeDb({
+      synced_orders: [{ budget_order_id: 'b-1' }],
+      budget_orders: [{ id: 'b-1', status: 'draft', deleted_at: null }],
+      payable_records: [],
+      cost_items: [{ amount: 618 }, { amount: -2000 }, { amount: 163.2 }],
+      fin_purchase_orders: [], pending_approvals: [],
+    })
+    const r = await reverseOrder(client, ORDER, 'order.cancelled')
+    expect(r.warnings.join()).toContain('3 行费用归集')
+    expect(r.warnings.join()).toContain('-1218.8')      // 净额(含定金冲抵)如实报出
+    expect(r.warnings.join()).toContain('未自动改')
+    expect(updates.find(u => u.table === 'cost_items')).toBeUndefined()   // 一行都没动
+  })
+
   it('同步侧调用 → 留痕写「定时同步」,与 webhook 区分得开', async () => {
     const { client, updates } = makeDb({
       synced_orders: [{ budget_order_id: 'b-1' }],

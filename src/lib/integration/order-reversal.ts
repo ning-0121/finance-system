@@ -97,6 +97,20 @@ export async function reverseOrder(
         .select('id').eq('budget_order_id', budgetId).is('deleted_at', null).limit(1)
       if (pays && pays.length) warnings.push('存在应付记录,需人工红冲——未自动改')
     } catch { /* ignore */ }
+
+    // 费用归集:预算单一作废,挂在它上面的 cost_items 就成了「孤儿」——
+    //   订单没了,这些真实发生的供应商费用既进不了任何订单成本,也不会自己消失,
+    //   在费用归集页之外没有任何地方会提醒。审计 2026-08-03 实证:6 张已作废预算单
+    //   上挂着 21 行孤儿费用(净额 ¥738.2,含一笔 -2000 定金冲抵)。
+    //   同样保守:不自动删、不自动改挂,只把金额和行数报出来等人工处理。
+    try {
+      const { data: costs } = await supabase.from('cost_items')
+        .select('amount').eq('budget_order_id', budgetId).is('deleted_at', null)
+      if (costs && costs.length) {
+        const sum = Math.round(costs.reduce((s, c) => s + (Number((c as { amount?: unknown }).amount) || 0), 0) * 100) / 100
+        warnings.push(`预算单作废后仍挂着 ${costs.length} 行费用归集(合计 ¥${sum}),需人工改挂到正确订单或确认核销——未自动改`)
+      }
+    } catch { /* ignore */ }
   }
 
   // 2.6 已同步的采购单:订单删/取消 → 级联处理关联采购单(匹配 po_nos ∪ order_refs 含本订单 id)。

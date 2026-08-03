@@ -103,13 +103,30 @@ export async function POST(request: Request) {
     //   财务列表照常显示"已删除"的单(生产实证 1022978 QM-20260731-001:全程只有
     //   order.created 一条事件,镜像 cancelled,草稿 BO-202608-0001 一直存活)。
     //   现在复用 webhook 同一套保守冲销 reverseOrder(唯一实现,避免两条路径再次走偏)。
-    //   只对「本轮由活变死」的单跑一次:已经是死单的不重复跑(reverseOrder 内部虽幂等,
-    //   但每单要查若干表,全量重跑会拖慢定时任务)。
+    //
+    // ⚠️ 触发条件不能只看「本轮由活变死」(2026-08-03 修正):
+    //   那样只能抓到状态跳变的那一次,镜像里【早就是死单】但预算仍存活的存量
+    //   永远抓不到 —— 审计实证 QM-20260717-002(内部号 1022222)镜像 cancelled、
+    //   草稿 BO-202607-0109 一直活着,正是被上一版条件漏掉的。
+    //   改为:死单 且 其预算单仍未软删 → 冲销。天然覆盖「跳变」与「存量」两种,
+    //   且清理完后条件自动不成立,不会每 6 小时重复空跑。
+    const budgetAlive = new Map<string, boolean>()
+    {
+      const bids = [...new Set(existingSynced?.map(s => s.budget_order_id).filter(Boolean) as string[] || [])]
+      for (let i = 0; i < bids.length; i += 500) {
+        const { data } = await finance.from('budget_orders').select('id, deleted_at').in('id', bids.slice(i, i + 500))
+        for (const b of data || []) budgetAlive.set(b.id as string, !b.deleted_at)
+      }
+    }
+    const budgetIdOf = new Map((existingSynced || []).map(s => [s.order_no as string, s.budget_order_id as string | null]))
     const reversals: string[] = []
     for (const o of metronomeOrders) {
       if (!syncedMap.has(o.order_no)) continue          // 新单在下面按 DEAD 守卫处理,不在这里冲销
       if (!isDeadLifecycle(o.lifecycle_status)) continue
-      if (isDeadLifecycle(prevLifecycle.get(o.order_no))) continue   // 上轮已是死单 → 跳过
+      const bid = budgetIdOf.get(o.order_no)
+      const wasDead = isDeadLifecycle(prevLifecycle.get(o.order_no))
+      // 已是死单 且 预算也已作废(或压根没预算)→ 没什么可冲销的,跳过,避免每轮空跑
+      if (wasDead && !(bid && budgetAlive.get(bid))) continue
       try {
         const r = await reverseOrder(
           finance,

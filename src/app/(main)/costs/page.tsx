@@ -74,6 +74,9 @@ interface CostRecord {
   roll_count?: number | null
   delivery_date?: string | null // 送货日期（财务对账用，可自选；区别于录入时间）
   created_at: string
+  // 所挂订单是否已作废：预算单被软删后，挂在它上面的费用成了「孤儿」——
+  // 既进不了任何订单成本，也不会自己消失，此前页面照常显示订单号、看不出异常。
+  order_voided?: boolean
 }
 
 // 空数据占位（不再显示假数据）
@@ -166,7 +169,7 @@ export default function CostsPage() {
         const supabase = createClient()
         const { data, error } = await fetchAll<Record<string, unknown>>((from, to) => supabase
           .from('cost_items')
-          .select('*, budget_orders(order_no)')
+          .select('*, budget_orders(order_no, deleted_at)')
           .is('deleted_at', null)
           .order('created_at', { ascending: false }).order('id', { ascending: true })
           .range(from, to))
@@ -186,6 +189,7 @@ export default function CostsPage() {
               id: r.id as string,
               budget_order_id: r.budget_order_id as string | null,
               order_no: (r.budget_orders as Record<string, unknown>)?.order_no as string | undefined,
+              order_voided: !!(r.budget_orders as Record<string, unknown>)?.deleted_at,
               supplier: (r.supplier as string) || undefined,
               cost_type: r.cost_type as CostType,
               description: r.description as string,
@@ -614,6 +618,28 @@ export default function CostsPage() {
       <Header title="费用归集" subtitle="面料·辅料·加工费·货代·装柜·物流·佣金，所有实际费用归集到订单" />
 
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
+
+        {/* 孤儿费用警示:所挂预算单已作废,这些真实发生的供应商费用既进不了任何订单成本、
+            也不会自己消失。只提示不自动改 —— 改挂到哪张订单/是否核销要财务判断。 */}
+        {(() => {
+          const orphans = costItems.filter(c => c.order_voided)
+          if (orphans.length === 0) return null
+          const sum = Math.round(orphans.reduce((a, c) => a + (Number(c.amount) || 0), 0) * 100) / 100
+          const byOrder = [...new Set(orphans.map(c => c.order_no).filter(Boolean))]
+          return (
+            <div className="rounded-lg border border-orange-300 bg-orange-50 p-3 text-xs text-orange-900 space-y-1.5">
+              <div className="font-semibold">
+                ⚠️ {orphans.length} 行费用挂在【已作废】的订单上，合计 ¥{sum.toLocaleString()}
+              </div>
+              <div className="text-orange-800/90">
+                这些费用真实发生过，但所挂订单已作废 —— 它们既不计入任何订单成本、也不会自动消失。
+                请改挂到正确的订单，或确认核销。涉及订单：{byOrder.slice(0, 6).join('、')}
+                {byOrder.length > 6 ? ` 等 ${byOrder.length} 张` : ''}
+              </div>
+            </div>
+          )
+        })()}
+
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <Card>
