@@ -24,6 +24,7 @@ import {
   getPoAttachments, extractQuote, createBudgetFromQuote, BUCKET_LABELS,
   type PendingPO, type PoLine, type PriceHistoryRow, type PoAttachment, type QuoteResultUI, type QuoteCostLineUI,
 } from '@/lib/supabase/purchase-approvals'
+import { checkPoApproval } from '@/lib/financial/po-approval-gate'
 import { normalizeOrderRefs } from '@/lib/integration/order-refs'
 import { openAttachment } from '@/lib/supabase/storage'
 
@@ -57,6 +58,9 @@ export default function PurchaseApprovalsPage() {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})  // #2 按内部单号分组的折叠态(默认展开)
+  // 扣款显式声明:治「要扣加工厂的费用,圆圆没登记」——系统无从知道"本该有但没登记"的扣款,
+  // 只能强制财务表态。切换采购单时必须重置,否则会把上一单的声明带过来(等于没声明)。
+  const [deductionDeclared, setDeductionDeclared] = useState(false)
 
   // 附件 + 报价单识别(PO审批预算链 2026-07-11)
   const [atts, setAtts] = useState<PoAttachment[]>([])
@@ -122,6 +126,7 @@ export default function PurchaseApprovalsPage() {
 
   // 选中某采购单 → 载明细行 + 预算对照 + 附件
   useEffect(() => {
+    setDeductionDeclared(false)   // 换单必须重新声明
     if (!sel) { setLines([]); setBudget(null); setAtts([]); setLinkedOrders([]); return }
     setExpandedMat(null); setHistory({}); setQuotes({}); setQStyleIdx(0)
     ;(async () => {
@@ -292,6 +297,18 @@ export default function PurchaseApprovalsPage() {
   // 明细行合计(采购部提交的逐料金额之和)—— 展示在明细表底部,便于财务核对是否与单头金额一致
   const linesTotal = useMemo(() => r2(lines.reduce((s, l) => s + (Number(l.amount) || 0), 0)), [lines])
   const linesVsHeader = poTotal > 0 && linesTotal > 0 ? r2(linesTotal - poTotal) : 0
+
+  // ── 审批闸门(2026-08-03,老板决策:金额对不上绝对不能过)──────────────
+  // 此前差额只是一行 11px 小字,批准按钮不受约束 → 对不上也能一路批过
+  // (生产实证 PO-20260727-001 差 ¥156 已批准)。现改为硬闸门。
+  const gate = useMemo(() => checkPoApproval({
+    headerAmount: poTotal,
+    currency: sel?.currency,
+    lines: lines.map(l => ({ amount: l.amount, material_name: l.material_name })),
+    reconLines: null,
+    missingBudgetCount: budgetLoading ? 0 : missingBudget.length,
+    deductionDeclared,
+  }), [poTotal, sel?.currency, lines, budgetLoading, missingBudget.length, deductionDeclared])
 
   return (
     <div className="flex flex-col h-full">
@@ -674,10 +691,53 @@ export default function PurchaseApprovalsPage() {
               </Card>
 
               {/* 审批操作(预算闸门:关联订单须先有预算单才可批准;驳回不受限) */}
+              {/* ── 审批闸门:机器能核对的,一律卡死;人只处理机器判断不了的 ── */}
+              <Card className={gate.canApprove ? 'border-green-200' : 'border-red-300'}>
+                <CardContent className="p-3 space-y-2">
+                  <div className="flex items-center gap-2 text-sm font-semibold">
+                    {gate.canApprove
+                      ? <><ShieldCheck className="h-4 w-4 text-green-600" /><span className="text-green-700">校验全部通过，可以放行</span></>
+                      : <><Ban className="h-4 w-4 text-red-600" /><span className="text-red-700">有 {gate.blockers.length} 项没通过，不能批准</span></>}
+                  </div>
+                  <ul className="space-y-1.5">
+                    {gate.checks.map(c => (
+                      <li key={c.id} className="text-xs">
+                        <div className="flex items-start gap-2">
+                          <span className={c.passed ? 'text-green-600' : 'text-red-600'}>{c.passed ? '✓' : '✗'}</span>
+                          <div className="flex-1">
+                            <span className={c.passed ? 'text-muted-foreground' : 'font-medium text-red-800'}>{c.label}</span>
+                            {c.detail && <div className="mt-0.5 text-[11px] text-red-700 bg-red-50 border border-red-200 rounded p-1.5">{c.detail}</div>}
+                          </div>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {/* 扣款声明 —— 必须由财务主动勾,勾了就是签字 */}
+                  <label className="flex items-start gap-2 pt-1 border-t cursor-pointer">
+                    <input type="checkbox" className="mt-0.5" checked={deductionDeclared}
+                      onChange={e => setDeductionDeclared(e.target.checked)} />
+                    <span className="text-xs">
+                      我已核对本单的<span className="font-medium">扣款／折让</span>（如扣加工厂费用）：
+                      有则已全部登记在明细中，无则在此声明本单无扣款。
+                    </span>
+                  </label>
+                </CardContent>
+              </Card>
+
               <div className="flex items-center justify-end gap-2 pb-6">
-                {missingBudget.length > 0 && <span className="text-xs text-amber-700 mr-1">先生成预算单才能批准放行 →</span>}
-                <Button variant="outline" className="text-destructive" onClick={() => { setDecideDlg('rejected'); setNote('') }}><Ban className="h-4 w-4 mr-1" />驳回</Button>
-                <Button disabled={budgetLoading || missingBudget.length > 0} onClick={() => { setDecideDlg('approved'); setNote('') }}><ShieldCheck className="h-4 w-4 mr-1" />批准放行</Button>
+                {!gate.canApprove && (
+                  <span className="text-xs text-red-700 mr-1">
+                    {gate.blockers.some(b => b.id === 'lines_vs_header' || b.id === 'supplier_vs_po')
+                      ? '金额对不上必须改到一致，改不了就驳回 →'
+                      : '上方未通过项处理完才能放行 →'}
+                  </span>
+                )}
+                <Button variant="outline" className="text-destructive" onClick={() => {
+                  setDecideDlg('rejected')
+                  // 驳回原因预填闸门结论,省得财务再手打一遍(小吴那种单退回时能直接看到差在哪)
+                  setNote(gate.blockers.length ? gate.blockers.map(b => `${b.label}：${b.detail || '未通过'}`).join('\n') : '')
+                }}><Ban className="h-4 w-4 mr-1" />驳回</Button>
+                <Button disabled={budgetLoading || !gate.canApprove} onClick={() => { setDecideDlg('approved'); setNote('') }}><ShieldCheck className="h-4 w-4 mr-1" />批准放行</Button>
               </div>
             </div>
           )}
