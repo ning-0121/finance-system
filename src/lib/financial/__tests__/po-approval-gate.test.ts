@@ -108,3 +108,34 @@ describe('多项同时不通过 → 全部列出,让人一次改完', () => {
     )
   })
 })
+
+describe('事件驱动待扣款 —— 治「不知道有」(根治手段)', () => {
+  const ok = { currency: 'CNY', headerAmount: 100, lines: [{ amount: 100 }], deductionDeclared: true }
+
+  it('有未处理待扣款 → 拦住,并列出是什么事件引发的、扣多少', () => {
+    const r = checkPoApproval({
+      ...ok,
+      pendingDeductions: [
+        { amount: 1200, event_type: 'qc_failed', reason: '色差超标 300 件' },
+        { amount: 300, event_type: 'material_resupplied', reason: '补拉链' },
+      ],
+    })
+    expect(r.canApprove).toBe(false)
+    const c = r.checks.find(x => x.id === 'pending_deductions')!
+    expect(c.detail).toContain('2 笔')
+    expect(c.detail).toContain('1,500')          // 正是漏登的那 ¥1500 的形态
+    expect(c.detail).toContain('验货不合格')
+    expect(c.detail).toContain('补原辅料')
+    expect(c.detail).toContain('色差超标')
+  })
+
+  it('待扣款处理完(列表为空)→ 放行', () => {
+    expect(checkPoApproval({ ...ok, pendingDeductions: [] }).canApprove).toBe(true)
+  })
+
+  it('勾了「已核对扣款」也挡不住系统已知的待扣款 —— 人的声明不能覆盖事件事实', () => {
+    const r = checkPoApproval({ ...ok, deductionDeclared: true, pendingDeductions: [{ amount: 500, event_type: 'rework' }] })
+    expect(r.canApprove).toBe(false)
+    expect(r.blockers.some(b => b.id === 'pending_deductions')).toBe(true)
+  })
+})

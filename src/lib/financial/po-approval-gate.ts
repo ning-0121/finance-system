@@ -48,8 +48,14 @@ export interface GateInput {
   reconLines?: PoLineLike[] | null
   /** 关联订单中尚未建预算单的数量(既有闸门) */
   missingBudgetCount?: number
-  /** 财务是否已就"本单扣款"作出显式声明 */
+  /** 财务是否已就"本单扣款"作出显式声明(过渡手段,防"忘了填") */
   deductionDeclared?: boolean
+  /**
+   * 该供应商/该单尚未处理的待扣款(supplier_deductions.status='pending')。
+   * 事件驱动:验货不合格/补料/返工发生时系统已自动建档 —— 这是防"不知道有"的根治手段,
+   * 比让人勾选强得多:系统【先于人】知道该扣钱。未处理完不许批准放行。
+   */
+  pendingDeductions?: { id?: string; amount?: number | string | null; reason?: string | null; event_type?: string | null }[]
   /**
    * 资料齐备校验开关。⚠️ 默认关闭:截至 2026-08-03 生产库中挂到采购单的附件为 0 份
    * (节拍器尚未按 purchase_order.approval_requested 的 attachments[] 契约推送),
@@ -130,8 +136,28 @@ export function checkPoApproval(input: GateInput): GateResult {
     })
   }
 
-  // ④ 扣款显式声明 —— 圆圆漏登记的那 ¥1500 这类
-  //    系统无从知道"本该有但没登记"的扣款,只能强制财务表态:有则须已在明细中体现,无则显式声明。
+  // ④-a 事件驱动待扣款 —— 治「不知道有」(根治手段)
+  //     验货不合格/补料/返工发生时,系统已自动建了待扣款档。这里未处理完就不许放行,
+  //     所以不再依赖任何人"记得"——系统先于人知道该扣钱。
+  const pend = input.pendingDeductions || []
+  if (pend.length > 0) {
+    const sum = r2(pend.reduce((s, d) => s + num(d.amount), 0))
+    const evLabel: Record<string, string> = { qc_failed: '验货不合格', material_resupplied: '补原辅料', rework: '返工', manual: '手工登记' }
+    checks.push({
+      id: 'pending_deductions',
+      label: '待扣款已处理',
+      passed: false,
+      detail: `本供应商/本单还有 ${pend.length} 笔待扣款未处理，合计 ${money(sum)}：`
+        + pend.slice(0, 5).map(d => `${evLabel[String(d.event_type)] || '事件'} ${money(num(d.amount))}${d.reason ? `（${d.reason}）` : ''}`).join('；')
+        + `。请在对账中扣除，或经审批豁免后再放行。`,
+      blocking: true,
+    })
+  }
+
+  // ④-b 扣款显式声明 —— 治「忘了填」(过渡手段)
+  //     系统无从知道未被任何事件覆盖的扣款,只能强制财务表态。
+  //     待 qc.failed / material.resupplied / rework 三个事件在节拍器侧落地后,
+  //     本项可弱化为提示,由 ④-a 承担主要防线。
   checks.push({
     id: 'deduction_declared',
     label: '已核对扣款项（有则已入明细 / 无则声明）',

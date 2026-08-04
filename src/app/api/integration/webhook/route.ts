@@ -208,6 +208,16 @@ async function handleWebhookEvent(payload: WebhookPayload) {
 
     // 采购审批撤销(2026-07-09):节拍器删单/取消单时,对其下"待审"采购单发本事件 →
     // 财务把该单移出「采购审批」队列(soft-delete),否则订单没了、审批还挂着。
+    // 事件驱动待扣款(2026-08-03):工厂扣款必由上游事件引发(验货不合格/补料/返工)。
+    // 事件一到就建「待扣款」,对账/付款时未处理即卡住 —— 让"忘记登记扣款"结构上不可能。
+    case 'qc.failed':
+    case 'material.resupplied':
+    case 'rework.recorded':
+      return handleDeductionEvent(payload.data as Record<string, unknown>, payload.event, payload.request_id)
+
+    case 'deduction.cancelled':
+      return handleDeductionCancelled(payload.data as Record<string, unknown>)
+
     case 'purchase_order.approval_cancelled':
       return handlePurchaseOrderApprovalCancelled(payload.data as Record<string, unknown>)
 
@@ -958,6 +968,70 @@ async function handleOrderStatusChange(order: SyncedOrder, event: string) {
 // 此前只在本文件内联,导致走定时同步刷成「已取消」的单不会级联作废(生产实证 1022978)。
 async function handleOrderReversal(order: SyncedOrder, event: string) {
   return reverseOrder(createServiceClient(), order, event)
+}
+
+// --- 事件驱动待扣款(2026-08-03)---
+// 老板洞察:工厂扣款一定由上游事件引发(验货不合格/补原辅料/返工),
+// 所以不能靠人"记得登记",而要由事件自动生成待扣款、再由闸门卡住付款。
+// ⚠️ 只建【待处理】记录,金额是节拍器给的建议值 —— 实际扣多少、扣不扣,
+//    必须财务在 UI 确认(铁律:系统不得自主核销财务事项)。
+const DEDUCTION_EVENT_MAP: Record<string, string> = {
+  'qc.failed': 'qc_failed',
+  'material.resupplied': 'material_resupplied',
+  'rework.recorded': 'rework',
+}
+
+async function handleDeductionEvent(data: Record<string, unknown>, event: string, requestId: string) {
+  const supabase = createServiceClient()
+  const supplierName = String(data.supplier_name || '').trim()
+  if (!supplierName) throw new Error(`${event} 缺少 supplier_name —— 不知道扣谁的钱`)
+  // 责任方不是供应商时不建扣款(如客户改单导致的补料,不该由工厂承担)
+  const liable = String(data.liable_party || 'supplier').toLowerCase()
+  if (liable !== 'supplier' && liable !== 'factory') {
+    return { action: 'ignored', reason: `责任方=${liable},非供应商承担,不建待扣款`, event }
+  }
+  const amount = Number(data.amount)
+  if (!(amount >= 0)) throw new Error(`${event} 的 amount 无效(${data.amount})`)
+
+  const row = {
+    source_ref: requestId,
+    event_type: DEDUCTION_EVENT_MAP[event] || 'manual',
+    event_ref: (data.event_ref as string) ?? (data.id as string) ?? null,
+    occurred_at: (data.occurred_at as string) ?? null,
+    supplier_name: supplierName,
+    qimo_order_id: (data.qimo_order_id as string) ?? (data.order_id as string) ?? null,
+    order_no: (data.order_no as string) ?? null,
+    internal_order_no: (data.internal_order_no as string) ?? null,
+    purchase_order_no: (data.purchase_order_no as string) ?? (data.po_no as string) ?? null,
+    amount,
+    currency: (data.currency as string) || 'CNY',
+    reason: (data.reason as string) ?? null,
+    detail: (data.detail as Record<string, unknown>) ?? null,
+    status: 'pending',
+  }
+  // source_ref 唯一 → 重投不重复建
+  const { data: ins, error } = await supabase.from('supplier_deductions')
+    .upsert(row as never, { onConflict: 'source_ref', ignoreDuplicates: true })
+    .select('id').maybeSingle()
+  if (error) throw new Error(`待扣款写入失败: ${error.message}`)
+  return {
+    action: ins ? 'deduction_created' : 'already_exists',
+    event, supplier: supplierName, amount, deduction_id: ins?.id ?? null,
+  }
+}
+
+/** 上游事件撤销(误报/复检合格)→ 待扣款置 cancelled。已处理(applied/waived)的不动,留给财务人工红冲。 */
+async function handleDeductionCancelled(data: Record<string, unknown>) {
+  const supabase = createServiceClient()
+  const ref = String(data.event_ref || data.source_ref || data.id || '')
+  if (!ref) throw new Error('deduction.cancelled 缺少 event_ref/source_ref')
+  const { data: hit, error } = await supabase.from('supplier_deductions')
+    .update({ status: 'cancelled', notes: `上游事件撤销(${(data.reason as string) || '未注明'})`, updated_at: new Date().toISOString() })
+    .or(`event_ref.eq.${ref},source_ref.eq.${ref}`)
+    .eq('status', 'pending').is('deleted_at', null)
+    .select('id')
+  if (error) throw new Error(`待扣款撤销失败: ${error.message}`)
+  return { action: 'deduction_cancelled', matched: (hit || []).length, event_ref: ref }
 }
 
 // --- 采购对账付款申请入账(2026-07-11 P2 财务侧)---
