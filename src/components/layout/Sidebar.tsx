@@ -104,7 +104,7 @@ const navGroups: NavGroup[] = [
   {
     key: 'master', name: '档案与主数据', icon: Boxes,
     items: [
-      { name: '客户画像', href: '/profiles/customers', icon: Users },
+      { name: '客户财务档案', href: '/profiles/customers', icon: Users },
       { name: '供应商画像', href: '/profiles/suppliers', icon: Boxes },
       { name: '收款信息维护', href: '/profiles/bank-info', icon: IdCard },
       { name: '工资条发放', href: '/payroll', icon: Users },
