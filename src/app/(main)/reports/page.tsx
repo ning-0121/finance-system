@@ -3,9 +3,16 @@
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent } from '@/components/ui/card'
 import Link from 'next/link'
-import { Factory, Users, UserCheck, FileText, ArrowRight, TrendingUp } from 'lucide-react'
+import { Factory, Users, UserCheck, FileText, ArrowRight, TrendingUp , BarChart3 } from 'lucide-react'
 
 const reports = [
+  {
+    title: '经营报表（月 / 季 / 年）',
+    description: '按周期看收入、成本、利润、毛利率、订单数与件数，含环比、成本结构与单件成本基准',
+    href: '/reports/operating',
+    icon: BarChart3,
+    color: 'bg-indigo-50 text-indigo-600',
+  },
   {
     title: '订单实际毛利表',
     description: '按实际收款与费用归集计算单笔订单毛利（区别于预算订单成本核算）',

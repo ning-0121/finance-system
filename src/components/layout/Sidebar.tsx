@@ -82,6 +82,7 @@ const navGroups: NavGroup[] = [
     key: 'report', name: '报表与分析', icon: BarChart3,
     items: [
       { name: '汇总报表', href: '/reports', icon: ScrollText },
+      { name: '经营报表（月/季/年）', href: '/reports/operating', icon: BarChart3 },
       { name: '老板驾驶舱', href: '/dashboard/boss', icon: Gauge },
       { name: '财务驾驶舱', href: '/analytics', icon: BarChart3 },
       { name: '利润控制中心', href: '/profit-control', icon: TrendingUp },
