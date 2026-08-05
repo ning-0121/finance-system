@@ -14,7 +14,9 @@ import { ArrowLeft, Loader2, Download, ExternalLink } from 'lucide-react'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
-import { summarizeCustomers, type RawOrder } from '@/lib/financial/customer-summary'
+import { summarizeCustomers } from '@/lib/financial/customer-summary'
+import type { RawOrderWithItems } from '@/lib/financial/operating-report'
+import { buildBenchmark, BENCHMARK_GROUPS, MIN_SAMPLES } from '@/lib/financial/cost-benchmark'
 import { recentPeriods, ALL_TIME, type Granularity, type PeriodRange } from '@/lib/financial/period'
 
 const GRANS: { key: Granularity; label: string }[] = [
@@ -26,7 +28,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ name:
   const name = decodeURIComponent(raw)
   const sp = useSearchParams()
 
-  const [orders, setOrders] = useState<RawOrder[]>([])
+  const [orders, setOrders] = useState<RawOrderWithItems[]>([])
   const [qtyMap, setQtyMap] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [gran, setGran] = useState<Granularity>((sp.get('g') as Granularity) || 'month')
@@ -35,7 +37,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ name:
   useEffect(() => {
     async function load() {
       try {
-        setOrders((await getBudgetOrders()) as unknown as RawOrder[])
+        setOrders((await getBudgetOrders()) as unknown as RawOrderWithItems[])
         const sb = createClient()
         const { data } = await fetchAll<{ budget_order_id: string; quantity: number | null }>((from, to) =>
           sb.from('synced_orders').select('budget_order_id, quantity')
@@ -138,6 +140,63 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ name:
                 其金额<strong>未计入</strong>上方合计（件数与订单数已计）。下表中以「缺汇率」标出。
               </div>
             )}
+
+            {/* 成本对比:把该客户的单件成本与全场同期基准比,规则可解释、可追到单 */}
+            {(() => {
+              const stats = buildBenchmark(orders, period, quantityOf)
+              const mine = buildBenchmark(orders, period, quantityOf, { customer: name })
+              const rows = BENCHMARK_GROUPS.map(g => {
+                const all = stats.find(s => s.group === g.key)!
+                const me = mine.find(s => s.group === g.key)!
+                if (me.n === 0) return null
+                // 该客户的单件成本用中位数代表(与基准同口径,避免大单主导)
+                const devPct = all.median > 0 ? Math.round((me.median - all.median) / all.median * 1000) / 10 : 0
+                const iqr = Math.max(all.p75 - all.p25, all.median * 0.05)
+                const diff = me.median - all.median
+                const sev = !all.reliable ? 'unknown'
+                  : diff > iqr * 1.5 ? 'high' : diff > iqr * 0.75 ? 'watch'
+                  : diff < -iqr * 0.75 ? 'low' : 'normal'
+                return { key: g.key, label: g.label, mine: me.median, base: all.median, devPct, sev, n: me.n, baseN: all.n }
+              }).filter(Boolean) as Array<{ key: string; label: string; mine: number; base: number; devPct: number; sev: string; n: number; baseN: number }>
+              if (rows.length === 0) return null
+              const badge: Record<string, { t: string; c: string }> = {
+                high:    { t: '明显偏高', c: 'bg-red-100 text-red-700' },
+                watch:   { t: '略高', c: 'bg-amber-100 text-amber-700' },
+                normal:  { t: '正常区间', c: 'bg-green-100 text-green-700' },
+                low:     { t: '低于同行', c: 'bg-blue-100 text-blue-700' },
+                unknown: { t: '样本不足', c: 'bg-muted text-muted-foreground' },
+              }
+              return (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base">成本对比（单件）</CardTitle>
+                    <p className="text-[11px] text-muted-foreground">
+                      把该客户的单件成本与<strong>同期全部客户</strong>的中位数比。单件化才有可比性；
+                      用中位数而非平均数，避免个别异常单带偏。这是规则计算，不是 AI 判断 —— 每个数都能追到具体订单。
+                    </p>
+                  </CardHeader>
+                  <CardContent className="p-4 space-y-2.5">
+                    {rows.map(r => (
+                      <div key={r.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                        <span className="w-24 shrink-0 text-muted-foreground">{r.label}</span>
+                        <span className="tabular-nums font-semibold w-24">¥{r.mine}<span className="text-xs font-normal text-muted-foreground">/件</span></span>
+                        <span className="text-xs text-muted-foreground w-32">全场中位 ¥{r.base}/件</span>
+                        <span className={`tabular-nums text-xs w-16 ${r.devPct > 0 ? 'text-red-600' : r.devPct < 0 ? 'text-green-600' : ''}`}>
+                          {r.devPct > 0 ? '+' : ''}{r.devPct}%
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${badge[r.sev].c}`}>{badge[r.sev].t}</span>
+                        <span className="text-[11px] text-muted-foreground ml-auto">本客户 {r.n} 单 / 基准 {r.baseN} 单</span>
+                      </div>
+                    ))}
+                    {rows.some(r => r.sev === 'unknown') && (
+                      <p className="text-[11px] text-amber-700 pt-1 border-t">
+                        基准样本少于 {MIN_SAMPLES} 单，结论仅供参考，不足以据此调价。
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )
+            })()}
 
             <Card>
               <CardHeader className="pb-2">
