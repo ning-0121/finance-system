@@ -12,13 +12,18 @@ import { Loader2, Download, ArrowLeft, TrendingUp, TrendingDown } from 'lucide-r
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
-import { metricsFor, seriesFor, changePct, type RawOrderWithItems } from '@/lib/financial/operating-report'
+import { seriesFor, changePct, type RawOrderWithItems, type Scope } from '@/lib/financial/operating-report'
 import { buildBenchmark } from '@/lib/financial/cost-benchmark'
 import { recentPeriods, type Granularity } from '@/lib/financial/period'
 import { COST_BUCKETS } from '@/lib/financial/cost-breakdown'
 
 const GRANS: { key: Granularity; label: string }[] = [
-  { key: 'month', label: '按月' }, { key: 'quarter', label: '按季' }, { key: 'year', label: '按年' },
+  { key: 'month', label: '按月' }, { key: 'quarter', label: '按季' },
+  { key: 'lunar_year', label: '按农历年' }, { key: 'year', label: '按自然年' },
+]
+const SCOPES: { key: Scope; label: string; hint: string }[] = [
+  { key: 'approved', label: '已审核口径', hint: '只算已通过/已关闭 —— 与 KPI、总账同源，可用于对账' },
+  { key: 'all', label: '全部订单口径', hint: '含草稿与待审 —— 能看真实接单节奏，但价格成本未经财务核过，仅供看趋势' },
 ]
 const yuan = (n: number) => `¥${Math.round(n).toLocaleString()}`
 
@@ -37,6 +42,7 @@ export default function OperatingReportPage() {
   const [qtyMap, setQtyMap] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [gran, setGran] = useState<Granularity>('month')
+  const [scope, setScope] = useState<Scope>('approved')
 
   useEffect(() => {
     async function load() {
@@ -57,10 +63,10 @@ export default function OperatingReportPage() {
 
   const quantityOf = useCallback((id: string) => qtyMap[id] || 0, [qtyMap])
   const periods = useMemo(
-    () => recentPeriods(gran, gran === 'year' ? 4 : gran === 'quarter' ? 8 : 12),
+    () => recentPeriods(gran, gran === 'year' || gran === 'lunar_year' ? 4 : gran === 'quarter' ? 8 : 12),
     [gran])
   // recentPeriods 最新在前;趋势表按时间正序更好读
-  const series = useMemo(() => seriesFor(orders, [...periods].reverse(), quantityOf), [orders, periods, quantityOf])
+  const series = useMemo(() => seriesFor(orders, [...periods].reverse(), quantityOf, scope), [orders, periods, quantityOf, scope])
   const cur = series[series.length - 1]
   const prev = series[series.length - 2]
   const bench = useMemo(
@@ -68,15 +74,19 @@ export default function OperatingReportPage() {
     [orders, periods, quantityOf])
 
   function exportCsv() {
-    const head = ['周期', '订单数', '件数', '客户数', '收入(CNY)', '成本(CNY)', '利润(CNY)', '毛利率(%)', '单件收入', '单件成本', '缺汇率未计入']
+    const head = ['周期', '订单数', '件数', '客户数', '收入(CNY)', '成本(CNY)', '利润(CNY)', '毛利率(%)',
+      '单件收入', '单件成本', '缺汇率未计入', '有收无本', '有本无收', '无件数',
+      '干净口径单数', '干净口径收入', '干净口径利润', '干净口径毛利率(%)']
     const rows = series.map(m => [m.period.label, m.orderCount, m.quantity, m.customerCount,
-      m.revenueCny, m.costCny, m.profitCny, m.marginPct, m.revenuePerPc, m.costPerPc, m.excludedMissingRate])
+      m.revenueCny, m.costCny, m.profitCny, m.marginPct, m.revenuePerPc, m.costPerPc, m.excludedMissingRate,
+      m.noCostCount, m.noRevenueCount, m.noQuantityCount,
+      m.cleanOrderCount, m.cleanRevenueCny, m.cleanProfitCny, m.cleanMarginPct])
     const csv = [head, ...rows].map(r => r.map(v => {
       const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }).join(',')).join('\n')
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' }))
-    a.download = `经营报表_${GRANS.find(g => g.key === gran)?.label}_${cur?.period.label || ''}.csv`
+    a.download = `经营报表_${SCOPES.find(x => x.key === scope)?.label}_${GRANS.find(g => g.key === gran)?.label}_${cur?.period.label || ''}.csv`
     a.click()
   }
 
@@ -106,6 +116,26 @@ export default function OperatingReportPage() {
           </Button>
         </div>
 
+        {/* 口径切换 —— 两个口径差异极大(当前 38 张 vs 581 张),必须让人清楚自己在看哪个 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-lg border overflow-hidden">
+            {SCOPES.map(sc => (
+              <button key={sc.key} onClick={() => setScope(sc.key)} title={sc.hint}
+                className={`px-3 py-1.5 text-sm transition-colors ${scope === sc.key ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-muted'}`}>
+                {sc.label}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-muted-foreground">{SCOPES.find(sc => sc.key === scope)?.hint}</span>
+        </div>
+
+        {scope === 'all' && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+            ⚠️ 当前为<strong>全部订单口径</strong>，含草稿与待审单。这些单的价格与成本<strong>尚未经财务核过</strong>，
+            金额可能偏高或偏低。<strong>只可用于看经营趋势，不可用于对账、报税或对外披露。</strong>
+          </div>
+        )}
+
         {/* 本期 KPI + 环比 */}
         <div>
           <p className="text-sm text-muted-foreground mb-2">
@@ -134,6 +164,53 @@ export default function OperatingReportPage() {
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
             本期有 <strong>{cur.excludedMissingRate}</strong> 张外币订单缺结汇汇率，金额未计入 —— 补汇率后数字才完整。
           </div>
+        )}
+
+        {/* 数据完整度 —— 不完整的单会同时往两个方向污染利润率,必须显式暴露 */}
+        {cur && (cur.noCostCount > 0 || cur.noRevenueCount > 0 || cur.noQuantityCount > 0 || cur.excludedMissingRate > 0) && (
+          <Card className="border-amber-200">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">本期数据完整度</CardTitle>
+              <p className="text-[11px] text-muted-foreground">
+                下列订单的数据不全，会让毛利率失真。「干净口径」= 只算既有收入又有成本的单，更接近真实经营水平。
+              </p>
+            </CardHeader>
+            <CardContent className="p-4 space-y-3">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+                <div className="p-3 rounded-lg bg-muted/50">
+                  <p className="text-xs text-muted-foreground">有收入无成本</p>
+                  <p className="text-lg font-bold tabular-nums">{cur.noCostCount} <span className="text-xs font-normal">张</span></p>
+                  <p className="text-[11px] text-muted-foreground">利润率虚高</p>
+                </div>
+                <div className="p-3 rounded-lg bg-muted/50">
+                  <p className="text-xs text-muted-foreground">有成本无收入</p>
+                  <p className="text-lg font-bold tabular-nums">{cur.noRevenueCount} <span className="text-xs font-normal">张</span></p>
+                  <p className="text-[11px] text-muted-foreground">拉低利润率</p>
+                </div>
+                <div className="p-3 rounded-lg bg-muted/50">
+                  <p className="text-xs text-muted-foreground">取不到件数</p>
+                  <p className="text-lg font-bold tabular-nums">{cur.noQuantityCount} <span className="text-xs font-normal">张</span></p>
+                  <p className="text-[11px] text-muted-foreground">件数合计偏低</p>
+                </div>
+                <div className="p-3 rounded-lg bg-muted/50">
+                  <p className="text-xs text-muted-foreground">外币缺汇率</p>
+                  <p className="text-lg font-bold tabular-nums">{cur.excludedMissingRate} <span className="text-xs font-normal">张</span></p>
+                  <p className="text-[11px] text-muted-foreground">金额未计入</p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-1 pt-2 border-t text-sm">
+                <span className="text-muted-foreground text-xs">干净口径（{cur.cleanOrderCount} 张完整单）：</span>
+                <span className="tabular-nums">收入 {yuan(cur.cleanRevenueCny)}</span>
+                <span className="tabular-nums">利润 {yuan(cur.cleanProfitCny)}</span>
+                <span className={`tabular-nums font-semibold ${cur.cleanMarginPct < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                  毛利率 {cur.cleanMarginPct}%
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  （全口径毛利率 {cur.marginPct}%，差 {Math.round((cur.cleanMarginPct - cur.marginPct) * 10) / 10} 个百分点）
+                </span>
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {/* 趋势 */}

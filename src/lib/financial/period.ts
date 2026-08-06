@@ -7,7 +7,19 @@
  */
 import { bizToday } from '@/lib/biz-date'
 
-export type Granularity = 'month' | 'quarter' | 'year'
+export type Granularity = 'month' | 'quarter' | 'year' | 'lunar_year'
+
+/**
+ * 农历新年(春节)的公历日期。
+ * 老板口径(2026-08-04):经营年度从春节算起 —— 春节前的单属于上一年的生意,
+ * 按自然年切会把年前那批单算进新年度,与实际经营节奏不符。
+ * 表驱动而非算法推导:农历转换规则复杂,查表在可预见年份内准确且可核对。
+ */
+export const LUNAR_NEW_YEAR: Record<number, string> = {
+  2022: '2022-02-01', 2023: '2023-01-22', 2024: '2024-02-10', 2025: '2025-01-29',
+  2026: '2026-02-17', 2027: '2027-02-06', 2028: '2028-01-26', 2029: '2029-02-13',
+  2030: '2030-02-03',
+}
 
 export interface PeriodRange {
   key: string        // 排序/去重键:2026-07 / 2026-Q3 / 2026
@@ -39,6 +51,28 @@ export function quarterRange(y: number, q: number): PeriodRange {
   }
 }
 
+/**
+ * 农历年度:自当年春节起,至次年春节前一日止。
+ * 标签写「2026 农历年度」并附起止日,避免与自然年混淆。
+ */
+export function lunarYearRange(y: number): PeriodRange {
+  const start = LUNAR_NEW_YEAR[y]
+  const nextRaw = LUNAR_NEW_YEAR[y + 1]
+  if (!start) return yearRange(y)          // 超出查表范围时退回自然年,不猜
+  let end: string
+  if (nextRaw) {
+    const d = new Date(`${nextRaw}T00:00:00Z`)
+    d.setUTCDate(d.getUTCDate() - 1)
+    end = d.toISOString().slice(0, 10)
+  } else {
+    end = `${y + 1}-01-31`                 // 无下一年数据时给个保守上界
+  }
+  return {
+    key: `L${y}`, label: `${y} 农历年度（${start} 起）`,
+    start, end, granularity: 'lunar_year',
+  }
+}
+
 export function yearRange(y: number): PeriodRange {
   return { key: `${y}`, label: `${y}年`, start: `${y}-01-01`, end: `${y}-12-31`, granularity: 'year' }
 }
@@ -47,6 +81,11 @@ export function yearRange(y: number): PeriodRange {
 export function periodOf(granularity: Granularity, date?: string): PeriodRange {
   const d = date || bizToday()
   const y = Number(d.slice(0, 4)), m1 = Number(d.slice(5, 7))
+  if (granularity === 'lunar_year') {
+    // 春节前的日期属于【上一个】农历年度
+    const cny = LUNAR_NEW_YEAR[y]
+    return lunarYearRange(cny && d >= cny ? y : y - 1)
+  }
   if (granularity === 'year') return yearRange(y)
   if (granularity === 'quarter') return quarterRange(y, Math.floor((m1 - 1) / 3) + 1)
   return monthRange(y, m1)
@@ -60,7 +99,10 @@ export function recentPeriods(granularity: Granularity, n: number, date?: string
   const cur = periodOf(granularity, date)
   const y = Number(cur.key.slice(0, 4))
   const out: PeriodRange[] = []
-  if (granularity === 'year') {
+  if (granularity === 'lunar_year') {
+    const base = Number(cur.key.slice(1))
+    for (let i = 0; i < n; i++) out.push(lunarYearRange(base - i))
+  } else if (granularity === 'year') {
     for (let i = 0; i < n; i++) out.push(yearRange(y - i))
   } else if (granularity === 'quarter') {
     let q = Number(cur.key.slice(-1)), yy = y
