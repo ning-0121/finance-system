@@ -154,3 +154,70 @@ describe('偏离预警', () => {
     expect(d.note).toContain('不足以形成基准')
   })
 })
+
+describe('成本录入完整度 —— 治「毛利率虚高」', () => {
+  const jul = monthRange(2026, 7)
+  const mk = (id: string, rev: number, cost: number, buckets: Record<string, number>) =>
+    o({ id, total_revenue: rev, total_cost: cost, ...cb(buckets) })
+
+  it('未录成本 → none;有料工费但缺出运 → minimal;≥5桶含出运 → full', () => {
+    const m = metricsFor([
+      mk('n', 1000, 500, {}),
+      mk('mi', 1000, 500, { fabric: 300, accessory: 100, processing: 100 }),
+      mk('fu', 1000, 500, { fabric: 200, accessory: 100, processing: 100, forwarder: 50, container: 50 }),
+    ], jul)
+    expect(m.byCompleteness.none.n).toBe(1)
+    expect(m.byCompleteness.minimal.n).toBe(1)
+    expect(m.byCompleteness.full.n).toBe(1)
+  })
+
+  it('可信毛利率只算成本齐备的单 —— 这是本次修正的核心', () => {
+    const m = metricsFor([
+      // 成本齐备:毛利率 20%
+      mk('a', 1000, 800, { fabric: 400, accessory: 100, processing: 200, forwarder: 50, container: 50 }),
+      // 未录成本:毛利率 90%,会把全口径拉高
+      mk('b', 1000, 100, {}),
+    ], jul)
+    expect(m.marginPct).toBe(55)              // 全口径被虚高单拉到 55%
+    expect(m.trustedMarginPct).toBe(20)       // 可信口径仍是 20%
+    expect(m.trustedOrderCount).toBe(1)
+  })
+
+  it('缺出运成本单独归档 —— 生产实证这类毛利率 47% vs 有出运的 18%', () => {
+    const m = metricsFor([mk('x', 1000, 500, { fabric: 300, accessory: 100, processing: 100 })], jul)
+    expect(m.byCompleteness.minimal.n).toBe(1)
+    expect(m.byCompleteness.full.n).toBe(0)
+    expect(m.trustedOrderCount).toBe(0)       // 没有可信样本时不给可信毛利率
+    expect(m.trustedMarginPct).toBe(0)
+  })
+
+  it('残单(有收无本/有本无收)不进完整度分层,免得污染分母', () => {
+    const m = metricsFor([
+      o({ id: 'nc', total_revenue: 1000, total_cost: 0 }),
+      o({ id: 'nr', total_revenue: 0, total_cost: 500 }),
+    ], jul)
+    const total = Object.values(m.byCompleteness).reduce((a, v) => a + v.n, 0)
+    expect(total).toBe(0)
+    expect(m.noCostCount).toBe(1)
+    expect(m.noRevenueCount).toBe(1)
+  })
+})
+
+describe('口径与测试单', () => {
+  const jul = monthRange(2026, 7)
+  it('已审核口径不含草稿;全口径含草稿但不含驳回', () => {
+    const list = [o({ id: '1', status: 'approved', total_revenue: 100 }),
+                  o({ id: '2', status: 'draft', total_revenue: 100 }),
+                  o({ id: '3', status: 'rejected', total_revenue: 100 })]
+    expect(metricsFor(list, jul, () => 0, 'approved').orderCount).toBe(1)
+    expect(metricsFor(list, jul, () => 0, 'all').orderCount).toBe(2)
+  })
+  it('测试单在任何口径都不计入', () => {
+    const list = [o({ id: '1', order_no: 'CPX-123', total_revenue: 9999 }),
+                  o({ id: '2', order_no: 'W1D-9', total_revenue: 9999 }),
+                  o({ id: '3', customer: { company: '测试' }, total_revenue: 9999 }),
+                  o({ id: '4', order_no: 'BO-1', total_revenue: 100 })]
+    expect(metricsFor(list, jul, () => 0, 'all').orderCount).toBe(1)
+    expect(metricsFor(list, jul, () => 0, 'all').revenueCny).toBe(100)
+  })
+})

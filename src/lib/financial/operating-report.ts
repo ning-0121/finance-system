@@ -13,7 +13,7 @@
 import { computeOrderProfit } from './order-profit'
 import { inPeriod, type PeriodRange } from './period'
 import { isCounted, type RawOrder } from './customer-summary'
-import { resolveBucketAmounts } from './cost-breakdown'
+import { resolveBucketAmounts, COST_BUCKETS } from './cost-breakdown'
 
 const num = (v: unknown) => Number(v) || 0
 const r2 = (v: number) => Math.round(v * 100) / 100
@@ -35,6 +35,39 @@ export type Scope = 'approved' | 'all'
 export function isJunkOrder(o: { order_no?: string | null; customer?: { company?: string | null } | null }): boolean {
   if (/^(CPX-|W1D-|TEST)/i.test(String(o?.order_no || ''))) return true
   return /测试|^test$/i.test(String(o?.customer?.company || '').trim())
+}
+
+/**
+ * 成本录入完整度 —— 2026-08-04 老板质疑"利润率太高"后加入。
+ *
+ * 生产实证:2026 农历年度全口径毛利率 32.22%,对服装外贸明显偏高。
+ * 按填写的成本桶数分层后,毛利率完美递减:
+ *   0 个桶(41张) 52.68% → 3 个 17.8% → 5 个 20.3% → 6 个(59张) 16.64%
+ * 更直接的一刀:没录出运成本(货代/装柜/物流)的 51 张毛利率 47.27%,
+ * 录了的 97 张只有 18.82%。
+ * 结论:高毛利率是【成本没录完】造成的假象,不是真实经营水平。
+ *
+ * 出运成本(货代/装柜/物流)是最常漏录的一块,且金额占比可观,
+ * 故单独作为完整度的硬指标。
+ */
+const SHIPPING_BUCKETS = ['forwarder', 'container', 'logistics'] as const
+
+export type CostCompleteness = 'full' | 'partial' | 'minimal' | 'none'
+
+export function costCompletenessOf(order: unknown): { level: CostCompleteness; filledBuckets: number; hasShipping: boolean } {
+  const rb = resolveBucketAmounts(order as Record<string, unknown>)
+  const filled = COST_BUCKETS.filter(b => num(rb.buckets[b.key]) > 0).length
+  const hasShipping = SHIPPING_BUCKETS.some(k => num(rb.buckets[k as never]) > 0)
+  let level: CostCompleteness
+  if (filled === 0) level = 'none'
+  else if (!hasShipping) level = 'minimal'      // 有料工费但没出运成本 —— 毛利率必然虚高
+  else if (filled >= 5) level = 'full'
+  else level = 'partial'
+  return { level, filledBuckets: filled, hasShipping }
+}
+
+export const COMPLETENESS_LABEL: Record<CostCompleteness, string> = {
+  full: '成本齐备', partial: '部分录入', minimal: '缺出运成本', none: '未录成本',
 }
 
 /** 该单是否计入指定口径 */
@@ -69,6 +102,13 @@ export interface PeriodMetrics {
   cleanProfitCny: number
   cleanMarginPct: number
   cleanOrderCount: number
+  /** 按成本录入完整度分层的收入/成本/毛利率 —— 用于揭示"高毛利率是成本没录完" */
+  byCompleteness: Record<CostCompleteness, { n: number; revenue: number; cost: number; marginPct: number }>
+  /** 可信毛利率:只算成本齐备(含出运成本)的单。这是最接近真实经营水平的数 */
+  trustedRevenueCny: number
+  trustedProfitCny: number
+  trustedMarginPct: number
+  trustedOrderCount: number
   /** 成本结构:各桶合计(CNY) */
   buckets: Record<string, number>
 }
@@ -95,6 +135,13 @@ export function metricsFor(
     revenuePerPc: 0, costPerPc: 0, excludedMissingRate: 0, buckets: {},
     noCostCount: 0, noRevenueCount: 0, noQuantityCount: 0,
     cleanRevenueCny: 0, cleanCostCny: 0, cleanProfitCny: 0, cleanMarginPct: 0, cleanOrderCount: 0,
+    byCompleteness: {
+      full: { n: 0, revenue: 0, cost: 0, marginPct: 0 },
+      partial: { n: 0, revenue: 0, cost: 0, marginPct: 0 },
+      minimal: { n: 0, revenue: 0, cost: 0, marginPct: 0 },
+      none: { n: 0, revenue: 0, cost: 0, marginPct: 0 },
+    },
+    trustedRevenueCny: 0, trustedProfitCny: 0, trustedMarginPct: 0, trustedOrderCount: 0,
   }
   const customers = new Set<string>()
 
@@ -125,6 +172,16 @@ export function metricsFor(
       m.cleanRevenueCny += calc.revenueCny
       m.cleanCostCny += cost
       m.cleanProfitCny += calc.profitCny
+
+      // 完整度分层(只对既有收入又有成本的单做,否则分母被残单污染)
+      const cc = costCompletenessOf(o)
+      const slot = m.byCompleteness[cc.level]
+      slot.n += 1; slot.revenue += calc.revenueCny; slot.cost += cost
+      if (cc.level === 'full') {
+        m.trustedOrderCount += 1
+        m.trustedRevenueCny += calc.revenueCny
+        m.trustedProfitCny += calc.profitCny
+      }
     }
 
     // 成本结构走公共实现(桶清单唯一定义,加桶自动跟上)
@@ -138,6 +195,13 @@ export function metricsFor(
   m.marginPct = m.revenueCny > 0 ? r2((m.profitCny / m.revenueCny) * 100) : 0
   m.cleanRevenueCny = r2(m.cleanRevenueCny); m.cleanCostCny = r2(m.cleanCostCny); m.cleanProfitCny = r2(m.cleanProfitCny)
   m.cleanMarginPct = m.cleanRevenueCny > 0 ? r2((m.cleanProfitCny / m.cleanRevenueCny) * 100) : 0
+  for (const k of Object.keys(m.byCompleteness) as CostCompleteness[]) {
+    const s2 = m.byCompleteness[k]
+    s2.revenue = r2(s2.revenue); s2.cost = r2(s2.cost)
+    s2.marginPct = s2.revenue > 0 ? r2(((s2.revenue - s2.cost) / s2.revenue) * 100) : 0
+  }
+  m.trustedRevenueCny = r2(m.trustedRevenueCny); m.trustedProfitCny = r2(m.trustedProfitCny)
+  m.trustedMarginPct = m.trustedRevenueCny > 0 ? r2((m.trustedProfitCny / m.trustedRevenueCny) * 100) : 0
   m.revenuePerPc = m.quantity > 0 ? r2(m.revenueCny / m.quantity) : 0
   m.costPerPc = m.quantity > 0 ? r2(m.costCny / m.quantity) : 0
   return m

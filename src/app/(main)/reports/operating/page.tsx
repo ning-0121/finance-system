@@ -12,7 +12,7 @@ import { Loader2, Download, ArrowLeft, TrendingUp, TrendingDown } from 'lucide-r
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
-import { seriesFor, changePct, type RawOrderWithItems, type Scope } from '@/lib/financial/operating-report'
+import { seriesFor, changePct, COMPLETENESS_LABEL, type RawOrderWithItems, type Scope, type CostCompleteness } from '@/lib/financial/operating-report'
 import { buildBenchmark } from '@/lib/financial/cost-benchmark'
 import { recentPeriods, type Granularity } from '@/lib/financial/period'
 import { COST_BUCKETS } from '@/lib/financial/cost-breakdown'
@@ -76,11 +76,13 @@ export default function OperatingReportPage() {
   function exportCsv() {
     const head = ['周期', '订单数', '件数', '客户数', '收入(CNY)', '成本(CNY)', '利润(CNY)', '毛利率(%)',
       '单件收入', '单件成本', '缺汇率未计入', '有收无本', '有本无收', '无件数',
-      '干净口径单数', '干净口径收入', '干净口径利润', '干净口径毛利率(%)']
+      '干净口径单数', '干净口径收入', '干净口径利润', '干净口径毛利率(%)',
+      '成本齐备单数', '成本齐备收入', '成本齐备利润', '成本齐备毛利率(%)']
     const rows = series.map(m => [m.period.label, m.orderCount, m.quantity, m.customerCount,
       m.revenueCny, m.costCny, m.profitCny, m.marginPct, m.revenuePerPc, m.costPerPc, m.excludedMissingRate,
       m.noCostCount, m.noRevenueCount, m.noQuantityCount,
-      m.cleanOrderCount, m.cleanRevenueCny, m.cleanProfitCny, m.cleanMarginPct])
+      m.cleanOrderCount, m.cleanRevenueCny, m.cleanProfitCny, m.cleanMarginPct,
+      m.trustedOrderCount, m.trustedRevenueCny, m.trustedProfitCny, m.trustedMarginPct])
     const csv = [head, ...rows].map(r => r.map(v => {
       const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }).join(',')).join('\n')
@@ -144,17 +146,20 @@ export default function OperatingReportPage() {
           </p>
           <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
             {[
-              { k: '收入 (CNY)', v: yuan(cur?.revenueCny || 0), d: changePct(cur?.revenueCny || 0, prev?.revenueCny) },
+              { k: '收入 (CNY)', v: yuan(cur?.revenueCny || 0), d: changePct(cur?.revenueCny || 0, prev?.revenueCny), sub: '' },
               { k: '成本 (CNY)', v: yuan(cur?.costCny || 0), d: changePct(cur?.costCny || 0, prev?.costCny) },
               { k: '利润 (CNY)', v: yuan(cur?.profitCny || 0), d: changePct(cur?.profitCny || 0, prev?.profitCny), hl: (cur?.profitCny || 0) < 0 },
-              { k: '毛利率', v: `${cur?.marginPct || 0}%`, d: null },
+              { k: '毛利率（成本齐备口径）', v: `${cur?.trustedMarginPct || 0}%`, d: null,
+                sub: `全口径 ${cur?.marginPct || 0}%` },
               { k: '订单数', v: String(cur?.orderCount || 0), d: changePct(cur?.orderCount || 0, prev?.orderCount) },
               { k: '件数', v: (cur?.quantity || 0).toLocaleString(), d: changePct(cur?.quantity || 0, prev?.quantity) },
             ].map(x => (
               <Card key={x.k}><CardContent className="p-4">
                 <p className="text-xs text-muted-foreground mb-1">{x.k}</p>
                 <p className={`text-xl font-bold tabular-nums ${x.hl ? 'text-red-600' : ''}`}>{x.v}</p>
-                <div className="mt-1"><Delta v={x.d} /></div>
+                {x.sub
+                  ? <p className="text-[11px] text-muted-foreground mt-1">{x.sub}</p>
+                  : <div className="mt-1"><Delta v={x.d} /></div>}
               </CardContent></Card>
             ))}
           </div>
@@ -213,6 +218,55 @@ export default function OperatingReportPage() {
           </Card>
         )}
 
+        {/* 成本录入完整度 —— 揭示「毛利率高是因为成本没录完」 */}
+        {cur && cur.cleanOrderCount > 0 && (
+          <Card className="border-amber-300">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">毛利率为什么会偏高：按成本录入完整度拆开看</CardTitle>
+              <p className="text-[11px] text-muted-foreground">
+                成本录得越全，毛利率越低。<strong>「成本齐备」= 填了 ≥5 个成本桶且含出运成本（货代/装柜/物流）</strong>，
+                这一档最接近真实经营水平；成本没录完的单会把整体毛利率拉高，属数据假象而非经营改善。
+              </p>
+            </CardHeader>
+            <CardContent className="p-0 overflow-x-auto">
+              <Table>
+                <TableHeader><TableRow>
+                  <TableHead>成本录入完整度</TableHead>
+                  <TableHead className="text-right">订单数</TableHead>
+                  <TableHead className="text-right">收入 (CNY)</TableHead>
+                  <TableHead className="text-right">成本 (CNY)</TableHead>
+                  <TableHead className="text-right">毛利率<span className="block text-[9px] normal-case">成本齐备口径</span></TableHead>
+                  <TableHead>可信度</TableHead>
+                </TableRow></TableHeader>
+                <TableBody>
+                  {(['full', 'partial', 'minimal', 'none'] as CostCompleteness[]).map(k => {
+                    const v = cur.byCompleteness[k]
+                    if (v.n === 0) return null
+                    return (
+                      <TableRow key={k} className={k === 'full' ? 'bg-green-50/50' : ''}>
+                        <TableCell className="text-sm font-medium">{COMPLETENESS_LABEL[k]}</TableCell>
+                        <TableCell className="text-right tabular-nums">{v.n}</TableCell>
+                        <TableCell className="text-right tabular-nums">{yuan(v.revenue)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{yuan(v.cost)}</TableCell>
+                        <TableCell className="text-right tabular-nums font-semibold">{v.marginPct}%</TableCell>
+                        <TableCell>
+                          {k === 'full'
+                            ? <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">可信</span>
+                            : k === 'none'
+                              ? <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">毛利率虚高，成本未录</span>
+                              : k === 'minimal'
+                                ? <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">缺出运成本，毛利率偏高</span>
+                                : <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">成本不全</span>}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
+
         {/* 趋势 */}
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-base">趋势</CardTitle></CardHeader>
@@ -238,7 +292,11 @@ export default function OperatingReportPage() {
                     <TableCell className="text-right tabular-nums">{m.revenueCny ? yuan(m.revenueCny) : '—'}</TableCell>
                     <TableCell className={`text-right tabular-nums font-medium ${m.profitCny < 0 ? 'text-red-600' : m.profitCny > 0 ? 'text-green-600' : ''}`}>
                       {m.profitCny ? yuan(m.profitCny) : '—'}</TableCell>
-                    <TableCell className="text-right tabular-nums text-sm">{m.revenueCny ? `${m.marginPct}%` : '—'}</TableCell>
+                    <TableCell className="text-right tabular-nums text-sm">
+                      {m.trustedOrderCount > 0
+                        ? <span title={`成本齐备 ${m.trustedOrderCount} 张；全口径 ${m.marginPct}%`}>{m.trustedMarginPct}%</span>
+                        : m.revenueCny ? <span className="text-muted-foreground" title="本期无成本齐备的订单，无法给出可信毛利率">—</span> : '—'}
+                    </TableCell>
                     <TableCell className="text-right tabular-nums text-sm">{m.revenuePerPc ? `¥${m.revenuePerPc}` : '—'}</TableCell>
                     <TableCell className="text-right tabular-nums text-sm">{m.costPerPc ? `¥${m.costPerPc}` : '—'}</TableCell>
                     <TableCell>
