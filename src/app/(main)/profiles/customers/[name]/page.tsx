@@ -14,6 +14,7 @@ import { ArrowLeft, Loader2, Download, ExternalLink } from 'lucide-react'
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
+import { getCostBreakdownMap, attachCostBreakdown } from '@/lib/supabase/cost-breakdown-map'
 import { summarizeCustomers } from '@/lib/financial/customer-summary'
 import type { RawOrderWithItems } from '@/lib/financial/operating-report'
 import { buildBenchmark, BENCHMARK_GROUPS, MIN_SAMPLES } from '@/lib/financial/cost-benchmark'
@@ -37,7 +38,9 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ name:
   useEffect(() => {
     async function load() {
       try {
-        setOrders((await getBudgetOrders()) as unknown as RawOrderWithItems[])
+        // 成本对比要读成本桶,而 getBudgetOrders 不返回 items —— 单独取回挂上(同经营报表)
+        const [base, cbMap] = await Promise.all([getBudgetOrders(), getCostBreakdownMap()])
+        setOrders(attachCostBreakdown(base as unknown as RawOrderWithItems[], cbMap))
         const sb = createClient()
         const { data } = await fetchAll<{ budget_order_id: string; quantity: number | null }>((from, to) =>
           sb.from('synced_orders').select('budget_order_id, quantity')

@@ -12,6 +12,7 @@ import { Loader2, Download, ArrowLeft, TrendingUp, TrendingDown } from 'lucide-r
 import { getBudgetOrders } from '@/lib/supabase/queries'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAll } from '@/lib/supabase/fetch-all'
+import { getCostBreakdownMap, attachCostBreakdown } from '@/lib/supabase/cost-breakdown-map'
 import { seriesFor, changePct, COMPLETENESS_LABEL, type RawOrderWithItems, type Scope, type CostCompleteness } from '@/lib/financial/operating-report'
 import { buildBenchmark } from '@/lib/financial/cost-benchmark'
 import { recentPeriods, type Granularity } from '@/lib/financial/period'
@@ -47,7 +48,11 @@ export default function OperatingReportPage() {
   useEffect(() => {
     async function load() {
       try {
-        setOrders((await getBudgetOrders()) as unknown as RawOrderWithItems[])
+        // ⚠️ getBudgetOrders 不返回 items(大 JSONB,全表拉会卡死主线程),
+        // 但成本结构/基准/完整度都要读成本桶 —— 必须单独取回挂上,
+        // 否则会静默退回旧标量列,算出来的成本三块全是错的(2026-08-06 自查发现)。
+        const [base, cbMap] = await Promise.all([getBudgetOrders(), getCostBreakdownMap()])
+        setOrders(attachCostBreakdown(base as unknown as RawOrderWithItems[], cbMap))
         const sb = createClient()
         const { data } = await fetchAll<{ budget_order_id: string; quantity: number | null }>((from, to) =>
           sb.from('synced_orders').select('budget_order_id, quantity')
