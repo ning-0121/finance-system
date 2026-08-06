@@ -10,9 +10,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { Search, Loader2, ChevronRight, Download } from 'lucide-react'
-import { getBudgetOrders } from '@/lib/supabase/queries'
-import { createClient } from '@/lib/supabase/client'
-import { fetchAll } from '@/lib/supabase/fetch-all'
+import { getOrderFinancials, toRawOrders, quantityMapOf } from '@/lib/supabase/order-financials'
 import { summarizeCustomers, totalOf, type CustomerSummary, type RawOrder } from '@/lib/financial/customer-summary'
 import { recentPeriods, ALL_TIME, type Granularity, type PeriodRange } from '@/lib/financial/period'
 
@@ -31,17 +29,12 @@ export default function CustomerProfilesPage() {
   useEffect(() => {
     async function load() {
       try {
-        const all = await getBudgetOrders()
-        setOrders(all as unknown as RawOrder[])
-        // 件数在 synced_orders 上(budget_orders 无数量列),按 budget_order_id 建索引
-        const sb = createClient()
-        const { data } = await fetchAll<{ budget_order_id: string; quantity: number | null }>((from, to) =>
-          sb.from('synced_orders').select('budget_order_id, quantity')
-            .not('budget_order_id', 'is', null).order('budget_order_id').range(from, to))
-        const m: Record<string, number> = {}
-        for (const s of data || []) if (s.budget_order_id) m[s.budget_order_id] = (m[s.budget_order_id] || 0) + (Number(s.quantity) || 0)
-        setQtyMap(m)
-      } catch { /* 静默失败会让页面显示空数据,故仅在此兜底,加载状态照常结束 */ }
+        // 改从视图 v_order_financials 取:件数、成本桶均已在库里算好,
+        // 不必再拉 budget_orders 全量 + 单独查 synced_orders 件数(原先两趟)。
+        const rows = await getOrderFinancials()
+        setOrders(toRawOrders(rows) as unknown as RawOrder[])
+        setQtyMap(quantityMapOf(rows))
+      } catch { /* 保持空态,不伪造数据 */ }
       setLoading(false)
     }
     load()

@@ -9,10 +9,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { Loader2, Download, ArrowLeft, TrendingUp, TrendingDown } from 'lucide-react'
-import { getBudgetOrders } from '@/lib/supabase/queries'
-import { createClient } from '@/lib/supabase/client'
-import { fetchAll } from '@/lib/supabase/fetch-all'
-import { getCostBreakdownMap, attachCostBreakdown } from '@/lib/supabase/cost-breakdown-map'
+import { getOrderFinancials, toRawOrders, quantityMapOf } from '@/lib/supabase/order-financials'
 import { seriesFor, changePct, COMPLETENESS_LABEL, type RawOrderWithItems, type Scope, type CostCompleteness } from '@/lib/financial/operating-report'
 import { buildBenchmark } from '@/lib/financial/cost-benchmark'
 import { recentPeriods, type Granularity } from '@/lib/financial/period'
@@ -48,18 +45,12 @@ export default function OperatingReportPage() {
   useEffect(() => {
     async function load() {
       try {
-        // ⚠️ getBudgetOrders 不返回 items(大 JSONB,全表拉会卡死主线程),
-        // 但成本结构/基准/完整度都要读成本桶 —— 必须单独取回挂上,
-        // 否则会静默退回旧标量列,算出来的成本三块全是错的(2026-08-06 自查发现)。
-        const [base, cbMap] = await Promise.all([getBudgetOrders(), getCostBreakdownMap()])
-        setOrders(attachCostBreakdown(base as unknown as RawOrderWithItems[], cbMap))
-        const sb = createClient()
-        const { data } = await fetchAll<{ budget_order_id: string; quantity: number | null }>((from, to) =>
-          sb.from('synced_orders').select('budget_order_id, quantity')
-            .not('budget_order_id', 'is', null).order('budget_order_id').range(from, to))
-        const m: Record<string, number> = {}
-        for (const s of data || []) if (s.budget_order_id) m[s.budget_order_id] = (m[s.budget_order_id] || 0) + (Number(s.quantity) || 0)
-        setQtyMap(m)
+        // 改从视图 v_order_financials 取(644 行/446KB,成本桶已在库里算好),
+        // 替代原先「拉 639 行 budget_orders 1.62MB + 再单独取一次 items」的两趟前端聚合。
+        // 口径未变:视图已与 TS 逻辑做过 641 单逐单交叉校验(收入/成本桶/完整度/测试单 零差异)。
+        const rows = await getOrderFinancials()
+        setOrders(toRawOrders(rows) as unknown as RawOrderWithItems[])
+        setQtyMap(quantityMapOf(rows))
       } catch { /* 保持空态,不伪造数据 */ }
       setLoading(false)
     }

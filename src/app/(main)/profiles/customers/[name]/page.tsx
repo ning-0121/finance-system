@@ -11,10 +11,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { ArrowLeft, Loader2, Download, ExternalLink } from 'lucide-react'
-import { getBudgetOrders } from '@/lib/supabase/queries'
-import { createClient } from '@/lib/supabase/client'
-import { fetchAll } from '@/lib/supabase/fetch-all'
-import { getCostBreakdownMap, attachCostBreakdown } from '@/lib/supabase/cost-breakdown-map'
+import { getOrderFinancials, toRawOrders, quantityMapOf } from '@/lib/supabase/order-financials'
 import { summarizeCustomers } from '@/lib/financial/customer-summary'
 import type { RawOrderWithItems } from '@/lib/financial/operating-report'
 import { buildBenchmark, BENCHMARK_GROUPS, MIN_SAMPLES } from '@/lib/financial/cost-benchmark'
@@ -38,16 +35,11 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ name:
   useEffect(() => {
     async function load() {
       try {
-        // 成本对比要读成本桶,而 getBudgetOrders 不返回 items —— 单独取回挂上(同经营报表)
-        const [base, cbMap] = await Promise.all([getBudgetOrders(), getCostBreakdownMap()])
-        setOrders(attachCostBreakdown(base as unknown as RawOrderWithItems[], cbMap))
-        const sb = createClient()
-        const { data } = await fetchAll<{ budget_order_id: string; quantity: number | null }>((from, to) =>
-          sb.from('synced_orders').select('budget_order_id, quantity')
-            .not('budget_order_id', 'is', null).order('budget_order_id').range(from, to))
-        const m: Record<string, number> = {}
-        for (const s of data || []) if (s.budget_order_id) m[s.budget_order_id] = (m[s.budget_order_id] || 0) + (Number(s.quantity) || 0)
-        setQtyMap(m)
+        // 改从视图 v_order_financials 取:件数、成本桶均已在库里算好,
+        // 不必再拉 budget_orders 全量 + 单独查 synced_orders 件数(原先两趟)。
+        const rows = await getOrderFinancials()
+        setOrders(toRawOrders(rows) as unknown as RawOrderWithItems[])
+        setQtyMap(quantityMapOf(rows))
       } catch { /* 保持空态,不伪造数据 */ }
       setLoading(false)
     }
