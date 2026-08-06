@@ -26,6 +26,9 @@ import { getBudgetOrders, writeOffReceivable, correctOrderRevenue } from '@/lib/
 import { getReceivablePayments, getReceivableAllocations, createReceivablePayment, allocateReceipt, unallocateReceipt, voidReceivablePayment, correctReceivableRate, editReceivablePayment } from '@/lib/supabase/queries-v2'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { normalizeCustomerName } from '@/lib/utils'
+import { deductionTotalCny, validateDeduction, DEDUCTION_TYPES, TREATMENT_LABEL, TREATMENT_HINT,
+  type DeductionRow, type DeductionType, type Treatment } from '@/lib/financial/receivable-deduction'
+import { getDeductionsByOrders, createDeduction } from '@/lib/supabase/receivable-deductions'
 import Link from 'next/link'
 import type { BudgetOrder, ReceivablePayment, ReceivablePaymentAllocation } from '@/lib/types'
 import { Button } from '@/components/ui/button'
@@ -56,7 +59,10 @@ type ReceivableRow = {
   amountCny: number
   paid: number          // 已收（原币）
   paidCny: number
-  balance: number       // 未收（原币）
+  balance: number       // 未收（原币）—— 已扣除客户扣款
+  deductionCny: number      // 客户扣款合计(CNY)
+  deductionOrig: number     // 客户扣款合计(原币口径)
+  deductionCount: number
   balanceCny: number
   orderDate: string
   dueDate: string       // 应收日期
@@ -99,7 +105,7 @@ function parseField(notes: string | null | undefined, label: RegExp): string {
   return m ? m[1].trim() : ''
 }
 
-function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, allocatedByOrder: Map<string, number>, allocatedOrigByOrder: Map<string, number>): ReceivableRow[] {
+function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, allocatedByOrder: Map<string, number>, allocatedOrigByOrder: Map<string, number>, deductionsByOrder: Record<string, DeductionRow[]> = {}): ReceivableRow[] {
   const now = new Date()
   return orders
     // 2026-07-09:draft(未审草稿,多为导入/同步历史单)也纳入显示,标 isDraft;下游聚合/KPI 不计入,仅可见。
@@ -129,11 +135,20 @@ function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, a
         paid = Math.max(0, explicit ? Number(o.ar_received_amount) : (o.status === 'closed' ? amount : 0))
         paidCnyVal = Math.round(paid * rate * 100) / 100
       }
-      const balance = amount - paid
+      // 客户扣款(2026-08-05):既不是已收、也不是改合同,单独减应收。
+      // 应收余额 = 合同 − 已收 − 扣款;扣款【不进已收】,否则回款率虚高、银行对账多出假流水。
+      const deds = deductionsByOrder[o.id] || []
+      const dedCny = deductionTotalCny(deds)
+      // 原币口径:同币种直接用原币金额,异币种按本单展示汇率折回(与 balanceCny 同口径)
+      const dedOrig = Math.round(deds.filter(x => !x.voided_at).reduce((sum, x) =>
+        sum + (String(x.currency || 'CNY').toUpperCase() === String(o.currency || 'CNY').toUpperCase()
+          ? Number(x.amount_original) || 0
+          : (Number(x.amount_cny) || 0) / (rate || 1)), 0) * 100) / 100
+      const balance = amount - paid - dedOrig
 
       let status: ARStatus
       if (amount <= 0 || paid - amount > 0.01) status = 'abnormal'   // 金额异常 / 多收
-      else if (amount - paid <= 0.01) status = 'paid'
+      else if (amount - paid - dedOrig <= 0.01) status = 'paid'      // 扣款后结清也算已结
       else if (isPastDue) status = 'overdue'
       else if (paid > 0.01) status = 'partial'
       else status = 'unpaid'
@@ -154,6 +169,7 @@ function buildReceivables(orders: BudgetOrder[], syncMap: Map<string, string>, a
         // 后者在实际结汇汇率≠预算汇率时会把全额收清的单算成"多收/负数"，并污染 KPI。
         // 已收清(原币余额<=0.01)恒置 0；合同额与已收之差属汇兑损益，不计入未收。
         balance, balanceCny: balance <= 0.01 ? 0 : Math.round(balance * rate * 100) / 100,
+        deductionCny: dedCny, deductionOrig: dedOrig, deductionCount: deds.filter(x => !x.voided_at).length,
         orderDate: o.order_date,
         dueDate: dueDate.toISOString().substring(0, 10),
         receivedAt: o.ar_received_at || null,
@@ -215,6 +231,15 @@ export default function ReceivablesPage() {
   const [writeOffDialog, setWriteOffDialog] = useState<ReceivableRow | null>(null)
   const [writeOffReason, setWriteOffReason] = useState('')
   const [writeOffSaving, setWriteOffSaving] = useState(false)
+  // 客户扣款登记
+  const [dedDialog, setDedDialog] = useState<ReceivableRow | null>(null)
+  const [dedAmount, setDedAmount] = useState('')
+  const [dedType, setDedType] = useState<DeductionType>('quality_claim')
+  const [dedTreatment, setDedTreatment] = useState<Treatment>('reduce_revenue')
+  const [dedReason, setDedReason] = useState('')
+  const [dedDate, setDedDate] = useState('')
+  const [dedRate, setDedRate] = useState('')
+  const [dedSaving, setDedSaving] = useState(false)
 
   const [correctDialog, setCorrectDialog] = useState<ReceivableRow | null>(null)
   const [correctAmount, setCorrectAmount] = useState('')
@@ -249,7 +274,9 @@ export default function ReceivablesPage() {
       allocatedByOrder.set(a.budget_order_id, (allocatedByOrder.get(a.budget_order_id) || 0) + (Number(a.amount_cny) || 0))
       allocatedOrigByOrder.set(a.budget_order_id, (allocatedOrigByOrder.get(a.budget_order_id) || 0) + (Number(a.amount_original) || 0))
     }
-    setReceivables(buildReceivables(orders, syncMap, allocatedByOrder, allocatedOrigByOrder))
+    // 客户扣款:与回款分配一起构成应收余额,必须在 build 之前取到
+    const dedByOrder = await getDeductionsByOrders(orders.map(o => o.id))
+    setReceivables(buildReceivables(orders, syncMap, allocatedByOrder, allocatedOrigByOrder, dedByOrder))
   }
 
   useEffect(() => {
@@ -481,6 +508,42 @@ export default function ReceivablesPage() {
     }
     fetch('/api/gl/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ businessEvent: 'receipt_saved', sourceType: 'receipt', sourceId: receiptDialog.id }) }).catch(err => console.error('[GL] 收款入队失败:', err))
     setReceiptDialog(null); setReceiptAmount(''); setReceiptDate(''); setReceiptBank(''); setReceiptRate('1')
+    try { await reload() } catch { /* */ }
+  }
+
+  function openDeduction(r: ReceivableRow) {
+    setDedDialog(r)
+    setDedAmount(String(Math.round(r.balance * 100) / 100))
+    setDedType('quality_claim'); setDedTreatment('reduce_revenue')
+    setDedReason(''); setDedDate(new Date().toISOString().slice(0, 10))
+    setDedRate(r.currency === 'CNY' ? '1' : String(r.settleRate || r.rate || ''))
+  }
+
+  async function saveDeduction() {
+    if (!dedDialog) return
+    const v = validateDeduction({
+      amountOriginal: Number(dedAmount) || 0,
+      currency: dedDialog.currency,
+      exchangeRate: Number(dedRate) || 0,
+      outstandingCny: dedDialog.balanceCny,
+      reason: dedReason, occurredAt: dedDate,
+    })
+    if (!v.ok) { toast.error(v.error); return }
+    setDedSaving(true)
+    const { error } = await createDeduction({
+      budget_order_id: dedDialog.id,
+      customer_name: dedDialog.customer,
+      amount_original: Number(dedAmount),
+      currency: dedDialog.currency,
+      exchange_rate: dedDialog.currency === 'CNY' ? 1 : Number(dedRate),
+      amount_cny: v.amountCny,
+      deduction_type: dedType, treatment: dedTreatment,
+      reason: dedReason.trim(), occurred_at: dedDate,
+    })
+    setDedSaving(false)
+    if (error) { toast.error(`登记扣款失败：${error}`); return }
+    toast.success(`已登记扣款 ${dedDialog.currency} ${Number(dedAmount).toLocaleString()} —— 应收余额已减少，但不计入已收`)
+    setDedDialog(null)
     try { await reload() } catch { /* */ }
   }
 
@@ -938,6 +1001,9 @@ export default function ReceivablesPage() {
                                   <TableCell><Badge variant={STATUS[r.status].variant}>{STATUS[r.status].label}</Badge></TableCell>
                                   <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate" title={r.notes}>{r.notes ? r.notes.replace(/\n/g, ' ') : '—'}</TableCell>
                                   <TableCell className="text-right whitespace-nowrap">
+                                    {canManage && (r.status === 'partial' || r.status === 'overdue' || r.status === 'unpaid') && (
+                                      <Button variant="outline" size="sm" className="h-7 text-xs border-orange-300 text-orange-700 mr-1" title="客户扣款：减应收但不计入已收（区别于核销）" onClick={() => openDeduction(r)}>扣款</Button>
+                                    )}
                                     {canManage && r.status === 'partial' && (
                                       <Button variant="outline" size="sm" className="h-7 text-xs border-amber-300 text-amber-700 mr-1" onClick={() => { setWriteOffDialog(r); setWriteOffReason('') }}><CheckCircle2 className="h-3 w-3 mr-1" />核销</Button>
                                     )}
@@ -1072,6 +1138,83 @@ export default function ReceivablesPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setReceiptDialog(null)}>取消</Button>
             <Button onClick={saveReceipt} disabled={receiptSaving}>{receiptSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : '保存'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── 客户扣款 Dialog ── */}
+      <Dialog open={!!dedDialog} onOpenChange={(o) => { if (!o) setDedDialog(null) }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader><DialogTitle>登记客户扣款</DialogTitle></DialogHeader>
+          {dedDialog && (
+            <div className="space-y-3 py-1 text-sm">
+              <div className="rounded-lg bg-muted p-3 space-y-1">
+                <div className="flex justify-between"><span className="text-muted-foreground">客户 / 订单</span><span className="font-medium">{dedDialog.customer} · {dedDialog.internalNo || dedDialog.orderNo}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">合同金额</span><span>{dedDialog.currency} {dedDialog.amount.toLocaleString()}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">已收</span><span className="text-green-700">{dedDialog.currency} {dedDialog.paid.toLocaleString()}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">当前未收</span><span className="font-semibold">{dedDialog.currency} {dedDialog.balance.toLocaleString()}</span></div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">扣款金额（{dedDialog.currency}）*</Label>
+                  <Input type="number" step="0.01" value={dedAmount} onChange={e => setDedAmount(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">扣款日期 *</Label>
+                  <Input type="date" value={dedDate} onChange={e => setDedDate(e.target.value)} />
+                </div>
+              </div>
+
+              {dedDialog.currency !== 'CNY' && (
+                <div className="space-y-1">
+                  <Label className="text-xs">折算汇率 *（系统不会按 1:1 猜）</Label>
+                  <Input type="number" step="0.0001" value={dedRate} onChange={e => setDedRate(e.target.value)} />
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <Label className="text-xs">扣款性质 *</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  {DEDUCTION_TYPES.map(t => (
+                    <button key={t.key} type="button"
+                      onClick={() => { setDedType(t.key); setDedTreatment(t.defaultTreatment) }}
+                      className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${dedType === t.key ? 'bg-primary/10 border-primary text-primary font-medium' : 'text-muted-foreground hover:bg-muted'}`}>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs">会计处理 *</Label>
+                <div className="flex flex-col gap-1.5">
+                  {(['reduce_revenue', 'expense'] as Treatment[]).map(t => (
+                    <label key={t} className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer ${dedTreatment === t ? 'border-primary bg-primary/5' : ''}`}>
+                      <input type="radio" className="mt-1" checked={dedTreatment === t} onChange={() => setDedTreatment(t)} />
+                      <span>
+                        <span className="font-medium text-xs">{TREATMENT_LABEL[t]}</span>
+                        <span className="block text-[11px] text-muted-foreground">{TREATMENT_HINT[t]}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs">扣款原因 *（扣了什么、依据是什么）</Label>
+                <Textarea rows={2} value={dedReason} onChange={e => setDedReason(e.target.value)} placeholder="如：色差索赔，客户扣款单 CL-2026-08" />
+              </div>
+
+              <p className="text-[11px] text-orange-800 bg-orange-50 border border-orange-200 rounded p-2">
+                扣款会<strong>减少应收余额，但不计入已收</strong> —— 客人确实没付这笔钱，回款率与银行对账不受影响。
+                这与「核销」不同：核销会造一笔假回款流水。
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDedDialog(null)} disabled={dedSaving}>取消</Button>
+            <Button onClick={saveDeduction} disabled={dedSaving}>{dedSaving ? '保存中…' : '登记扣款'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
