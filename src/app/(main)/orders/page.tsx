@@ -12,7 +12,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { BudgetStatusBadge } from '@/components/shared/StatusBadge'
-import { getBudgetOrders } from '@/lib/supabase/queries'
+import { getOrderFinancials, toRawOrders } from '@/lib/supabase/order-financials'
 import { Plus, Search, Download, Loader2, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { exportBudgetOrdersToExcel } from '@/lib/excel'
@@ -50,8 +50,10 @@ export default function OrdersPage() {
   const loadOrders = async () => {
     setLoading(true)
     try {
-      const data = await getBudgetOrders()
-      setOrders(data)
+      // 改从视图取(列集 orders:金额+件数+快照利润兜底),替代拉全量 budget_orders。
+      // 口径未变 —— 视图已与 TS 逻辑做过 644 单逐单交叉校验。
+      const data = toRawOrders(await getOrderFinancials('orders'))
+      setOrders(data as unknown as BudgetOrder[])
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
       const { data: synced } = await supabase.from('synced_orders').select('budget_order_id, order_no, style_no, po_number, lifecycle_status, customer_name, quantity, quantity_unit').not('budget_order_id', 'is', null)

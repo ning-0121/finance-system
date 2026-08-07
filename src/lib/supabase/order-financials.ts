@@ -45,12 +45,36 @@ export interface OrderFinancialRow {
   cost_completeness: string | null
 }
 
-const COLS = 'id, order_no, order_date, status, currency, exchange_rate, customer_id, customer_company, customer_country, quantity, is_junk, total_revenue, revenue_cny, cost_cny, c_finished_goods, c_fabric, c_accessory, c_processing, c_forwarder, c_container, c_logistics, c_extras, bucket_total, actual_cost_cny, actual_lines, missing_rate, cost_completeness'
+/**
+ * 列集预设 —— 页面只拉自己要的列。
+ * 视图全列 47 个共 736KB;lite 只有 15 列,体积约 1/3。
+ * 不要图省事一律用 full:传输量是这次优化的主要目标。
+ */
+const BASE = 'id, order_no, order_date, status, currency, exchange_rate, customer_id, customer_company, customer_country, quantity, is_junk, total_revenue, revenue_cny, cost_cny, missing_rate'
+const BUCKETS = 'c_finished_goods, c_fabric, c_accessory, c_processing, c_forwarder, c_container, c_logistics, c_extras, bucket_total, cost_completeness, filled_buckets, has_shipping_cost, actual_cost_cny, actual_lines'
+const AR = 'delivery_date, notes, ar_received_amount, ar_received_at, ar_received_bank'
+const META = 'qimo_order_id, created_at, approved_at, estimated_profit, estimated_margin'
 
-export async function getOrderFinancials(): Promise<OrderFinancialRow[]> {
+export const COL_SETS: Record<string, string> = {
+  /** 只要金额与件数:工作台、审批队列、付款页 */
+  lite: BASE,
+  /** 需要成本桶:经营报表、成本基准、客户成本对比 */
+  buckets: `${BASE}, ${BUCKETS}`,
+  /** 应收页:另需交期/备注/回款投影 */
+  ar: `${BASE}, ${AR}`,
+  /** 订单列表:另需快照利润列作兜底 */
+  orders: `${BASE}, ${META}`,
+  full: `${BASE}, ${BUCKETS}, ${AR}, ${META}`,
+}
+
+export type ColSet = 'lite' | 'buckets' | 'ar' | 'orders' | 'full'
+
+export async function getOrderFinancials(cols: ColSet = 'buckets'): Promise<OrderFinancialRow[]> {
   const sb = createClient()
+  // select 用动态字符串:Supabase 的类型层会去解析字面量 select,模板拼接它解析不了,
+  // 故这里显式放宽(运行时行为不变,列名由 COL_SETS 保证)。
   const { data, error } = await fetchAll<OrderFinancialRow>((from, to) =>
-    sb.from('v_order_financials').select(COLS).order('id', { ascending: true }).range(from, to))
+    sb.from('v_order_financials').select(COL_SETS[cols] as never).order('id', { ascending: true }).range(from, to) as never)
   if (error) { console.error('[order-financials] 读取失败:', error); return [] }
   return data || []
 }

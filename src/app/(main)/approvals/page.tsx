@@ -15,7 +15,8 @@ import {
 } from '@/components/ui/dialog'
 import { CheckCircle, XCircle, AlertTriangle, Loader2, Clock, Eye } from 'lucide-react'
 import { toast } from 'sonner'
-import { getBudgetOrders, updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
+import { updateBudgetOrderStatus, createApprovalLog } from '@/lib/supabase/queries'
+import { getOrderFinancials, toRawOrders } from '@/lib/supabase/order-financials'
 import { OrderPoDocsPanel } from '@/app/(main)/orders/[id]/OrderPoDocsPanel'
 import { createClient } from '@/lib/supabase/client'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
@@ -40,7 +41,8 @@ export default function ApprovalsPage() {
   useEffect(() => {
     async function load() {
       setLoading(true)
-      const all = await getBudgetOrders()
+      // 审批队列只要金额与客户,用 lite 列集(15 列),不拉备注等大字段
+      const all = toRawOrders(await getOrderFinancials('lite')) as unknown as BudgetOrder[]
       const pending = all.filter(o => o.status === 'pending_review')
       setOrders(pending)
       // 内部订单号:synced_orders.style_no(按 budget_order_id 关联),方便财务按内部号查
