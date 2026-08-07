@@ -13,7 +13,9 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell, AreaChart, Area, Legend,
 } from 'recharts'
-import { getBudgetOrders, getProfitSummary, getAlerts } from '@/lib/supabase/queries'
+import { getOrderFinancials, toRawOrders } from '@/lib/supabase/order-financials'
+import { getProfitSummary, getAlerts } from '@/lib/supabase/queries'
+import { resolveBucketAmounts, COST_BUCKETS } from '@/lib/financial/cost-breakdown'
 import type { BudgetOrder, Alert, ProfitSummary } from '@/lib/types'
 
 export default function AnalyticsPage() {
@@ -24,7 +26,7 @@ export default function AnalyticsPage() {
 
   useEffect(() => {
     async function load() {
-      const [o, s, a] = await Promise.all([getBudgetOrders(), getProfitSummary(), getAlerts()])
+      const [o, s, a] = await Promise.all([toRawOrders(await getOrderFinancials('buckets')) as unknown as BudgetOrder[], getProfitSummary(), getAlerts()])
       setOrders(o); setSummary(s); setAlerts(a); setLoading(false)
     }
     load()
@@ -36,8 +38,15 @@ export default function AnalyticsPage() {
 
   // 营收折人民币口径（与 getProfitSummary 一致）：total_revenue 是原币、total_cost 是 CNY，
   // 直接把混币原币相加会让美元单被当人民币、排名与毛利率失真。利润按 revCny−cost 重算。
-  const rateOf = (o: BudgetOrder) => (o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 7))
-  const revCnyOf = (o: BudgetOrder) => (Number(o.total_revenue) || 0) * rateOf(o)
+  // 汇率口径修正(2026-08-07):此前外币缺率按写死的 7 硬算 —— 拿猜的汇率算客户排名与毛利率。
+  // 改为缺率的单【不计入金额】(与经营报表、客户档案同口径),并在页面上报出被排除的张数。
+  const revCnyOf = (o: BudgetOrder): number | null => {
+    const cur = String(o.currency || 'CNY').toUpperCase()
+    if (cur === 'CNY' || cur === 'RMB') return Number(o.total_revenue) || 0
+    const rate = Number(o.exchange_rate) || 0
+    return rate > 0 ? (Number(o.total_revenue) || 0) * rate : null
+  }
+  const excludedNoRate = orders.filter(o => revCnyOf(o) === null).length
 
   // 从真实订单数据计算客户利润排名
   const customerMap = new Map<string, { revenue: number; profit: number; count: number }>()
@@ -45,6 +54,7 @@ export default function AnalyticsPage() {
     const name = o.customer?.company || '未知'
     const existing = customerMap.get(name) || { revenue: 0, profit: 0, count: 0 }
     const revCny = revCnyOf(o)
+    if (revCny === null) return          // 缺汇率不计金额,避免用猜的汇率污染客户排名
     existing.revenue += revCny; existing.profit += revCny - (Number(o.total_cost) || 0); existing.count++
     customerMap.set(name, existing)
   })
@@ -53,19 +63,26 @@ export default function AnalyticsPage() {
     .sort((a, b) => b.revenue - a.revenue).slice(0, 8)
 
   // 从真实订单计算成本构成
-  const totalCost = orders.reduce((s, o) => s + o.total_cost, 0)
-  const totalPurchase = orders.reduce((s, o) => s + o.target_purchase_price, 0)
-  const totalFreight = orders.reduce((s, o) => s + o.estimated_freight, 0)
-  const totalCommission = orders.reduce((s, o) => s + o.estimated_commission, 0)
-  const totalCustoms = orders.reduce((s, o) => s + o.estimated_customs_fee, 0)
-  const totalOther = orders.reduce((s, o) => s + o.other_costs, 0)
-  const costBreakdown = [
-    { name: '采购成本', value: totalCost > 0 ? Math.round(totalPurchase / totalCost * 100) : 0, color: '#3b82f6' },
-    { name: '运费', value: totalCost > 0 ? Math.round(totalFreight / totalCost * 100) : 0, color: '#22c55e' },
-    { name: '佣金', value: totalCost > 0 ? Math.round(totalCommission / totalCost * 100) : 0, color: '#f59e0b' },
-    { name: '报关费', value: totalCost > 0 ? Math.round(totalCustoms / totalCost * 100) : 0, color: '#ef4444' },
-    { name: '其他', value: totalCost > 0 ? Math.round(totalOther / totalCost * 100) : 0, color: '#8b5cf6' },
-  ].filter(c => c.value > 0)
+  // 成本构成口径修正(2026-08-07):此前读【旧标量列】(target_purchase_price 等),
+  // 而 target_purchase_price = 采购成品+面料+辅料 是揉在一起的,于是页面上
+  // 「采购成本」一项吃掉三类、辅料与采购成品永远看不见,且与经营报表对不上。
+  // 现改用与经营报表同一套【成本桶】(七桶 + 其他费用),两页数字自此一致。
+  const bucketSum = (k: keyof typeof COST_ACC) => orders.reduce((s, o) => {
+    const rb = resolveBucketAmounts(o as unknown as Record<string, unknown>)
+    return s + (Number(rb.buckets[k as never]) || 0)
+  }, 0)
+  const COST_ACC = { finished_goods: 0, fabric: 0, accessory: 0, processing: 0, forwarder: 0, container: 0, logistics: 0 }
+  const extrasSum = orders.reduce((s, o) =>
+    s + resolveBucketAmounts(o as unknown as Record<string, unknown>).extrasTotal, 0)
+  const bucketRows = [
+    ...COST_BUCKETS.map((b, i) => ({ name: b.label as string, amount: bucketSum(b.key as never),
+      color: ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899'][i % 7] })),
+    { name: '其他费用', amount: extrasSum, color: '#64748b' },
+  ]
+  const totalCost = bucketRows.reduce((s, b) => s + b.amount, 0)
+  const costBreakdown = bucketRows
+    .map(b => ({ name: b.name, value: totalCost > 0 ? Math.round(b.amount / totalCost * 100) : 0, color: b.color }))
+    .filter(c => c.value > 0)
 
   // 月度数据从订单按月聚合
   const monthMap = new Map<string, { revenue: number; profit: number; cost: number; count: number }>()
@@ -73,6 +90,7 @@ export default function AnalyticsPage() {
     const month = o.order_date?.substring(0, 7) || '未知'
     const existing = monthMap.get(month) || { revenue: 0, profit: 0, cost: 0, count: 0 }
     const revCny = revCnyOf(o)
+    if (revCny === null) return          // 缺汇率不计金额(同客户排名口径),不用猜的汇率填月度曲线
     existing.revenue += revCny; existing.profit += revCny - (Number(o.total_cost) || 0); existing.cost += (Number(o.total_cost) || 0); existing.count++
     monthMap.set(month, existing)
   })
@@ -84,6 +102,15 @@ export default function AnalyticsPage() {
     <div className="flex flex-col h-full">
       <Header title="财务驾驶舱" subtitle="实时数据 · 预警中心 · 管理报表" />
       <div className="flex-1 p-4 md:p-6 space-y-6 overflow-y-auto">
+
+        {/* 缺汇率诚实提示:此前这些单按写死的 7 折算后计入,金额看着有、其实是猜的 */}
+        {excludedNoRate > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+            有 <strong>{excludedNoRate}</strong> 张外币订单未填结汇汇率，其金额<strong>未计入</strong>本页统计。
+            系统不会用猜测的汇率替你折算 —— 请进订单补汇率后数字才完整。
+          </div>
+        )}
+
         {/* KPI */}
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           {[

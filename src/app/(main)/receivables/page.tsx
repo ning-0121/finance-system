@@ -22,7 +22,8 @@ import { DollarSign, AlertTriangle, Search, Loader2, CheckCircle2, Pencil, Downl
 import { createClient } from '@/lib/supabase/client'
 import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { uploadAttachment, openAttachment, attachmentName } from '@/lib/supabase/storage'
-import { getBudgetOrders, writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
+import { writeOffReceivable, correctOrderRevenue } from '@/lib/supabase/queries'
+import { getOrderFinancials, toRawOrders } from '@/lib/supabase/order-financials'
 import { getReceivablePayments, getReceivableAllocations, createReceivablePayment, allocateReceipt, unallocateReceipt, voidReceivablePayment, correctReceivableRate, editReceivablePayment } from '@/lib/supabase/queries-v2'
 import { useCurrentUser } from '@/lib/hooks/use-current-user'
 import { normalizeCustomerName } from '@/lib/utils'
@@ -252,7 +253,10 @@ export default function ReceivablesPage() {
   const [editSaving, setEditSaving] = useState(false)
 
   async function reload() {
-    const [orders, recv, allocs] = await Promise.all([getBudgetOrders(), getReceivablePayments(), getReceivableAllocations()])
+    // 改从视图取(ar 列集:金额 + 交期/备注/回款投影),替代拉全量 budget_orders。
+    // 口径未变 —— 视图已与 TS 逻辑做过 644 单逐单交叉校验。
+    const [ofRows, recv, allocs] = await Promise.all([getOrderFinancials('ar'), getReceivablePayments(), getReceivableAllocations()])
+    const orders = toRawOrders(ofRows) as unknown as BudgetOrder[]
     setDraftCount(orders.filter(o => o.status === 'draft' || o.status === 'pending_review').length)
     setReceipts(recv)
     setAllocations(allocs)

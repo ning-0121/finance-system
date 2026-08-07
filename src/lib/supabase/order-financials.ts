@@ -43,6 +43,17 @@ export interface OrderFinancialRow {
   actual_lines: number | null
   missing_rate: boolean
   cost_completeness: string | null
+  // ar / orders 列集才有,其余列集为 undefined
+  delivery_date?: string | null
+  notes?: string | null
+  ar_received_amount?: number | null
+  ar_received_at?: string | null
+  ar_received_bank?: string | null
+  qimo_order_id?: string | null
+  created_at?: string | null
+  approved_at?: string | null
+  estimated_profit?: number | null
+  estimated_margin?: number | null
 }
 
 /**
@@ -95,6 +106,19 @@ export function toRawOrders(rows: OrderFinancialRow[]): (RawOrderWithItems & { _
     total_revenue: r.total_revenue,
     total_cost: r.cost_cny,
     customer: { company: r.customer_company, country: r.customer_country },
+    // ⚠️ 这些列按列集可能不存在;必须原样透传,否则依赖它们的页面会静默拿到
+    //    undefined(应收页的到期日/内部号/已收投影就是靠这几列)。
+    //    调用方用 as unknown as BudgetOrder 转型会把这类缺字段问题藏起来,故在此集中兜住。
+    delivery_date: r.delivery_date ?? null,
+    notes: r.notes ?? null,
+    ar_received_amount: r.ar_received_amount ?? null,
+    ar_received_at: r.ar_received_at ?? null,
+    ar_received_bank: r.ar_received_bank ?? null,
+    qimo_order_id: r.qimo_order_id ?? null,
+    created_at: r.created_at ?? null,
+    approved_at: r.approved_at ?? null,
+    estimated_profit: r.estimated_profit ?? null,
+    estimated_margin: r.estimated_margin ?? null,
     items: [{
       _cost_breakdown: {
         finished_goods: r.c_finished_goods ?? 0,
