@@ -6,6 +6,7 @@
 // 不建预算,导致业务刚上传、尚未定价的 PO 在财务侧不可见(老问题)。本接口让财务在收件箱里
 // 显式建单(即使暂无金额也建 total_revenue=0 的 draft,待补价),created_by 记真实登录财务人。
 import { bizToday } from '@/lib/biz-date'
+import { currencyForBudget } from '@/lib/financial/currency'
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
@@ -55,9 +56,14 @@ export async function POST(request: Request) {
     // 2. 解析客户(串行化的 lookup-or-create RPC,与 sync 路由一致)
     const cleanName = String(so.customer_name || '').trim()
     if (!cleanName) return NextResponse.json({ error: '订单无客户名,无法建预算' }, { status: 422 })
+    // 币种归一化(RMB→CNY 等):budget_orders 有 chk_currency_valid 约束,裸传 RMB 会被拒,
+    // 财务只看到一句天书报错(2026-08-08 生产实证)。认不出的币种在这里给可读 422。
+    let cur: string
+    try { cur = currencyForBudget(so.currency, 'USD') }
+    catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : '币种不合法' }, { status: 422 }) }
     const { data: cust, error: custErr } = await finance.rpc('get_or_create_customer' as never, {
       p_name: cleanName,
-      p_currency: (so.currency as string) || 'USD',
+      p_currency: cur,
     } as never) as { data: { id?: string } | null; error: { message: string } | null }
     if (custErr || !cust?.id) {
       return NextResponse.json({ error: `客户匹配失败: ${custErr?.message || '无客户'}` }, { status: 422 })
@@ -78,7 +84,6 @@ export async function POST(request: Request) {
 
     // 4. 建 draft 预算单。金额:优先总额,退回 单价×件数;都无则 0(待财务补价)。
     const totalAmount = Number(so.total_amount) || (Number(so.unit_price || 0) * Number(so.quantity || 0)) || 0
-    const cur = (so.currency as string) || 'USD'
     const { data: newBO, error: boErr } = await finance.from('budget_orders').insert({
       order_no: '',
       qimo_order_id: so.id,

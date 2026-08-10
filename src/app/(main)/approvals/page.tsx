@@ -29,7 +29,7 @@ import Link from 'next/link'
 import type { BudgetOrder, ApprovalLog } from '@/lib/types'
 
 export default function ApprovalsPage() {
-  const { user } = useCurrentUser()
+  const { user, loading: userLoading } = useCurrentUser()
   const [orders, setOrders] = useState<BudgetOrder[]>([])
   const [loading, setLoading] = useState(true)
   const [showDialog, setShowDialog] = useState<{ order: BudgetOrder; action: 'approve' | 'reject' } | null>(null)
@@ -65,6 +65,19 @@ export default function ApprovalsPage() {
   const internalNo = (o: BudgetOrder) =>
     internalMap[o.id] || String((o as { notes?: string }).notes || '').match(/内部单号[:：]\s*(\S+)/)?.[1] || '-'
 
+  // ⚠️ 用户资料还在加载时必须显示加载态,不能判"无权限"(2026-08-08 生产实证):
+  // 国内→美国机房取 profile 要几秒,这期间 user 还是 null,此前直接落进无权限分支 ——
+  // fiona(管理员)看到「您没有查看审批队列的权限」,网络一抖就复现,时好时坏。
+  if (userLoading) {
+    return (
+      <div className="flex flex-col h-full">
+        <Header title="审批队列" subtitle="仅财务可访问" />
+        <div className="flex-1 flex items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    )
+  }
   // 财务全角色可【查看】审批队列(否则财务员看不到订单/集成审批通知);预算单审批动作仍限财务总监。
   if (!user || !canViewApprovalQueue(user)) {
     return (

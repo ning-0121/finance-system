@@ -14,6 +14,7 @@ import {
 import type { WebhookPayload, SyncedOrder, PriceApprovalRequest } from '@/lib/integration/types'
 import { createServiceClient } from '@/lib/supabase/service'
 import { reverseOrder } from '@/lib/integration/order-reversal'
+import { normalizeCurrency } from '@/lib/financial/currency'
 
 export async function POST(request: Request) {
   // 1. 速率限制
@@ -681,14 +682,14 @@ async function handleOrderBudgetUpdated(data: Record<string, unknown>) {
       const cleanName = String(so.customer_name || '').trim()
       if (!cleanName) return { action: 'ignored', reason: `预算已收到,但订单无客户名、无法建预算单(order=${orderNo})` }
       const { data: cust, error: custErr } = await supabase.rpc('get_or_create_customer' as never, {
-        p_name: cleanName, p_currency: (so.currency as string) || 'CNY',
+        p_name: cleanName, p_currency: normalizeCurrency(so.currency) ?? ((so.currency as string) || 'CNY'),
       } as never) as { data: { id?: string } | null; error: { message: string } | null }
       if (custErr || !cust?.id) return { action: 'ignored', reason: `预算已收到,但客户匹配失败(order=${orderNo}):${custErr?.message || '无客户'}` }
       const revenue = Number(so.total_amount) || (Number(so.unit_price || 0) * Number(so.quantity || 0)) || 0
       // order_no='' → 触发器自动生成 BO 号;金额桶待下方步骤 3 用事件预算填 items[0]._cost_breakdown
       const { data: created, error: insErr } = await supabase.from('budget_orders').insert({
         order_no: '', qimo_order_id: qimoOrderId || (so.id as string), customer_id: cust.id,
-        total_revenue: revenue, currency: (so.currency as string) || 'CNY',
+        total_revenue: revenue, currency: normalizeCurrency(so.currency) ?? ((so.currency as string) || 'CNY'),
         status: 'draft', created_by: null, has_sub_documents: false,
         notes: `来源: 采购核料预算自动建单(节拍器 order.budget_updated)\n节拍器订单号: ${orderNo || ''}`,
       }).select('id').single()
@@ -1500,7 +1501,7 @@ async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResu
           const margin = revenueCny > 0 ? Math.round((profit / revenueCny) * 10000) / 100 : 0
 
           const patch: Record<string, unknown> = {
-            total_revenue: incoming, currency: order.currency || 'USD', exchange_rate: rate,
+            total_revenue: incoming, currency: normalizeCurrency(order.currency) ?? (order.currency || 'USD'), exchange_rate: rate,
             updated_at: new Date().toISOString(),
           }
           if (hasQuotation) {
@@ -1551,7 +1552,7 @@ async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResu
       // 与手动同步同一 RPC(advisory lock 串行化 + 等值匹配)——此前 ilike %name% 子串匹配
       // 会把"ABC"挂到"ABC Group"，且并发下重复建客户(审计 P2)
       const { data: cust, error: custErr } = await supabase.rpc('get_or_create_customer' as never, {
-        p_name: cleanCustomerName, p_currency: order.currency || 'USD',
+        p_name: cleanCustomerName, p_currency: normalizeCurrency(order.currency) ?? (order.currency || 'USD'),
       } as never) as { data: { id?: string } | null; error: { message: string } | null }
       if (custErr) throw new Error(`customer lookup failed: ${custErr.message}`)
       if (cust?.id) customerId = cust.id
@@ -1598,7 +1599,7 @@ async function autoCreateBudgetDraft(order: SyncedOrder): Promise<AutoBudgetResu
       qimo_order_id: order.id,   // 审计 P1:绮陌订单 UUID 结构化落库(不再只靠 synced_orders 中转+notes)
       customer_id: customerId,
       total_revenue: totalAmount,
-      currency: order.currency || 'USD',
+      currency: normalizeCurrency(order.currency) ?? (order.currency || 'USD'),
       exchange_rate: rate,
       items: itemsField as never,
       target_purchase_price: hasQuotation ? fabric + accessory : 0,

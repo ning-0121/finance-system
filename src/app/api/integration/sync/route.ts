@@ -9,6 +9,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { verifyApiKey } from '@/lib/integration/security'
 import { fetchAllOrdersFromMetronome } from '@/lib/integration/client'
 import { reverseOrder, isDeadLifecycle } from '@/lib/integration/order-reversal'
+import { normalizeCurrency } from '@/lib/financial/currency'
 import type { SyncedOrder } from '@/lib/integration/types'
 
 // 节拍器订单镜像字段（签名 API 返回）
@@ -199,7 +200,7 @@ export async function POST(request: Request) {
       if (o.customer_name) {
         const { data: cust, error: custErr } = await finance.rpc('get_or_create_customer' as never, {
           p_name: o.customer_name,
-          p_currency: o.currency || 'USD',
+          p_currency: normalizeCurrency(o.currency) ?? (o.currency || 'USD'),
         } as never) as any
         if (custErr) {
           // 不抛错，按 manual_review 处理（保留可见性）
@@ -249,7 +250,8 @@ export async function POST(request: Request) {
 
       const totalAmount = Number(o.total_amount) || (Number(o.unit_price || 0) * Number(o.quantity || 0))
 
-      const cur = o.currency || 'USD'
+      // RMB→CNY 归一,否则 chk_currency_valid 拒单;认不出的原样透传,由 DB 拒绝并进 createFailures(与既有行为一致)
+      const cur = normalizeCurrency(o.currency) ?? (o.currency || 'USD')
       const { data: newBO, error: boErr } = await finance.from('budget_orders').insert({
         order_no: '',
         qimo_order_id: o.id,   // 审计 P1:绮陌订单 UUID 结构化落库
