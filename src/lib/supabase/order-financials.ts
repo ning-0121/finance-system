@@ -86,8 +86,61 @@ export async function getOrderFinancials(cols: ColSet = 'buckets'): Promise<Orde
   // 故这里显式放宽(运行时行为不变,列名由 COL_SETS 保证)。
   const { data, error } = await fetchAll<OrderFinancialRow>((from, to) =>
     sb.from('v_order_financials').select(COL_SETS[cols] as never).order('id', { ascending: true }).range(from, to) as never)
-  if (error) { console.error('[order-financials] 读取失败:', error); return [] }
+
+  // ⚠️ 兜底(2026-08-08):视图切了 security_invoker=true 后,以调用者身份执行 ——
+  // 若登录角色对底表权限/RLS 有任何一处不满足,整张视图读不出来,而调用方多半只会
+  // 拿到空数组 → 页面一片空白,且看不出原因。这里改为【失败即回退旧路径】:
+  // 宁可慢一点走 budget_orders 全量,也不能让财务打不开页面。
+  if (error) {
+    console.error('[order-financials] 视图读取失败,回退 budget_orders 直查:', error)
+    return await fallbackFromBudgetOrders()
+  }
   return data || []
+}
+
+/** 视图不可用时的退路:直查 budget_orders,字段名映射成视图形状(成本桶走标量列近似) */
+async function fallbackFromBudgetOrders(): Promise<OrderFinancialRow[]> {
+  const sb = createClient()
+  const { data, error } = await fetchAll<Record<string, unknown>>((from, to) =>
+    sb.from('budget_orders')
+      .select('id, order_no, order_date, delivery_date, status, currency, exchange_rate, total_revenue, total_cost, customer_id, qimo_order_id, notes, created_at, approved_at, ar_received_amount, ar_received_at, ar_received_bank, estimated_profit, estimated_margin, target_purchase_price, estimated_commission, estimated_freight, estimated_customs_fee, other_costs, customers(company, country)')
+      .is('deleted_at', null).order('id', { ascending: true }).range(from, to))
+  if (error) { console.error('[order-financials] 回退路径也失败:', error); return [] }
+  const num = (v: unknown) => Number(v) || 0
+  return (data || []).map(r => {
+    const cur = String(r.currency || 'CNY').toUpperCase()
+    const rate = num(r.exchange_rate)
+    const isCny = cur === 'CNY' || cur === 'RMB'
+    const revenueCny = isCny ? num(r.total_revenue) : (rate > 0 ? num(r.total_revenue) * rate : null)
+    const c = (r.customers as { company?: string; country?: string } | null) || null
+    return {
+      id: String(r.id), order_no: (r.order_no as string) ?? null, order_date: (r.order_date as string) ?? null,
+      status: (r.status as string) ?? null, currency: (r.currency as string) ?? null,
+      exchange_rate: r.exchange_rate as number ?? null, customer_id: (r.customer_id as string) ?? null,
+      customer_company: c?.company ?? null, customer_country: c?.country ?? null,
+      quantity: 0,     // 回退路径拿不到件数(件数在 synced_orders);页面会显示 0,属降级可接受
+      is_junk: /^(CPX-|W1D-|TEST)/i.test(String(r.order_no || ''))
+        || /测试/.test(String(c?.company || '')) || String(c?.company || '').trim().toLowerCase() === 'test',
+      total_revenue: r.total_revenue as number ?? null, revenue_cny: revenueCny,
+      cost_cny: num(r.total_cost),
+      // 无 items 时只能用标量列近似(target_purchase_price 含采购成品+面料+辅料)
+      c_finished_goods: 0, c_fabric: num(r.target_purchase_price), c_accessory: 0,
+      c_processing: num(r.estimated_commission), c_forwarder: num(r.estimated_freight),
+      c_container: num(r.estimated_customs_fee), c_logistics: num(r.other_costs), c_extras: 0,
+      bucket_total: num(r.target_purchase_price) + num(r.estimated_commission) + num(r.estimated_freight)
+        + num(r.estimated_customs_fee) + num(r.other_costs),
+      actual_cost_cny: 0, actual_lines: 0,
+      missing_rate: revenueCny === null, cost_completeness: null,
+      delivery_date: (r.delivery_date as string) ?? null, notes: (r.notes as string) ?? null,
+      ar_received_amount: r.ar_received_amount as number ?? null,
+      ar_received_at: (r.ar_received_at as string) ?? null,
+      ar_received_bank: (r.ar_received_bank as string) ?? null,
+      qimo_order_id: (r.qimo_order_id as string) ?? null,
+      created_at: (r.created_at as string) ?? null, approved_at: (r.approved_at as string) ?? null,
+      estimated_profit: r.estimated_profit as number ?? null,
+      estimated_margin: r.estimated_margin as number ?? null,
+    } as OrderFinancialRow
+  })
 }
 
 /**
