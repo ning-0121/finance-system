@@ -108,6 +108,7 @@ const navGroups: NavGroup[] = [
       { name: '客户财务档案', href: '/profiles/customers', icon: Users },
       { name: '供应商画像', href: '/profiles/suppliers', icon: Boxes },
       { name: '收款信息维护', href: '/profiles/bank-info', icon: IdCard },
+      { name: '汇率维护', href: '/profiles/exchange-rates', icon: Percent },
       { name: '工资条发放', href: '/payroll', icon: Users },
     ],
   },
