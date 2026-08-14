@@ -21,6 +21,7 @@
  * 备注：缺失数据全部 hard-fail-then-fallback-with-warning，不静默隐藏
  */
 import * as XLSX from 'xlsx'
+import { bizDateOf } from '@/lib/biz-date'
 import Decimal from 'decimal.js'
 import type { BudgetOrder } from '@/lib/types'
 
@@ -111,9 +112,15 @@ const COST_TYPE_LABEL: Record<string, string> = {
 
 function fmtCnDate(s: string | null | undefined): string {
   if (!s) return ''
-  const d = s.length >= 10 ? new Date(s.substring(0, 10)) : new Date(s)
-  if (isNaN(d.getTime())) return s
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+  // 必须按 Asia/Shanghai 取日历日(2026-08-13 修,P1):
+  // 旧写法 new Date('YYYY-MM-DD') 按 UTC 零点解析、getDate() 却按本机时区读 ——
+  // UTC 以西的机器差一天(测试机上 3月20日 印成 19日);对带时间的时间戳,
+  // substring(0,10) 直接截 UTC 日期 —— 北京 20 日早 7 点完结 = UTC 19 日 23 点,
+  // 核算单在生产上也会印成 19 日。这是打印给客户/财务的正式单据日期,不能差一天。
+  const day = bizDateOf(s)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return s
+  const [y, m, d] = day.split('-').map(Number)
+  return `${y}年${m}月${d}日`
 }
 
 function toCny(amount: number, currency: string, rate: number): number {
