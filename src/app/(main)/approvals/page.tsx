@@ -183,7 +183,11 @@ export default function ApprovalsPage() {
             <CardContent className="p-4 text-center">
               <p className="text-3xl font-bold">
                 {/* 折人民币口径——此前 USD/CNY 原币直加还标 $(审计 P1 混币) */}
-                ¥{Math.round(orders.reduce((s, o) => s + (Number(o.total_revenue) || 0) * (o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 7)), 0)).toLocaleString()}
+                ¥{Math.round(orders.reduce((s, o) => {
+                  const cur = String(o.currency || 'CNY').toUpperCase()
+                  const rate = cur === 'CNY' || cur === 'RMB' ? 1 : Number(o.exchange_rate) || 0
+                  return rate > 0 ? s + (Number(o.total_revenue) || 0) * rate : s   // 缺汇率不按 7 猜,不计入
+                }, 0)).toLocaleString()}
               </p>
               <p className="text-xs text-muted-foreground mt-1">总金额(折人民币)</p>
             </CardContent>

@@ -79,8 +79,16 @@ export default function OrdersPage() {
         .select('id, order_no, style_no, po_number, customer_name, quantity, quantity_unit, unit_price, total_amount, currency, lifecycle_status, synced_at')
         .is('budget_order_id', null)
         .order('synced_at', { ascending: false })
-      setIntakeOrders(((intake as Array<Record<string, unknown>>) || [])
+      // 测试单不进收件箱(2026-08-12 审计:8 张联调测试单堵在这里,财务每天看到一堆假单)。
+      // 判定与视图 is_junk 同口径:CPX-/W1D-/TEST 前缀,或客户名含「测试」。
+      const isJunkIntake = (o: Record<string, unknown>) =>
+        /^(CPX-|W1D-|TEST)/i.test(String(o.order_no || '')) || /测试/.test(String(o.customer_name || ''))
+      const rawIntake = ((intake as Array<Record<string, unknown>>) || [])
         .filter((o) => !DEAD.includes(String(o.lifecycle_status || '')))
+      const junkCount = rawIntake.filter(isJunkIntake).length
+      if (junkCount > 0) console.info(`[收件箱] 已隐藏 ${junkCount} 张测试单(联调数据)`)
+      setIntakeOrders(rawIntake
+        .filter((o) => !isJunkIntake(o))
         .map((o) => ({
           id: o.id as string,
           order_no: (o.order_no as string) || '',

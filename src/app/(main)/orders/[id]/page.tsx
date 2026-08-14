@@ -327,7 +327,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   // 进入编辑模式时预填当前值（从items或现有字段解析）
   useEffect(() => {
     if (editMode && order) {
-      setEditRate((order.exchange_rate || 7).toString())
+      // 无汇率不预填 7(猜的汇率会被当成真的存进去);留空逼真实录入,保存时校验
+      setEditRate(order.exchange_rate ? String(order.exchange_rate) : '')
       setEditRevenue(order.total_revenue.toString())
       // 恢复收入款号行:items 里带 sku/product_name/amount 的即收入行(_cost_breakdown 载体行不算)
       const itemsArr = (order.items as unknown as Record<string, unknown>[]) || []
@@ -414,7 +415,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       .filter(l => l.amount > 0 || l.sku)
     const hasCleanRev = cleanedRevLines.some(l => l.amount > 0)
     const revenueInput = hasCleanRev ? cleanedRevLines.reduce((s, l) => s + l.amount, 0) : (Number(editRevenue) || 0)
-    const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 7)
+    const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 0)
+    // 外币保存必须有正汇率 —— 按 7 硬存等于把猜测写进账里(全站禁猜汇率纪律)
+    if (editCurrencyMode !== 'CNY' && !(rate > 0)) { toast.error('外币订单必须填写结汇汇率,系统不会按 7 替你猜'); return }
     const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate
     const revenueUsd = editCurrencyMode === 'CNY' ? revenueInput : revenueInput // DB stores the input value
     // 类别金额：有明细行时=明细之和，否则=直接填写的汇总值
@@ -901,7 +904,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 <CardContent className="space-y-3 text-sm">
                   {editMode ? (
                     (() => {
-                      const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 7)
+                      const rate = editCurrencyMode === 'CNY' ? 1 : (Number(editRate) || order.exchange_rate || 0)   // 预览缺率显示 0,保存有校验
                       // 有款号行时合同金额=各行之和(只读);否则用手填的合同金额(兼容旧单)
                       const revenueInput = hasRevLines ? revLinesTotal(editRevLines) : (Number(editRevenue) || 0)
                       const revenueCny = editCurrencyMode === 'CNY' ? revenueInput : revenueInput * rate

@@ -50,7 +50,12 @@ export function requiresExtraConfirmation(order: BudgetOrder): boolean {
   // exchange_rate 是「原币→CNY」方向：先折 CNY，再按 USD 参考汇率折美元比阈值。
   // 此前非 USD 单用 total_revenue/rate 当美元——CNY 单(rate=1)整单被当美元(误报)、
   // EUR 单(rate≈7.8)被除小(大额漏报)，大额审批风控失真(审计 P1)。
-  const rate = order.currency === 'CNY' ? 1 : (Number(order.exchange_rate) || 7)
+  const cur = String(order.currency || 'CNY').toUpperCase()
+  const isCny = cur === 'CNY' || cur === 'RMB'
+  const rate = isCny ? 1 : Number(order.exchange_rate) || 0
+  // 外币缺汇率:无法证明它在阈值之下 → 保守判【需要确认】(2026-08-12,替代按 7 硬猜)。
+  // 猜 7 的问题:EUR≈7.8 被猜小会让真大额漏过风控;宁可多确认一次,也不放走一单。
+  if (!isCny && !(rate > 0)) return true
   const amountCny = (Number(order.total_revenue) || 0) * rate
   const amountUSD = amountCny / 7   // USD 参考汇率，仅用于阈值判断
   return amountUSD > HIGH_VALUE_THRESHOLD_USD
