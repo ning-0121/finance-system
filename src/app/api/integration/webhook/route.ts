@@ -264,6 +264,9 @@ async function handleWebhookEvent(payload: WebhookPayload) {
     case 'shipment.recorded':
       return handleShipmentRecorded(payload.data as Record<string, unknown>, payload.request_id)
 
+    case 'shipment.completed':
+      return handleShipmentCompleted(payload.data as Record<string, unknown>, payload.request_id)
+
     default:
       return { action: 'ignored', reason: `Unknown event type: ${payload.event}` }
   }
@@ -1298,6 +1301,68 @@ async function handleShipmentRecorded(data: Record<string, unknown>, requestId: 
   }
 
   return { action: 'done', reason: `出运档案 ${head.bl_no || sourceRef}:订单链接+${linked},附件+${added}(共${orders.length}单/${atts.length}件)` }
+}
+
+// --- 出货已完成(事实事件,2026-08-17) ---
+// 节拍器业务「确认已出货」后的事实通知(2026-08-11 语义:≠审批请求)。此前无 case → default
+// 静默忽略,8-14/8-17 四单 34,200 件出货财务零感知。落 shipments 出运档案(/shipments 页可见,
+// 财务据此跟应收);按 idempotency_key 幂等,重推只更新。
+async function handleShipmentCompleted(data: Record<string, unknown>, requestId: string) {
+  const supabase = createServiceClient()
+  const qimoId = (() => {
+    const s = String(data.order_id || '')
+    return /^[0-9a-f-]{36}$/i.test(s) ? s : null
+  })()
+  const sourceRef = String(data.idempotency_key || (qimoId ? `shipment_completed:${qimoId}` : requestId || ''))
+  if (!sourceRef) return { action: 'ignored', reason: 'shipment.completed 缺幂等锚(idempotency_key/order_id/request_id)' }
+
+  const internalNo = (data.internal_order_no as string) || null
+  const qty = data.quantity != null && Number.isFinite(Number(data.quantity)) ? Number(data.quantity) : null
+  const day = typeof data.shipment_date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(data.shipment_date) ? data.shipment_date.slice(0, 10) : null
+  const head = {
+    source_ref: sourceRef,
+    etd: day,
+    status: 'shipped',
+    notes: `业务确认已出货(节拍器事实事件)${data.triggered_by ? ` · ${data.triggered_by}` : ''}${qty != null ? ` · ${qty}件` : ''}${internalNo ? ` · 单号${internalNo}` : ''}`,
+    updated_at: new Date().toISOString(),
+  }
+  const { data: exist } = await supabase.from('shipments').select('id').eq('source_ref', sourceRef).is('deleted_at', null).maybeSingle()
+  let shipmentId: string
+  if (exist) {
+    const { error } = await supabase.from('shipments').update(head).eq('id', (exist as { id: string }).id)
+    if (error) throw new Error(`出货完成档案更新失败: ${error.message}`)
+    shipmentId = (exist as { id: string }).id
+  } else {
+    const { data: created, error } = await supabase.from('shipments').insert(head).select('id').single()
+    if (error || !created) throw new Error(`出货完成档案入库失败: ${error?.message || 'unknown'}`)
+    shipmentId = (created as { id: string }).id
+  }
+
+  // 关联订单:qimo uuid → synced_orders.id;退回 style_no(镜像的内部单号)匹配
+  let so: { id?: string; order_no?: string; style_no?: string; budget_order_id?: string } | null = null
+  if (qimoId) {
+    const { data: s } = await supabase.from('synced_orders').select('id, order_no, style_no, budget_order_id').eq('id', qimoId).maybeSingle()
+    so = s
+  }
+  if (!so && internalNo) {
+    const { data: s } = await supabase.from('synced_orders').select('id, order_no, style_no, budget_order_id').eq('style_no', internalNo).maybeSingle()
+    so = s
+  }
+  let linked = 0
+  if (so || internalNo) {
+    const { data: dup } = await supabase.from('shipment_orders').select('id').eq('shipment_id', shipmentId).limit(1)
+    if (!dup || dup.length === 0) {
+      const { error } = await supabase.from('shipment_orders').insert({
+        shipment_id: shipmentId,
+        qimo_order_id: qimoId || (so?.id ?? null),
+        order_no: so?.order_no || null,
+        internal_order_no: internalNo || so?.style_no || null,
+        budget_order_id: so?.budget_order_id ?? null,
+      })
+      if (!error) linked++
+    }
+  }
+  return { action: 'done', reason: `出货完成入档 ${internalNo || sourceRef}:${qty != null ? qty + '件' : '数量未知'} ${day || ''},订单链接+${linked}` }
 }
 
 // --- 价格审批请求 ---

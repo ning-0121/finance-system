@@ -2,6 +2,7 @@
   "framework": "nextjs",
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- ':(exclude)docs/' ':(exclude)exports/' ':(exclude)*.md'",
   "crons": [
     {
       "path": "/api/cron/orchestrate",
