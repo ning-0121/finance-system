@@ -67,11 +67,11 @@ export async function POST(request: Request) {
     // 置 dead 留痕(不物理删);outbox 写是 service-role 专属(RLS 只读),故用 service client。失败不阻断撤销。
     try {
       const { createServiceClient } = await import('@/lib/supabase/service')
-      const staleIds = ['approved', 'rejected'].map(d => `fin-approval-${cur.approval_type}-${approval_id}-${d}`)
+      // 前缀匹配:request_id 现含 decided_at 后缀(2026-08-19 幂等键修复),精确 in() 会漏杀
       const { data: killed } = await createServiceClient().from('fin_outbound_outbox')
         .update({ status: 'dead', last_error: `superseded: 撤销重审作废旧决策回传(by ${profile.name || user.id})` })
         .eq('target', 'metronome').eq('event', 'approval.callback')
-        .in('request_id', staleIds).eq('status', 'failed')
+        .like('request_id', `fin-approval-${cur.approval_type}-${approval_id}-%`).eq('status', 'failed')
         .select('id')
       if (killed?.length) console.log(`[reopen] 已作废 ${killed.length} 条旧决策回传(outbox)`)
     } catch (e) { console.error('[reopen] outbox 清理失败(不阻断撤销):', e instanceof Error ? e.message : e) }

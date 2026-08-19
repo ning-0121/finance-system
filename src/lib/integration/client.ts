@@ -76,7 +76,11 @@ export async function notifyFinanceProgress(
 
 // --- 发送审批决定到节拍器 ---
 export async function sendApprovalToMetronome(decision: ApprovalDecision): Promise<{ success: boolean; error?: string }> {
-  const requestId = detId('approval', [decision.approval_type, decision.approval_id, decision.decision])
+  // 幂等键必须含 decided_at(审计4 2026-08-19 实锤):PO-20260728-001 重提交后财务 8-07 二次驳回,
+  // 键=类型+单id+结论 与 7-29 首轮驳回完全同键 → 节拍器幂等表当重放吞掉还回 200,财务标"回传成功",
+  // 节拍器却永远停在 pending。含 decided_at 后:同一次决策的首发/outbox重试仍同键(决策时刻定死),
+  // 撤销重审后的二次同向决策是新键;真重放仍被节拍器状态闸(pending 才命中)兜住。
+  const requestId = detId('approval', [decision.approval_type, decision.approval_id, decision.decision, decision.decided_at])
   const r = await postMetronomeCallback('approval.callback', requestId, decision as unknown as Record<string, unknown>)
   if (!r.success) {
     console.error(`[Integration] approval.callback(${decision.approval_type}/${decision.approval_id}) 回传失败(${r.error}) → 落 outbox 待重试`)
