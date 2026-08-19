@@ -41,8 +41,10 @@ export default function ApprovalsPage() {
   useEffect(() => {
     async function load() {
       setLoading(true)
-      // 审批队列只要金额与客户,用 lite 列集(15 列),不拉备注等大字段
-      const all = toRawOrders(await getOrderFinancials('lite')) as unknown as BudgetOrder[]
+      // 审批队列渲染金额+利润+毛利率 → 必须用含 META 的 orders 列集。
+      // ⚠️ 2026-08-18 事故:此前用 lite(无 estimated_profit/margin),缺列被补成 null,
+      //    只要队列里有一张待审单就 null.toLocaleString() 整页崩(时好时坏之谜=队列是否为空)。
+      const all = toRawOrders(await getOrderFinancials('orders')) as unknown as BudgetOrder[]
       const pending = all.filter(o => o.status === 'pending_review')
       setOrders(pending)
       // 内部订单号:synced_orders.style_no(按 budget_order_id 关联),方便财务按内部号查
@@ -242,14 +244,14 @@ export default function ApprovalsPage() {
                         </TableCell>
                         <TableCell className="font-mono text-xs">{internalNo(order)}</TableCell>
                         <TableCell>{order.customer?.company || '-'}</TableCell>
-                        <TableCell className="text-right font-medium">{order.currency} {order.total_revenue.toLocaleString()}</TableCell>
-                        <TableCell className={`text-right font-semibold ${order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          ¥ {order.estimated_profit.toLocaleString()}
+                        <TableCell className="text-right font-medium">{order.currency} {(order.total_revenue ?? 0).toLocaleString()}</TableCell>
+                        <TableCell className={`text-right font-semibold ${(order.estimated_profit ?? 0) < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          ¥ {(order.estimated_profit ?? 0).toLocaleString()}
                         </TableCell>
                         <TableCell className="text-right">
                           <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                            order.estimated_margin < 0 ? 'bg-red-100 text-red-700' : order.estimated_margin < 15 ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'
-                          }`}>{order.estimated_margin}%</span>
+                            (order.estimated_margin ?? 0) < 0 ? 'bg-red-100 text-red-700' : (order.estimated_margin ?? 0) < 15 ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'
+                          }`}>{order.estimated_margin ?? 0}%</span>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           <div className="flex items-center gap-1">
@@ -304,7 +306,7 @@ export default function ApprovalsPage() {
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div><span className="text-muted-foreground">订单: </span><span className="font-medium">{showDialog.order.order_no}</span></div>
                 <div><span className="text-muted-foreground">客户: </span><span className="font-medium">{showDialog.order.customer?.company}</span></div>
-                <div><span className="text-muted-foreground">金额: </span><span className="font-medium">{showDialog.order.currency} {showDialog.order.total_revenue.toLocaleString()}</span></div>
+                <div><span className="text-muted-foreground">金额: </span><span className="font-medium">{showDialog.order.currency} {(showDialog.order.total_revenue ?? 0).toLocaleString()}</span></div>
                 <div><span className="text-muted-foreground">毛利率: </span><span className={`font-medium ${showDialog.order.estimated_margin < 15 ? 'text-amber-600' : 'text-green-600'}`}>{showDialog.order.estimated_margin}%</span></div>
               </div>
 

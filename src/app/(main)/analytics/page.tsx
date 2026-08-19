@@ -26,7 +26,8 @@ export default function AnalyticsPage() {
 
   useEffect(() => {
     async function load() {
-      const [o, s, a] = await Promise.all([toRawOrders(await getOrderFinancials('buckets')) as unknown as BudgetOrder[], getProfitSummary(), getAlerts()])
+      // analytics 列集=buckets+META(2026-08-18:此前 buckets 缺 estimated_profit,渲染 null 崩页)
+      const [o, s, a] = await Promise.all([toRawOrders(await getOrderFinancials('analytics')) as unknown as BudgetOrder[], getProfitSummary(), getAlerts()])
       setOrders(o); setSummary(s); setAlerts(a); setLoading(false)
     }
     load()
@@ -215,7 +216,7 @@ export default function AnalyticsPage() {
                 {orders.slice(0, 10).map(order => (
                   <div key={order.id} className="flex items-center gap-4 p-3 rounded-lg bg-muted/50">
                     <div className="flex-1 min-w-0"><p className="text-sm font-medium">{order.order_no}</p><p className="text-xs text-muted-foreground">{order.customer?.company}</p></div>
-                    <div className="text-right"><p className={`text-sm font-semibold ¥{order.estimated_profit < 0 ? 'text-red-600' : 'text-green-600'}`}>¥{order.estimated_profit.toLocaleString()} ({order.estimated_margin}%)</p></div>
+                    <div className="text-right"><p className={`text-sm font-semibold ${(order.estimated_profit ?? 0) < 0 ? 'text-red-600' : 'text-green-600'}`}>¥{(order.estimated_profit ?? 0).toLocaleString()} ({order.estimated_margin ?? 0}%)</p></div>
                   </div>
                 ))}
                 {orders.length === 0 && <p className="text-center text-muted-foreground py-8">暂无订单</p>}

@@ -75,10 +75,12 @@ export const COL_SETS: Record<string, string> = {
   ar: `${BASE}, ${AR}`,
   /** 订单列表:另需快照利润列作兜底 */
   orders: `${BASE}, ${META}`,
+  /** 经营分析:成本桶 + 快照利润列(2026-08-18:此前用 buckets 缺 estimated_profit,渲染 null 崩页) */
+  analytics: `${BASE}, ${BUCKETS}, ${META}`,
   full: `${BASE}, ${BUCKETS}, ${AR}, ${META}`,
 }
 
-export type ColSet = 'lite' | 'buckets' | 'ar' | 'orders' | 'full'
+export type ColSet = 'lite' | 'buckets' | 'ar' | 'orders' | 'analytics' | 'full'
 
 export async function getOrderFinancials(cols: ColSet = 'buckets'): Promise<OrderFinancialRow[]> {
   const sb = createClient()
