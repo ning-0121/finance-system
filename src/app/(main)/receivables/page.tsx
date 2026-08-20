@@ -519,7 +519,7 @@ export default function ReceivablesPage() {
     setDedDialog(r)
     setDedAmount(String(Math.round(r.balance * 100) / 100))
     setDedType('quality_claim'); setDedTreatment('reduce_revenue')
-    setDedReason(''); setDedDate(new Date().toISOString().slice(0, 10))
+    setDedReason(''); setDedDate(bizToday())
     setDedRate(r.currency === 'CNY' ? '1' : String(r.settleRate || r.rate || ''))
   }
 

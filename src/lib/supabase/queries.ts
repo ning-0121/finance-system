@@ -3,6 +3,7 @@
 // 带 demo data fallback：当Supabase未配置或查询为空时用演示数据
 // ============================================================
 
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { createClient } from './client'
 import { fetchAll } from './fetch-all'
 import { bizToday } from '@/lib/biz-date'
@@ -173,7 +174,7 @@ export async function createBudgetOrder(order: Partial<BudgetOrder>): Promise<{ 
         estimated_profit: order.estimated_profit || 0,
         estimated_margin: order.estimated_margin || 0,
         currency: order.currency || 'USD',
-        exchange_rate: order.exchange_rate || 1,
+        exchange_rate: order.exchange_rate || null,   // 缺率写 null 留给审批闸拦,绝不写 1 假装人民币
         status: order.status || 'draft',
         created_by: userData.user.id,
         notes: order.notes || null,
@@ -653,7 +654,7 @@ function mapDbBudgetOrder(row: Record<string, unknown>): BudgetOrder {
     estimated_profit: (row.estimated_profit as number) || 0,
     estimated_margin: (row.estimated_margin as number) || 0,
     currency: (row.currency as string) || 'USD',
-    exchange_rate: (row.exchange_rate as number) || 1,
+    exchange_rate: (row.exchange_rate as number) ?? 0,   // 缺率映射 0(falsy):resolveDisplayRate 会走市场兜底,聚合器 rate>0 检查会计入「缺汇率」——此前 ||1 把外币当人民币
     version: (row.version as number) || 1,
     status: row.status as BudgetOrderStatus,
     qimo_order_id: (row.qimo_order_id as string) || null,   // budget.confirmed/硬闸门匹配靠它,别再丢
@@ -695,7 +696,7 @@ export async function writeOffReceivable(
       .maybeSingle()
     if (!order) return { error: '订单不存在' }
     const r2 = (n: number) => Math.round(n * 100) / 100
-    const rate = order.currency === 'CNY' ? 1 : (Number(order.exchange_rate) || 1)
+    const rate = resolveDisplayRate(order.currency as string, order.exchange_rate as number)
     const contractCny = r2((Number(order.total_revenue) || 0) * rate)
 
     // 权威已收 = 未作废分配合计

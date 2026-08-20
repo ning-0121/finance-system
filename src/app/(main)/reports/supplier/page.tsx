@@ -1,5 +1,6 @@
 'use client'
 
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { bizToday } from '@/lib/biz-date'
 import React, { useState, useEffect, useMemo } from 'react'
 import { Header } from '@/components/layout/Header'
@@ -140,7 +141,7 @@ export default function SupplierReportPage() {
           const bo = item.budget_orders as unknown as { order_no?: string; quote_no?: string } | null
           const quoteFallback = bo?.quote_no ? String(bo.quote_no).trim() : ''
           // 统一折算为人民币（费用可能为外币）：金额 × 汇率。付款侧为人民币登记。CNY 行恒按 1。
-          const rate = (item.currency as string) === 'CNY' ? 1 : (Number(item.exchange_rate) || 1)
+          const rate = resolveDisplayRate(item.currency as string, item.exchange_rate as number)
           const amountCny = Math.round((Number(item.amount) || 0) * rate * 100) / 100
           return {
             supplier: normalizeSupplierName(item.supplier as string) || '未指定',
@@ -166,7 +167,7 @@ export default function SupplierReportPage() {
           const supplier = normalizeSupplierName(item.supplier as string) || (item.description as string || '').split(' - ')[0] || '未指定供应商'
           const boRow = item.budget_orders as unknown as { order_no?: string } | null
           const orderNo = boRow?.order_no || ''
-          const rate = (item.currency as string) === 'CNY' ? 1 : (Number(item.exchange_rate) || 1)
+          const rate = resolveDisplayRate(item.currency as string, item.exchange_rate as number)
           const amountCny = (Number(item.amount) || 0) * rate
 
           const existing = supplierMap.get(supplier) || { count: 0, total: 0, currency: 'CNY', orders: new Set<string>() }

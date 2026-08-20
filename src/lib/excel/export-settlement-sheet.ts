@@ -67,7 +67,7 @@ export function exportSettlementSheetToExcel(
   rows.push(['── 订单基本信息 ──'])
   rows.push(['订单号', order.order_no, '', '客户', customer, ''])
   rows.push(['下单日期', order.order_date || '-', '', '币种', currency, ''])
-  rows.push(['交期', order.delivery_date || '-', '', '汇率', String(order.exchange_rate ?? 1), ''])
+  rows.push(['交期', order.delivery_date || '-', '', '汇率', order.exchange_rate ? String(order.exchange_rate) : '缺', ''])
   rows.push(['合同金额', `${currencySymbol} ${order.total_revenue.toLocaleString()}`, '', '预估利润', `¥ ${order.estimated_profit.toLocaleString()}`, `(${order.estimated_margin}%)`])
   rows.push([])
 

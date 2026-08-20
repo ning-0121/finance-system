@@ -7,6 +7,7 @@
 // 本引擎只被服务端 /api/documents/execute 调用(requireRole 财务 + 真身 actor 在路由层把关)。
 // 此前误用浏览器 client → 服务端上下文=anon,全靠文档表 RLS 全开才写得进(审计 2026-07-28 P0-1);
 // 收紧 uploaded_documents/document_actions RLS 后必须走 service client(与回款 RPC 同一先例)。
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { createServiceClient as createClient } from '@/lib/supabase/service'
 import { getActionsForCategory, canExecuteAction, type ActionConfig } from './action-registry'
 import { assessSafety, SAFETY_LEVEL_CONFIG, type SafetyLevel } from './safety'
@@ -274,16 +275,14 @@ async function executeSingleAction(
           _currency: 'CNY',
           _revenue_input: Number(f.total_amount) || 0,
           _revenue_currency: String(f.currency || 'USD'),
-          _rate: Number(f.exchange_rate || 1),
+          _rate: resolveDisplayRate(String(f.currency || 'USD'), Number(f.exchange_rate)),
           _source: 'document_ocr',
           _source_document_id: documentId,
         }
       }
       const itemsField = hasBreakdown ? [breakdown] : []
       const totalCost = fabric + accessory + processing + forwarder + container + logistics
-      const revenueCny = String(f.currency || 'USD') === 'CNY'
-        ? Number(f.total_amount) || 0
-        : (Number(f.total_amount) || 0) * (Number(f.exchange_rate) || 1)
+      const revenueCny = (Number(f.total_amount) || 0) * resolveDisplayRate(String(f.currency || 'USD'), Number(f.exchange_rate))
       const profit = revenueCny - totalCost
       const margin = revenueCny > 0 ? Math.round((profit / revenueCny) * 10000) / 100 : 0
 

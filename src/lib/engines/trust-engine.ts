@@ -3,6 +3,7 @@
 // 扩展 dependency-resolver.ts 的信任系统
 // ============================================================
 
+import { bizToday } from '@/lib/biz-date'
 import { createClient } from '@/lib/supabase/server'
 import { recordTimelineEvent } from './timeline-engine'
 import { freezeEntity } from './freeze-engine'
@@ -812,7 +813,7 @@ export async function getTrustDashboard(): Promise<TrustDashboard> {
 
 export async function recordTrustSnapshot(): Promise<void> {
   const supabase = await createClient()
-  const today = new Date().toISOString().slice(0, 10)
+  const today = bizToday()
 
   // Get all current scores
   const { data: allScores } = await supabase

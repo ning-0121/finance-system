@@ -2,6 +2,7 @@
 // V2 查询层 — 子单据 + 发票 + 出货 + 决算 + 汇总报表
 // ============================================================
 
+import { bizDateOf } from '@/lib/biz-date'
 import { createClient } from './client'
 import { fetchAll } from './fetch-all'
 import { safeRate } from '@/lib/accounting/utils'
@@ -698,7 +699,7 @@ export async function createSupplierPayment(payment: {
     const cur = payment.currency || 'CNY'
     const isManual = !payment.source_payable_id   // 手记付款(对账单侧)无来源锚点
     const ref = (payment.payment_ref || '').trim()
-    const since = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10)
+    const since = bizDateOf(new Date(Date.now() - 90 * 86400000).toISOString())   // 90天窗按中国时区截日
 
     // 审计 P0-2 硬拦(force 也不放行)：手记付款时，若该供应商近90天已有一笔【系统通道出款】
     // (排款单执行 source_batch_line_id / 出纳同步 source_payable_id)的同额同币付款，手记同额

@@ -287,11 +287,11 @@ export default function CostsPage() {
     if (entryMode === 'shared' && sharedOrderIds.length > 0) {
       orderRevenue = sharedOrderIds.reduce((s, id) => {
         const o = orders.find(x => x.id === id)
-        return s + (o ? o.total_revenue * (o.exchange_rate || 1) : 0)
+        return s + (o ? toCnyDisplay(o.total_revenue, o.currency, o.exchange_rate) : 0)
       }, 0)
     } else {
       const order = orders.find(o => o.id === formOrderId)
-      orderRevenue = order ? order.total_revenue * (order.exchange_rate || 1) : undefined
+      orderRevenue = order ? toCnyDisplay(order.total_revenue, order.currency, order.exchange_rate) : undefined
     }
     const warnings = validateCostEntry({
       amount: amt,

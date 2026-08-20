@@ -3,6 +3,7 @@
 // 财务总能在一张 Excel 里看到：预算 / 节拍器 / 决算 三方信息
 // ============================================================
 
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import * as XLSX from 'xlsx'
 import { companyInfo } from './company-config'
 import type { BudgetOrder } from '@/lib/types'
@@ -87,7 +88,7 @@ export function exportOrdersComprehensiveToExcel(
   })
 
   // 计算合计行（仅汇总数值列）；合同金额折人民币再加（原币不能跨币种裸加）
-  const totalRevenue = orders.reduce((s, o) => s + (o.total_revenue || 0) * (o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 1)), 0)
+  const totalRevenue = orders.reduce((s, o) => s + (o.total_revenue || 0) * resolveDisplayRate(o.currency, o.exchange_rate), 0)
   const totalCost = orders.reduce((s, o) => s + o.total_cost, 0)
   const totalEstProfit = orders.reduce((s, o) => s + o.estimated_profit, 0)
   const totalActualProfit = orders.reduce((s, o) => {

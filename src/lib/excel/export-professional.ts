@@ -3,6 +3,7 @@
 // 公司抬头 + 签字栏 + 大写金额 + 合计行
 // ============================================================
 
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import * as XLSX from 'xlsx'
 import { toChineseUppercase } from './chinese-amount'
 import { companyInfo } from './company-config'
@@ -154,7 +155,7 @@ export function exportBudgetSettlementReport(orders: {
 export function exportProfitAnalysisReport(orders: BudgetOrder[]) {
   const now = new Date().toLocaleDateString('zh-CN')
   // 合计折人民币（total_revenue 原币不能跨币种裸加；total_cost/estimated_profit 已是 CNY）
-  const orderRate = (o: BudgetOrder) => o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 1)
+  const orderRate = (o: BudgetOrder) => resolveDisplayRate(o.currency, o.exchange_rate)
   const totalRevenue = Math.round(orders.reduce((s, o) => s + (o.total_revenue || 0) * orderRate(o), 0) * 100) / 100
   const totalCost = orders.reduce((s, o) => s + (o.total_cost || 0), 0)
   const totalProfit = orders.reduce((s, o) => s + (o.estimated_profit || 0), 0)

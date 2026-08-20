@@ -44,7 +44,7 @@ export default function ApprovalsPage() {
       // 审批队列渲染金额+利润+毛利率 → 必须用含 META 的 orders 列集。
       // ⚠️ 2026-08-18 事故:此前用 lite(无 estimated_profit/margin),缺列被补成 null,
       //    只要队列里有一张待审单就 null.toLocaleString() 整页崩(时好时坏之谜=队列是否为空)。
-      const all = toRawOrders(await getOrderFinancials('orders')) as unknown as BudgetOrder[]
+      const all = toRawOrders(await getOrderFinancials('approvals')) as unknown as BudgetOrder[]
       const pending = all.filter(o => o.status === 'pending_review')
       setOrders(pending)
       // 内部订单号:synced_orders.style_no(按 budget_order_id 关联),方便财务按内部号查

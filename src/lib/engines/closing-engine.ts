@@ -5,6 +5,7 @@
 // reconciliation, GL, and FX modules. Supports overrides, timeline
 // auditing, and year-end carry-forward journal entries.
 
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { createClient } from '@/lib/supabase/server'
 import { fetchAll } from '@/lib/supabase/fetch-all'
 import { normalizeSupplierName } from '@/lib/utils'
@@ -448,7 +449,7 @@ export interface MonthEndPanel {
 
 const r2c = (n: number) => Math.round(n * 100) / 100
 const toCnyRate = (currency: string | null | undefined, rate: number | null | undefined) =>
-  (currency || 'CNY') === 'CNY' ? 1 : (Number(rate) || 1)
+  resolveDisplayRate(currency || 'CNY', rate)   // 缺率走市场兜底,绝不 ||1 把外币当人民币
 
 export async function getMonthlyClosingPanel(periodCode: string): Promise<MonthEndPanel> {
   const supabase = await createClient()

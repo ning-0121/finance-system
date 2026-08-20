@@ -117,7 +117,7 @@ export default function ActualGrossReportPage() {
         invoice_date: null,
         total_amount: Number(order.ar_received_amount) || 0,
         currency: order.currency || 'CNY',
-        exchange_rate: order.currency === 'CNY' ? 1 : (Number(order.exchange_rate) || 1),
+        exchange_rate: resolveDisplayRate(order.currency, order.exchange_rate),
         supplier_name: order.customer?.company || null,
         invoice_no: '历史登记已收（无流水明细）',
       }]
@@ -267,7 +267,7 @@ export default function ActualGrossReportPage() {
         })
 
         const list: Row[] = approved.map(o => {
-          const rate = o.currency === 'CNY' ? 1 : (Number(o.exchange_rate) || 1)  // CNY 行恒 1，防历史脏数据虚增
+          const rate = resolveDisplayRate(o.currency, o.exchange_rate)  // CNY 恒 1;外币缺率用市场兜底,绝不 ||1 虚减
           const revOrig = o.total_revenue || 0
           const recOrig = receivedAmount(o)
           // 已收：有回款流水→用流水合计(CNY，权威)；无流水→回退 ar_received_amount×rate

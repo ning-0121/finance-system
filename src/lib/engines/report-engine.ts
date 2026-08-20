@@ -3,6 +3,7 @@
 // 复用已有引擎函数，聚合KPI、风险、信任、任务等模块数据
 // ============================================================
 
+import { bizToday } from '@/lib/biz-date'
 import { createClient } from '@/lib/supabase/client'
 import { getProfitSummary, getMonthlyProfitData, getPendingRiskEvents } from '@/lib/supabase/queries'
 import { getTrustDashboard } from './trust-engine'
@@ -32,8 +33,7 @@ export interface DailyReport {
 
 export async function generateDailyReport(role?: string): Promise<DailyReport> {
   const supabase = createClient()
-  const today = new Date()
-  const todayStr = today.toISOString().slice(0, 10)
+  const todayStr = bizToday()   // 业务日按中国时区,UTC 深夜差一天
   const reportRole = role || 'finance_manager'
 
   // 1. KPI — profit summary
@@ -82,7 +82,7 @@ export async function generateDailyReport(role?: string): Promise<DailyReport> {
     .gte('resolved_at', todayStart)
 
   // 6. Closing status for current period
-  const periodCode = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+  const periodCode = bizToday().slice(0, 7)   // 会计期间按中国时区取月(同 gl-posting)
   let closingCompleted = 0
   let closingTotal = 0
   try {

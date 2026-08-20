@@ -4,6 +4,7 @@
 // 只调用已有引擎，不写新查询逻辑
 // ============================================================
 
+import { bizToday } from '@/lib/biz-date'
 import { createClient } from '@/lib/supabase/server'
 import { safeRate } from '@/lib/accounting/utils'
 import { recordTimelineEvent } from './timeline-engine'
@@ -553,15 +554,16 @@ async function evaluateClosingIncomplete(config: Record<string, unknown>): Promi
   const daysBeforeEnd = (config.days_before_end as number) ?? 3
 
   // Check if we're within N days of month end
-  const now = new Date()
-  const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
-  const daysRemaining = lastDayOfMonth - now.getDate()
+  // 月末判定按中国时区(UTC 月初 0-8 点会误判月份)
+  const [byy, bmm, bdd] = bizToday().split('-').map(Number)
+  const lastDayOfMonth = new Date(byy, bmm, 0).getDate()
+  const daysRemaining = lastDayOfMonth - bdd
 
   if (daysRemaining > daysBeforeEnd) {
     return { triggered: false, entities: [] }
   }
 
-  const periodCode = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const periodCode = bizToday().slice(0, 7)
 
   try {
     const items = await getClosingStatus(periodCode)

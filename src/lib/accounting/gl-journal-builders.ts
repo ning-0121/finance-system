@@ -94,8 +94,11 @@ export interface JournalSpec {
 const round2 = (n: number) => Math.round(n * 100) / 100
 
 export function periodCodeOf(date?: string): string {
-  const d = date ? new Date(date) : new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  // 会计期间必须按中国时区取月(与 gl-posting.ts getPeriodCode 同源):Vercel 是 UTC,
+  // getMonth() 在北京时间月初 0-8 点会落到上个月期间——2026-08-19 审计发现本函数是
+  // 已修版本的"未修双胞胎",4 处调用写进凭证 periodCode,直接影响关账与月报。
+  const day = date ? bizDateOf(date) : bizToday()
+  return day.slice(0, 7)
 }
 
 /** 外币必须有正汇率，否则 MISSING_RATE（绝不套默认值）。 */

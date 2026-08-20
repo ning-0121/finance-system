@@ -6,6 +6,7 @@
 // 2026-07-08:每行可点开 → 详情弹窗(把 detail/form_snapshot 用中文铺开,
 //   财务看清"批的是什么"再决策)。批/驳 → POST /api/integration/approve。
 // ============================================================
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { useState, useEffect, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -177,7 +178,7 @@ export function IntegrationApprovals({ userId, userName }: { userId: string; use
         const actualByBucket: Record<string, number> = {}
         for (const r of (ci as { cost_type?: string; amount?: number; currency?: string; exchange_rate?: number }[] | null) || []) {
           const b = CT2BUCKET[r.cost_type || ''] || '物流费'
-          const rate = r.currency === 'CNY' ? 1 : (Number(r.exchange_rate) || 1)
+          const rate = resolveDisplayRate(r.currency, r.exchange_rate)
           actualByBucket[b] = (actualByBucket[b] || 0) + (Number(r.amount) || 0) * rate
         }
         // 采购填价兜底(PO 未归集时):_actual_fabric/_actual_accessory/_actual_processing

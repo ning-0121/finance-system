@@ -20,6 +20,7 @@
  *
  * 备注：缺失数据全部 hard-fail-then-fallback-with-warning，不静默隐藏
  */
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import * as XLSX from 'xlsx'
 import { bizDateOf } from '@/lib/biz-date'
 import Decimal from 'decimal.js'
@@ -141,7 +142,7 @@ export function buildSettlementBundle(
   expenses: RawExpense[],
   completedAt: string | null,
 ): SettlementBundle {
-  const orderRate = Number(order.exchange_rate || 1)
+  const orderRate = resolveDisplayRate(order.currency, order.exchange_rate)
   // 数量：items.quantity → items.qty → 节拍器同步数量（与订单详情「基本信息」同口径）
   const firstItem = (order.items as unknown as Record<string, unknown>[])?.[0]
   const itemQty = Number(firstItem?.quantity ?? firstItem?.qty ?? order.synced_quantity ?? 0)
@@ -161,7 +162,7 @@ export function buildSettlementBundle(
 
   // 支（票点=开票费用不进决算/毛利，构建器内兜底过滤，防调用方漏筛）
   const expenseRows: ExpenseRow[] = expenses.filter(e => e.cost_type !== 'tax_point').map(e => {
-    const rate = Number(e.exchange_rate || 1)
+    const rate = resolveDisplayRate((e.currency as string) || 'CNY', e.exchange_rate as number)
     const cny = toCny(e.amount, e.currency || 'CNY', rate)
     const group = e.cost_group || COST_TYPE_LABEL[e.cost_type] || e.cost_type
     return {

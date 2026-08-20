@@ -800,7 +800,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               extras.forEach(e => rows.push({ label: e.name || '其他', budget: Number(e.amount) || 0, actual: 0, diff: -(Number(e.amount) || 0) }))
               const budgetTotal = order.total_cost || rows.reduce((s, r) => s + r.budget, 0)
               const actualTotal = rows.reduce((s, r) => s + r.actual, 0)
-              const revenueCny = order.currency === 'CNY' ? order.total_revenue : order.total_revenue * (order.exchange_rate || 1)
+              const revenueCny = order.total_revenue * resolveDisplayRate(order.currency, order.exchange_rate)
               const hasActual = actualTotal > 0
               const fmt = (n: number) => `¥${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
               return (
@@ -1074,7 +1074,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       const bd = (order.items as unknown as Record<string, unknown>[])?.[0]
                       const cb = bd?._cost_breakdown as Record<string, number | string> | undefined
                       const isCnyDirect = order.currency === 'CNY' || cb?._revenue_currency === 'CNY'
-                      const rate = isCnyDirect ? 1 : (order.exchange_rate || 1)
+                      const rate = isCnyDirect ? 1 : resolveDisplayRate(order.currency, order.exchange_rate)
                       const revenueCny = isCnyDirect ? order.total_revenue : order.total_revenue * rate
                       // 实际归集合计（费用归集已录入的实际成本，与预算成本分开显示）
                       const totalActualCost = Object.values(costDetail).flat().reduce((s, l) => s + (Number(l.amount) || 0), 0)
@@ -1193,7 +1193,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           })
                         })()}
                         {(cb?.extras as unknown as { name: string; amount: number }[] | undefined)?.map((e, i) => (
-                          <div key={i} className="flex justify-between"><span className="text-muted-foreground">{e.name}</span><span>¥ {e.amount.toLocaleString()}</span></div>
+                          <div key={i} className="flex justify-between"><span className="text-muted-foreground">{e.name}</span><span>¥ {(Number(e.amount) || 0).toLocaleString()}</span></div>
                         ))}
                         <Separator />
                         <div className="flex justify-between font-semibold text-sm"><span>预算成本合计</span><span>¥ {order.total_cost.toLocaleString()}</span></div>
@@ -1252,7 +1252,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   {!(orderSettlement && (orderSettlement.status === 'confirmed' || orderSettlement.status === 'locked')) && (() => {
                     const totalActualCost = Object.values(costDetail).flat().reduce((s, l) => s + (Number(l.amount) || 0), 0)
                     if (totalActualCost <= 0) return null
-                    const revenueCny = order.currency === 'CNY' ? order.total_revenue : order.total_revenue * (order.exchange_rate || 1)
+                    const revenueCny = order.total_revenue * resolveDisplayRate(order.currency, order.exchange_rate)
                     const actualProfit = revenueCny - totalActualCost
                     const actualMargin = revenueCny > 0 ? (actualProfit / revenueCny) * 100 : 0
                     const diff = actualProfit - order.estimated_profit

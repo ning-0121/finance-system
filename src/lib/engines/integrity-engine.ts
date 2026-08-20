@@ -8,6 +8,7 @@
 //
 // 引擎接受 SupabaseClient 注入：cron 用 service-role，手动触发用用户会话。
 // ============================================================
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { normalizeSupplierName } from '@/lib/utils'
 
@@ -37,7 +38,7 @@ export interface IntegrityRunResult {
 
 const r2 = (n: number) => Math.round(n * 100) / 100
 const cnyRate = (currency: string | null, rate: number | null) =>
-  (currency || 'CNY') === 'CNY' ? 1 : (Number(rate) || 1)
+  resolveDisplayRate(currency || 'CNY', rate)   // 缺率走市场兜底,绝不 ||1
 
 async function fetchAllRows<T>(build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>): Promise<T[]> {
   const all: T[] = []

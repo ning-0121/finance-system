@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { bizToday } from '@/lib/biz-date'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -349,7 +350,7 @@ export default function PaymentsPage() {
     try {
       const created = await createPaymentBatch({
         currency: urgentFor.currency || 'CNY',
-        planned_pay_date: new Date().toISOString().slice(0, 10),
+        planned_pay_date: bizToday(),   // 业务日期走中国时区,UTC 深夜会差一天
         title: `紧急付款 · ${urgentFor.supplier_name}`,
         week_label: '紧急',
         notes: urgentNote.trim() || null,

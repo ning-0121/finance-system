@@ -1,5 +1,6 @@
 // AI智能纠错引擎 — 提交前全域核查
 // 跨表校验、数据完整性、逻辑合理性，有问题立即拦截
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { createClient } from '@/lib/supabase/client'
 
 export interface GateCheck {
@@ -49,8 +50,8 @@ export async function runOrderSubmitGate(orderId: string): Promise<GateResult> {
   const cost = (order.total_cost as number) || 0
   const profit = (order.estimated_profit as number) || 0
   const margin = (order.estimated_margin as number) || 0
-  const rate = (order.exchange_rate as number) || 1
   const currency = order.currency as string
+  const rate = resolveDisplayRate(currency, order.exchange_rate as number)   // 缺率走市场兜底,绝不 ||1
   const customer = order.customers as Record<string, unknown> | null
 
   // --- 1. 订单完整性 ---

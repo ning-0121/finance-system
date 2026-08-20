@@ -1,5 +1,6 @@
 'use client'
 
+import { resolveDisplayRate } from '@/lib/accounting/fx'
 import { useState, useEffect, useMemo } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -74,7 +75,7 @@ export default function SupplierProfilesPage() {
             name,
             invoiceCount: items.length,
             // 折人民币口径——此前原币直加标 ¥,USD 费用被当人民币(审计 P1 混币)
-            totalAmount: Math.round(items.reduce((s, i) => s + (Number(i.amount) || 0) * (((i.currency as string) || 'CNY') === 'CNY' ? 1 : (Number(i.exchange_rate) || 1)), 0)),
+            totalAmount: Math.round(items.reduce((s, i) => s + (Number(i.amount) || 0) * resolveDisplayRate((i.currency as string) || 'CNY', i.exchange_rate as number), 0)),
             costTypes: [...new Set(items.map(i => i.cost_type as string).filter(Boolean))],
             lastDate: items[0]?.created_at ? new Date(items[0].created_at as string).toLocaleDateString('zh-CN') : '-',
           })).sort((a, b) => b.totalAmount - a.totalAmount))

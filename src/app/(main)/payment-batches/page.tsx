@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { bizToday } from '@/lib/biz-date'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -39,7 +40,7 @@ const LINE_STATUS: Record<string, { label: string; color: string }> = {
 const fmt = (n: number, ccy: string) =>
   `${ccy === 'USD' ? '$' : '¥'}${Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const fmtDate = (s: string | null | undefined) => (s ? String(s).slice(0, 10) : '-')
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => bizToday()   // 付款批次业务日按中国时区,UTC 深夜会差一天
 // 周付款规则(老板 2026-07-11):周五之前都可以审批,周五安排付款 → 新建排款单默认计划放款日=本周五
 // (今天已过周五则取下周五)。用本地时区拼日期,避免 toISOString 的 UTC 偏移在晚间跨天。
 const thisFriday = () => {
