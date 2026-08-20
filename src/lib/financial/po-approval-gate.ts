@@ -154,16 +154,17 @@ export function checkPoApproval(input: GateInput): GateResult {
     })
   }
 
-  // ④-b 扣款显式声明 —— 治「忘了填」(过渡手段)
-  //     系统无从知道未被任何事件覆盖的扣款,只能强制财务表态。
-  //     待 qc.failed / material.resupplied / rework 三个事件在节拍器侧落地后,
-  //     本项可弱化为提示,由 ④-a 承担主要防线。
+  // ④-b 扣款显式声明 —— 治「忘了填」
+  //     2026-08-19 语义修正(fiona 反馈):下单时扣款多半尚未发生,财务无法为"本单永远无扣款"
+  //     背书 —— 声明只对【截至目前已知】的扣款/折让负责。未来扣款的防线是 ④-a:
+  //     qc.failed / material.resupplied / rework 事件(节拍器侧已上线)自动建待扣款档,
+  //     付款/对账放行前 pending_deductions 硬闸强制处理,不依赖任何人预判。
   checks.push({
     id: 'deduction_declared',
-    label: '已核对扣款项（有则已入明细 / 无则声明）',
+    label: '已核对当前已知扣款（有则已入明细 / 暂无则声明）',
     passed: !!input.deductionDeclared,
     detail: input.deductionDeclared ? undefined
-      : '请确认本单的扣款/折让（如扣加工厂费用）已全部登记；若确无扣款，请勾选声明。',
+      : '请确认截至目前已知的扣款/折让（如已谈定的折让）已登记入明细；暂无已知扣款则勾选声明。下单后新发生的扣款由验货/补料/返工事件自动建档，付款对账时强制冲抵，无需预判。',
     blocking: true,
   })
 

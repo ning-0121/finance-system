@@ -712,13 +712,19 @@ export default function PurchaseApprovalsPage() {
                       </li>
                     ))}
                   </ul>
-                  {/* 扣款声明 —— 必须由财务主动勾,勾了就是签字 */}
+                  {/* 扣款声明 —— 必须由财务主动勾,勾了就是签字。
+                      2026-08-19 fiona 反馈改语义:下单时扣款多半还没发生,财务没法预判"本单永远无扣款"。
+                      声明只对【截至目前已知】负责;下单后新发生的扣款由验货不合格/补料/返工事件
+                      自动建待扣款档,付款对账时上方 ④-a 硬闸强制处理,无需在本单预判。 */}
                   <label className="flex items-start gap-2 pt-1 border-t cursor-pointer">
                     <input type="checkbox" className="mt-0.5" checked={deductionDeclared}
                       onChange={e => setDeductionDeclared(e.target.checked)} />
                     <span className="text-xs">
-                      我已核对本单的<span className="font-medium">扣款／折让</span>（如扣加工厂费用）：
-                      有则已全部登记在明细中，无则在此声明本单无扣款。
+                      <span className="font-medium">截至目前已知</span>的扣款／折让（如已谈定的折让、加工厂扣款）：
+                      有则已全部登记在明细中，暂无已知扣款则勾此声明。
+                      <span className="block text-muted-foreground mt-0.5">
+                        下单后新发生的扣款不用预判——验货不合格／补料／返工会自动建待扣款档，付款对账时系统强制冲抵。
+                      </span>
                     </span>
                   </label>
                 </CardContent>
