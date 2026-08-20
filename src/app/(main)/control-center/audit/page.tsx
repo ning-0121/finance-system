@@ -42,7 +42,12 @@ export default function ExceptionCenterPage() {
   const [findings, setFindings] = useState<Finding[]>([])
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
-  const [sevTab, setSevTab] = useState<'all' | 'critical' | 'warning' | 'info'>('all')
+  // 支持 /control-center/audit?sev=critical 直达筛选(总览页「严重稽核发现」卡下钻)
+  const [sevTab, setSevTab] = useState<'all' | 'critical' | 'warning' | 'info'>(() => {
+    if (typeof window === 'undefined') return 'all'
+    const s = new URLSearchParams(window.location.search).get('sev')
+    return s === 'critical' || s === 'warning' || s === 'info' ? s : 'all'
+  })
   const [statusTab, setStatusTab] = useState<'active' | 'resolved' | 'dismissed'>('active')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [dialog, setDialog] = useState<{ mode: 'resolve' | 'dismiss'; finding: Finding } | null>(null)

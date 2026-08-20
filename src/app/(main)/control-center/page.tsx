@@ -103,12 +103,18 @@ export default function ControlCenterPage() {
   const { user, loading: userLoading } = useCurrentUser()
   const [data, setData] = useState<OverviewResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
 
   useEffect(() => {
+    // 审计 2026-08-19:此前不判 r.ok——API 500 时返回 {error} 也照 setData,
+    // data.risk 为 undefined 直接崩整页(与审批队列 null.toLocaleString 同类)。
     fetch('/api/control-center/overview')
-      .then(r => r.json())
-      .then(d => setData(d))
-      .catch(() => {})
+      .then(async r => {
+        const d = await r.json()
+        if (!r.ok || !d?.risk) throw new Error(d?.error || `HTTP ${r.status}`)
+        setData(d)
+      })
+      .catch(e => setLoadErr(e instanceof Error ? e.message : '加载失败'))
       .finally(() => setLoading(false))
   }, [])
 
@@ -135,17 +141,24 @@ export default function ControlCenterPage() {
         </Badge>
       </div>
 
+      {loadErr && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          总览数据加载失败（{loadErr}），请刷新重试；下方模块入口不受影响。
+        </div>
+      )}
       {data && (
         <div className="space-y-6">
-          {/* Section 1: 最高风险 */}
+          {/* Section 1: 最高风险 —— 2026-08-19 fiona:数字卡必须能点进明细 */}
           {showSection('risk') && (
             <div className="space-y-3">
               <h2 className="text-lg font-semibold flex items-center gap-2">
                 <AlertCircle className="h-5 w-5 text-red-500" />
                 最高风险
+                <span className="text-xs font-normal text-muted-foreground">点卡片看明细</span>
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <Card className="border-l-4 border-l-red-500">
+                <Link href="/control-center/audit?sev=critical">
+                <Card className="border-l-4 border-l-red-500 hover:ring-2 hover:ring-red-200 transition-all cursor-pointer">
                   <CardContent className="pt-4">
                     <div className="flex items-center justify-between">
                       <div>
@@ -156,7 +169,9 @@ export default function ControlCenterPage() {
                     </div>
                   </CardContent>
                 </Card>
-                <Card className="border-l-4 border-l-amber-500">
+                </Link>
+                <Link href="/control-center/freeze">
+                <Card className="border-l-4 border-l-amber-500 hover:ring-2 hover:ring-amber-200 transition-all cursor-pointer">
                   <CardContent className="pt-4">
                     <div className="flex items-center justify-between">
                       <div>
@@ -167,7 +182,9 @@ export default function ControlCenterPage() {
                     </div>
                   </CardContent>
                 </Card>
-                <Card className="border-l-4 border-l-red-400">
+                </Link>
+                <Link href="/control-center/trust">
+                <Card className="border-l-4 border-l-red-400 hover:ring-2 hover:ring-red-200 transition-all cursor-pointer">
                   <CardContent className="pt-4">
                     <div className="flex items-center justify-between">
                       <div>
@@ -178,6 +195,7 @@ export default function ControlCenterPage() {
                     </div>
                   </CardContent>
                 </Card>
+                </Link>
               </div>
             </div>
           )}
@@ -191,15 +209,16 @@ export default function ControlCenterPage() {
               </h2>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
                 {[
-                  { label: '待审批', value: data.pending.pendingApprovals, color: 'bg-blue-100 text-blue-800' },
-                  { label: '待付款', value: data.pending.pendingPayments, color: 'bg-green-100 text-green-800' },
-                  { label: '阻塞', value: data.pending.blockedActions, color: 'bg-red-100 text-red-800' },
-                  { label: '风险', value: data.pending.openRiskEvents, color: 'bg-amber-100 text-amber-800' },
-                  { label: '月结', value: `${data.pending.closingPending}/${data.pending.closingTotal}`, color: 'bg-purple-100 text-purple-800' },
-                  { label: '稽核', value: data.pending.auditOpen, color: 'bg-orange-100 text-orange-800' },
-                  { label: '待建账', value: data.pending.unbudgetedOrders, color: 'bg-cyan-100 text-cyan-800' },
+                  { label: '待审批', value: data.pending.pendingApprovals, color: 'bg-blue-100 text-blue-800', href: '/approvals' },
+                  { label: '待付款', value: data.pending.pendingPayments, color: 'bg-green-100 text-green-800', href: '/payments' },
+                  { label: '阻塞', value: data.pending.blockedActions, color: 'bg-red-100 text-red-800', href: '/control-center/audit' },
+                  { label: '风险', value: data.pending.openRiskEvents, color: 'bg-amber-100 text-amber-800', href: '/control-center/audit' },
+                  { label: '月结', value: `${data.pending.closingPending}/${data.pending.closingTotal}`, color: 'bg-purple-100 text-purple-800', href: '/control-center/closing' },
+                  { label: '稽核', value: data.pending.auditOpen, color: 'bg-orange-100 text-orange-800', href: '/control-center/audit' },
+                  { label: '待建账', value: data.pending.unbudgetedOrders, color: 'bg-cyan-100 text-cyan-800', href: '/orders' },
                 ].map(item => (
-                  <Card key={item.label} className="text-center">
+                  <Link key={item.label} href={item.href}>
+                  <Card className="text-center hover:ring-2 hover:ring-primary/20 transition-all cursor-pointer h-full">
                     <CardContent className="pt-3 pb-3">
                       <p className="text-xs text-muted-foreground mb-1">{item.label}</p>
                       <Badge className={item.color + ' text-lg font-bold px-3 py-1'}>
@@ -207,6 +226,7 @@ export default function ControlCenterPage() {
                       </Badge>
                     </CardContent>
                   </Card>
+                  </Link>
                 ))}
               </div>
             </div>
@@ -220,7 +240,8 @@ export default function ControlCenterPage() {
                 系统健康
               </h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <Card className={`border-l-4 ${data.health.glBalanced ? 'border-l-green-500' : 'border-l-red-500'}`}>
+                <Link href="/control-center/gl-review">
+                <Card className={`border-l-4 hover:ring-2 hover:ring-primary/20 transition-all cursor-pointer h-full ${data.health.glBalanced ? 'border-l-green-500' : 'border-l-red-500'}`}>
                   <CardContent className="pt-3 pb-3">
                     <div className="flex items-center gap-2">
                       {data.health.glBalanced
@@ -235,7 +256,9 @@ export default function ControlCenterPage() {
                     </div>
                   </CardContent>
                 </Card>
-                <Card className="border-l-4 border-l-blue-500">
+                </Link>
+                <Link href="/control-center/trust">
+                <Card className="border-l-4 border-l-blue-500 hover:ring-2 hover:ring-primary/20 transition-all cursor-pointer h-full">
                   <CardContent className="pt-3 pb-3">
                     <div className="flex items-center gap-2">
                       <Shield className="h-5 w-5 text-blue-500" />
@@ -246,7 +269,9 @@ export default function ControlCenterPage() {
                     </div>
                   </CardContent>
                 </Card>
-                <Card className="border-l-4 border-l-amber-500">
+                </Link>
+                <Link href="/control-center/trust">
+                <Card className="border-l-4 border-l-amber-500 hover:ring-2 hover:ring-primary/20 transition-all cursor-pointer h-full">
                   <CardContent className="pt-3 pb-3">
                     <div className="flex items-center gap-2">
                       <AlertTriangle className="h-5 w-5 text-amber-500" />
@@ -257,7 +282,9 @@ export default function ControlCenterPage() {
                     </div>
                   </CardContent>
                 </Card>
-                <Card className="border-l-4 border-l-red-500">
+                </Link>
+                <Link href="/control-center/trust">
+                <Card className="border-l-4 border-l-red-500 hover:ring-2 hover:ring-primary/20 transition-all cursor-pointer h-full">
                   <CardContent className="pt-3 pb-3">
                     <div className="flex items-center gap-2">
                       <XCircle className="h-5 w-5 text-red-500" />
@@ -268,6 +295,7 @@ export default function ControlCenterPage() {
                     </div>
                   </CardContent>
                 </Card>
+                </Link>
               </div>
             </div>
           )}
@@ -280,7 +308,8 @@ export default function ControlCenterPage() {
                 趋势
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Card className={`border-l-4 ${data.trends.profitTrend >= 0 ? 'border-l-green-500' : 'border-l-red-500'}`}>
+                <Link href="/reports/operating">
+                <Card className={`border-l-4 hover:ring-2 hover:ring-primary/20 transition-all cursor-pointer h-full ${data.trends.profitTrend >= 0 ? 'border-l-green-500' : 'border-l-red-500'}`}>
                   <CardContent className="pt-4">
                     <div className="flex items-center justify-between">
                       <div>
@@ -297,7 +326,9 @@ export default function ControlCenterPage() {
                     </div>
                   </CardContent>
                 </Card>
-                <Card className={`border-l-4 ${data.trends.trustDowngrades > 0 ? 'border-l-amber-500' : 'border-l-green-500'}`}>
+                </Link>
+                <Link href="/control-center/trust">
+                <Card className={`border-l-4 hover:ring-2 hover:ring-primary/20 transition-all cursor-pointer h-full ${data.trends.trustDowngrades > 0 ? 'border-l-amber-500' : 'border-l-green-500'}`}>
                   <CardContent className="pt-4">
                     <div className="flex items-center justify-between">
                       <div>
@@ -310,6 +341,7 @@ export default function ControlCenterPage() {
                     </div>
                   </CardContent>
                 </Card>
+                </Link>
               </div>
             </div>
           )}

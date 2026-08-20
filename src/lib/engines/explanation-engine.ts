@@ -57,7 +57,7 @@ export function generateExplanations(data: OverviewData): Explanation[] {
       text: `当前有 ${data.criticalFindings} 个严重财务异常待处理，请立即查看。`,
       severity: 'critical',
       category: '稽核',
-      actionHref: '/control-center/audit',
+      actionHref: '/control-center/audit?sev=critical',
     })
   }
 

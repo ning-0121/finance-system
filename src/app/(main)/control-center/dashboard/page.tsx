@@ -86,19 +86,19 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/control-center/overview')
-      .then(r => r.json())
-      .then(d => setData(d))
+    // 审计 2026-08-19:必须判 r.ok——API 500 返回 {error} 也 setData 会让 data.trends 为
+    // undefined 直接崩整页(大屏在办公室墙上转,崩了没人管)。
+    const load = () => fetch('/api/control-center/overview')
+      .then(async r => {
+        const d = await r.json()
+        if (!r.ok || !d?.trends) return
+        setData(d)
+      })
       .catch(() => {})
-      .finally(() => setLoading(false))
+    load().finally(() => setLoading(false))
 
     // 自动刷新每60秒
-    const timer = setInterval(() => {
-      fetch('/api/control-center/overview')
-        .then(r => r.json())
-        .then(d => setData(d))
-        .catch(() => {})
-    }, 60000)
+    const timer = setInterval(() => { load() }, 60000)
     return () => clearInterval(timer)
   }, [])
 
